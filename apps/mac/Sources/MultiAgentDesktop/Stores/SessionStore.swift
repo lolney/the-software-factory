@@ -242,6 +242,12 @@ final class SessionStore {
 
     func beginOpenAIOAuth() {
         daemon.sendRequest(method: "beginOpenAIOAuth", params: ["port": daemonPort])
+        Task { @MainActor in
+            for _ in 0..<10 {
+                try? await Task.sleep(for: .seconds(3))
+                refreshAuthStatus()
+            }
+        }
     }
 
     func refreshAuthStatus() {
