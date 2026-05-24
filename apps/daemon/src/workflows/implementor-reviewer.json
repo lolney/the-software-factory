@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "id": "implementor-reviewer",
+  "name": "Implementor and Reviewer Parallel",
+  "description": "Implementor edits while reviewer continuously inspects transcript and diffs.",
+  "roles": [
+    {
+      "id": "orchestrator",
+      "name": "Orchestrator",
+      "color": "#4f7cff",
+      "promptTemplate": "Oversee the workflow until the user's coding goal is complete."
+    },
+    {
+      "id": "implementor",
+      "name": "Implementor",
+      "color": "#27ae60",
+      "promptTemplate": "Implement scoped code changes inside the session workspace."
+    },
+    {
+      "id": "reviewer",
+      "name": "Adversarial Reviewer",
+      "color": "#f2994a",
+      "promptTemplate": "Review implementation transcript and diffs, then send concise findings."
+    }
+  ],
+  "nodes": [
+    { "id": "orchestrator", "roleId": "orchestrator", "label": "Orchestrator", "startsActive": true },
+    { "id": "implementor", "roleId": "implementor", "label": "Implementor" },
+    { "id": "reviewer", "roleId": "reviewer", "label": "Reviewer" }
+  ],
+  "edges": [
+    { "id": "handoff-orchestrator-implementor", "from": "orchestrator", "to": "implementor", "kind": "handoff", "description": "Assign implementation." },
+    { "id": "message-reviewer-implementor", "from": "reviewer", "to": "implementor", "kind": "message", "description": "Send review findings." },
+    { "id": "message-implementor-reviewer", "from": "implementor", "to": "reviewer", "kind": "message", "description": "Share diffs for review." }
+  ],
+  "concurrency": { "maxActiveAgents": 3 },
+  "lifecycle": { "orchestratorNodeId": "orchestrator" },
+  "stopCriteria": ["Reviewer reports no blocking findings.", "Orchestrator accepts final implementation."]
+}

@@ -43,25 +43,31 @@ export class EventStore {
       payload: {
         title: input.title,
         workspaceRoot: input.workspaceRoot,
-        workflowId: input.workflowId
+        workflowId: input.workflowId,
+        graph: input.graph
       }
     };
 
-    const agentCreated: SessionEvent = {
-      eventId: makeEventId(),
-      sessionId: input.sessionId,
-      agentId: "orchestrator",
-      timestamp: now,
-      type: "agent.created",
-      payload: {
-        roleId: "orchestrator",
-        label: "Orchestrator"
-      },
-      causationId: created.eventId
-    };
-
     await this.append(created);
-    await this.append(agentCreated);
+    const transcript = [created];
+    for (const node of input.graph.nodes) {
+      await mkdir(path.join(sessionDir, node.id), { recursive: true });
+      const agentCreated: SessionEvent = {
+        eventId: makeEventId(),
+        sessionId: input.sessionId,
+        agentId: node.id,
+        timestamp: now,
+        type: "agent.created",
+        payload: {
+          roleId: node.roleId,
+          label: node.label,
+          color: node.color
+        },
+        causationId: created.eventId
+      };
+      await this.append(agentCreated);
+      transcript.push(agentCreated);
+    }
 
     const snapshot: SessionSnapshot = {
       sessionId: input.sessionId,
@@ -71,7 +77,7 @@ export class EventStore {
       workspaceRoot: input.workspaceRoot,
       workflowId: input.workflowId,
       graph: input.graph,
-      transcript: [created, agentCreated]
+      transcript
     };
     await this.writeSnapshot(snapshot);
     return snapshot;
@@ -149,7 +155,8 @@ export class EventStore {
     const workspaceRoot = String(created.payload.workspaceRoot ?? process.cwd());
     const workflowId = String(created.payload.workflowId ?? "orchestrator-basic");
     const updatedAt = events.at(-1)?.timestamp ?? created.timestamp;
-    const graph: GraphState = {
+    const parsedGraph = GraphStateSchema.safeParse(created.payload.graph);
+    const graph: GraphState = parsedGraph.success ? parsedGraph.data : {
       sessionId,
       workflowId,
       nodes: [
@@ -166,6 +173,31 @@ export class EventStore {
       edges: [],
       activeToolCalls: []
     };
+    graph.nodes = graph.nodes.map((node) => ({
+      ...node,
+      status: deriveStatus(events, node.id),
+      unreadCount: events.filter((event) => event.agentId === node.id && event.type === "agent.message").length,
+      errorCount: events.filter((event) => event.agentId === node.id && event.type === "error").length
+    }));
+    graph.edges = graph.edges.map((edge) => ({
+      ...edge,
+      active: events.some((event) => {
+        if (edge.kind === "handoff" && event.type === "handoff.created") {
+          return event.payload.from === edge.from && event.payload.to === edge.to;
+        }
+        if (edge.kind === "message" && event.type === "message.sent") {
+          return event.payload.from === edge.from && event.payload.to === edge.to;
+        }
+        return false;
+      })
+    }));
+    graph.activeToolCalls = events
+      .filter((event) => event.agentId && event.type === "agent.tool_call")
+      .map((event) => ({
+        agentId: event.agentId!,
+        toolName: String(event.payload.toolName ?? "unknown"),
+        callId: String(event.payload.callId ?? event.eventId)
+      }));
 
     const snapshot: SessionSnapshot = {
       sessionId,
