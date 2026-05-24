@@ -3,12 +3,14 @@ import { type GraphState, type SessionSnapshot } from "@multiagent/shared";
 import { EventStore, makeEventId } from "./eventStore.js";
 import { OpenAIAgentRuntime, type AgentRuntime } from "./agentRuntime.js";
 import { WorkflowEngine } from "./workflowEngine.js";
+import { WorkspaceCoordinator } from "./workspaceCoordinator.js";
 
 export class SessionManager {
   private publish: (event: SessionEvent) => void = () => {};
   private readonly store: EventStore;
   private readonly runtime: AgentRuntime;
   private readonly workflows = new WorkflowEngine();
+  private readonly workspace = new WorkspaceCoordinator();
 
   constructor(private readonly options: { sessionsRoot: string; runtime?: AgentRuntime }) {
     this.store = new EventStore(options.sessionsRoot);
@@ -36,6 +38,9 @@ export class SessionManager {
           graph
         });
         await this.recordOrchestratorTurn(snapshot, request.params.prompt, request.params.debugMode);
+        if (request.params.debugMode) {
+          await this.seedDebugWorkspaceEvents(sessionId, request.params.workspaceRoot ?? process.cwd());
+        }
         return this.store.readSnapshot(sessionId);
       }
       case "getSnapshot":
@@ -123,6 +128,50 @@ export class SessionManager {
     const appended = await this.store.append(event);
     this.publish(appended);
     return appended;
+  }
+
+  private async seedDebugWorkspaceEvents(sessionId: string, workspaceRoot: string) {
+    const policy = { sessionId, workspaceRoot, allowedRoots: ["."] };
+    const handoff = await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId: "orchestrator",
+      timestamp: new Date().toISOString(),
+      type: "handoff.created",
+      payload: { from: "orchestrator", to: "implementor", reason: "debug implementation assignment" }
+    });
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId: "implementor",
+      timestamp: new Date().toISOString(),
+      type: "agent.status",
+      payload: { status: "working" },
+      causationId: handoff.eventId
+    });
+    await this.appendAndPublish(this.workspace.claimFile(policy, "implementor", "src/debug-feature.ts"));
+    await this.appendAndPublish(this.workspace.recordTouched(policy, "implementor", "src/debug-feature.ts"));
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId: "reviewer",
+      timestamp: new Date().toISOString(),
+      type: "message.sent",
+      payload: {
+        from: "reviewer",
+        to: "implementor",
+        text: "Debug reviewer: add a deterministic QA assertion before marking complete."
+      }
+    });
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId: "implementor",
+      timestamp: new Date().toISOString(),
+      type: "agent.status",
+      payload: { status: "waiting" }
+    });
+    await this.store.rebuildSnapshot(sessionId);
   }
 }
 
