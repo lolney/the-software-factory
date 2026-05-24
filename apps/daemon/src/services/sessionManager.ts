@@ -6,7 +6,7 @@ import { WorkflowEngine } from "./workflowEngine.js";
 import { WorkspaceCoordinator } from "./workspaceCoordinator.js";
 
 export class SessionManager {
-  private publish: (event: SessionEvent) => void = () => {};
+  private readonly subscribers = new Map<string, Set<(event: SessionEvent) => void>>();
   private readonly store: EventStore;
   private readonly runtime: AgentRuntime;
   private readonly workflows = new WorkflowEngine();
@@ -18,10 +18,10 @@ export class SessionManager {
   }
 
   setPublisher(publish: (event: SessionEvent) => void) {
-    this.publish = publish;
+    this.subscribers.set("*", new Set([publish]));
   }
 
-  async handle(request: DaemonRequest): Promise<unknown> {
+  async handle(request: DaemonRequest, publish: (event: SessionEvent) => void = () => {}): Promise<unknown> {
     await this.workflows.loadPredefined();
     switch (request.method) {
       case "listSessions":
@@ -39,10 +39,10 @@ export class SessionManager {
           debugMode: request.params.debugMode,
           graph
         });
-        await this.recordOrchestratorTurn(snapshot, request.params.prompt, request.params.debugMode);
-        await this.activateWorkflowStart(snapshot);
+        await this.recordOrchestratorTurn(snapshot, request.params.prompt, request.params.debugMode, publish);
+        await this.activateWorkflowStart(snapshot, publish);
         if (request.params.debugMode) {
-          await this.seedDebugWorkspaceEvents(sessionId, request.params.workspaceRoot ?? process.cwd());
+          await this.seedDebugWorkspaceEvents(sessionId, request.params.workspaceRoot ?? process.cwd(), publish);
         }
         return this.store.readSnapshot(sessionId);
       }
@@ -58,18 +58,19 @@ export class SessionManager {
           timestamp: new Date().toISOString(),
           type: "control.nudge",
           payload: { text: request.params.text }
-        });
-        await this.recordOrchestratorTurn(snapshot, request.params.text, snapshot.debugMode, nudge.eventId);
+        }, publish);
+        await this.recordOrchestratorTurn(snapshot, request.params.text, snapshot.debugMode, publish, nudge.eventId);
         return this.store.readSnapshot(request.params.sessionId);
       }
       case "subscribeEvents":
+        this.addSubscriber(request.params.sessionId, publish);
         return { events: await this.store.readEvents(request.params.sessionId) };
       case "pauseAgent":
-        return this.controlEvent(request.params.sessionId, request.params.agentId, "control.pause", "paused");
+        return this.controlEvent(request.params.sessionId, request.params.agentId, "control.pause", "paused", publish);
       case "resumeAgent":
-        return this.controlEvent(request.params.sessionId, request.params.agentId, "control.resume", "idle");
+        return this.controlEvent(request.params.sessionId, request.params.agentId, "control.resume", "idle", publish);
       case "cancelAgent":
-        return this.controlEvent(request.params.sessionId, request.params.agentId, "control.cancel", "cancelled");
+        return this.controlEvent(request.params.sessionId, request.params.agentId, "control.cancel", "cancelled", publish);
       case "ackClientEvent":
         return { accepted: true };
     }
@@ -79,7 +80,13 @@ export class SessionManager {
     this.publish(event);
   }
 
-  private async recordOrchestratorTurn(snapshot: SessionSnapshot, userText: string, debugMode: boolean, causationId?: string) {
+  private async recordOrchestratorTurn(
+    snapshot: SessionSnapshot,
+    userText: string,
+    debugMode: boolean,
+    publish: (event: SessionEvent) => void,
+    causationId?: string
+  ) {
     const promptEvent = await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId: snapshot.sessionId,
@@ -92,7 +99,7 @@ export class SessionManager {
         text: userText
       },
       causationId
-    });
+    }, publish);
     const events = await this.runtime.runTurn({
       sessionId: snapshot.sessionId,
       agentId: "orchestrator",
@@ -101,12 +108,18 @@ export class SessionManager {
       causationId: promptEvent.eventId
     });
     for (const event of events) {
-      await this.appendAndPublish(event);
+      await this.appendAndPublish(event, publish);
     }
     await this.store.rebuildSnapshot(snapshot.sessionId);
   }
 
-  private async controlEvent(sessionId: string, agentId: string, type: SessionEvent["type"], status: string) {
+  private async controlEvent(
+    sessionId: string,
+    agentId: string,
+    type: SessionEvent["type"],
+    status: string,
+    publish: (event: SessionEvent) => void
+  ) {
     const control = await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId,
@@ -114,7 +127,7 @@ export class SessionManager {
       timestamp: new Date().toISOString(),
       type,
       payload: {}
-    });
+    }, publish);
     await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId,
@@ -123,17 +136,18 @@ export class SessionManager {
       type: "agent.status",
       payload: { status },
       causationId: control.eventId
-    });
+    }, publish);
     return this.store.rebuildSnapshot(sessionId);
   }
 
-  private async appendAndPublish(event: SessionEvent) {
+  private async appendAndPublish(event: SessionEvent, publish: (event: SessionEvent) => void = () => {}) {
     const appended = await this.store.append(event);
-    this.publish(appended);
+    publish(appended);
+    this.publish(appended, publish);
     return appended;
   }
 
-  private async activateWorkflowStart(snapshot: SessionSnapshot) {
+  private async activateWorkflowStart(snapshot: SessionSnapshot, publish: (event: SessionEvent) => void) {
     const graph = snapshot.graph;
     for (const edge of graph.edges.filter((candidate) => candidate.from === "orchestrator" && candidate.kind === "handoff")) {
       const handoff = await this.appendAndPublish({
@@ -147,7 +161,7 @@ export class SessionManager {
           to: edge.to,
           reason: "workflow start"
         }
-      });
+      }, publish);
       await this.appendAndPublish({
         eventId: makeEventId(),
         sessionId: snapshot.sessionId,
@@ -156,32 +170,42 @@ export class SessionManager {
         type: "agent.status",
         payload: { status: snapshot.debugMode ? "waiting" : "working" },
         causationId: handoff.eventId
-      });
+      }, publish);
+    }
+    for (const edge of graph.edges.filter((candidate) => candidate.kind === "message")) {
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: edge.from,
+        timestamp: new Date().toISOString(),
+        type: "message.sent",
+        payload: {
+          from: edge.from,
+          to: edge.to,
+          text: "Workflow message link armed."
+        }
+      }, publish);
+      for (const agentId of [edge.from, edge.to]) {
+        const current = graph.nodes.find((node) => node.id === agentId)?.status;
+        if (current === "idle") {
+          await this.appendAndPublish({
+            eventId: makeEventId(),
+            sessionId: snapshot.sessionId,
+            agentId,
+            timestamp: new Date().toISOString(),
+            type: "agent.status",
+            payload: { status: "waiting" }
+          }, publish);
+        }
+      }
     }
     await this.store.rebuildSnapshot(snapshot.sessionId);
   }
 
-  private async seedDebugWorkspaceEvents(sessionId: string, workspaceRoot: string) {
+  private async seedDebugWorkspaceEvents(sessionId: string, workspaceRoot: string, publish: (event: SessionEvent) => void) {
     const policy = { sessionId, workspaceRoot, allowedRoots: ["."] };
-    const handoff = await this.appendAndPublish({
-      eventId: makeEventId(),
-      sessionId,
-      agentId: "orchestrator",
-      timestamp: new Date().toISOString(),
-      type: "handoff.created",
-      payload: { from: "orchestrator", to: "implementor", reason: "debug implementation assignment" }
-    });
-    await this.appendAndPublish({
-      eventId: makeEventId(),
-      sessionId,
-      agentId: "implementor",
-      timestamp: new Date().toISOString(),
-      type: "agent.status",
-      payload: { status: "working" },
-      causationId: handoff.eventId
-    });
-    await this.appendAndPublish(this.workspace.claimFile(policy, "implementor", "src/debug-feature.ts"));
-    await this.appendAndPublish(this.workspace.recordTouched(policy, "implementor", "src/debug-feature.ts"));
+    await this.appendAndPublish(this.workspace.claimFile(policy, "implementor", "src/debug-feature.ts"), publish);
+    await this.appendAndPublish(this.workspace.recordTouched(policy, "implementor", "src/debug-feature.ts"), publish);
     await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId,
@@ -193,7 +217,7 @@ export class SessionManager {
         to: "implementor",
         text: "Debug reviewer: add a deterministic QA assertion before marking complete."
       }
-    });
+    }, publish);
     await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId,
@@ -201,8 +225,23 @@ export class SessionManager {
       timestamp: new Date().toISOString(),
       type: "agent.status",
       payload: { status: "waiting" }
-    });
+    }, publish);
     await this.store.rebuildSnapshot(sessionId);
+  }
+
+  private addSubscriber(sessionId: string, publish: (event: SessionEvent) => void) {
+    const subscribers = this.subscribers.get(sessionId) ?? new Set<(event: SessionEvent) => void>();
+    subscribers.add(publish);
+    this.subscribers.set(sessionId, subscribers);
+  }
+
+  private publish(event: SessionEvent, exclude?: (event: SessionEvent) => void) {
+    for (const publish of this.subscribers.get(event.sessionId) ?? []) {
+      if (publish !== exclude) publish(event);
+    }
+    for (const publish of this.subscribers.get("*") ?? []) {
+      if (publish !== exclude) publish(event);
+    }
   }
 }
 

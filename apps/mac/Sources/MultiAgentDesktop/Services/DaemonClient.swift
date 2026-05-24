@@ -8,6 +8,7 @@ final class DaemonClient {
     var isConnected = false
     var isConnecting = false
     var onMessage: ((Data) -> Void)?
+    var onDisconnect: ((String) -> Void)?
 
     func connect(port: Int = 3767) {
         guard task == nil else { return }
@@ -65,6 +66,7 @@ final class DaemonClient {
                     self.task = nil
                     self.isConnected = false
                     self.isConnecting = false
+                    self.onDisconnect?(error.localizedDescription)
                 @unknown default:
                     self.receiveNext()
                 }

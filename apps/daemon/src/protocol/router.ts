@@ -18,10 +18,8 @@ export async function routeDaemonMessage(
     return { id: "unknown", ok: false, error: { code: "bad_request", message: request.error.message } };
   }
 
-  manager.setPublisher(publish);
-
   try {
-    const result = await manager.handle(request.data);
+    const result = await manager.handle(request.data, publish);
     return { id: request.data.id, ok: true, result };
   } catch (error) {
     return {

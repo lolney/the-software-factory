@@ -27,6 +27,16 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(events).toContain("agent.tool_call");
       expect(events).toContain("workspace.file_touched");
       expect(events).toContain("message.sent");
+
+      const replay = await manager.handle({
+        id: "req_sub",
+        method: "subscribeEvents",
+        params: { sessionId: (snapshot as { sessionId: string }).sessionId }
+      }) as { events: Array<{ type: string; payload: Record<string, unknown>; agentId?: string }> };
+      const handoffs = replay.events.filter((event) => event.type === "handoff.created" && event.payload.from === "orchestrator" && event.payload.to === "implementor");
+      expect(handoffs).toHaveLength(1);
+      expect(replay.events.some((event) => event.type === "message.sent" && event.payload.from === "implementor" && event.payload.to === "reviewer")).toBe(true);
+      expect(replay.events.some((event) => event.type === "agent.status" && event.agentId === "reviewer" && event.payload.status === "waiting")).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -16,18 +16,30 @@ struct NewSessionView: View {
                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
 
             Toggle("Deterministic Debug Session", isOn: $store.debugMode)
+                .disabled(store.isCreatingSession)
+
+            if store.isCreatingSession {
+                ProgressView("Creating session...")
+                    .controlSize(.small)
+            }
+
+            if let error = store.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
 
             HStack {
                 Spacer()
                 Button("Cancel") {
                     store.presentNewSession = false
                 }
+                .disabled(store.isCreatingSession)
                 Button("Create") {
                     store.createSession(prompt: prompt)
-                    store.presentNewSession = false
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isCreatingSession)
             }
         }
         .padding()

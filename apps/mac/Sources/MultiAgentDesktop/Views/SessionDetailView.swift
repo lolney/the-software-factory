@@ -29,21 +29,21 @@ struct SessionDetailView: View {
                 } label: {
                     Label("Pause Orchestrator", systemImage: "pause.circle")
                 }
-                .disabled(!store.hasActiveSession || !store.daemon.isConnected)
+                .disabled(!store.canPauseOrchestrator)
 
                 Button {
                     store.resumeOrchestrator()
                 } label: {
                     Label("Resume Orchestrator", systemImage: "play.circle")
                 }
-                .disabled(!store.hasActiveSession || !store.daemon.isConnected)
+                .disabled(!store.canResumeOrchestrator)
 
                 Button(role: .destructive) {
                     confirmCancel = true
                 } label: {
                     Label("Cancel Orchestrator", systemImage: "xmark.circle")
                 }
-                .disabled(!store.hasActiveSession || !store.daemon.isConnected)
+                .disabled(!store.canCancelOrchestrator)
             }
         }
         .confirmationDialog("Cancel the orchestrator for this session?", isPresented: $confirmCancel) {

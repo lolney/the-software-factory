@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   GraphStateSchema,
   SessionEventSchema,
+  SessionSnapshotSchema,
   type GraphState,
   type SessionEvent,
   type SessionSnapshot
@@ -142,7 +143,15 @@ export class EventStore {
   async readSnapshot(sessionId: string): Promise<SessionSnapshot> {
     const snapshotPath = path.join(this.sessionDir(sessionId), "snapshot.json");
     if (existsSync(snapshotPath)) {
-      return JSON.parse(await readFile(snapshotPath, "utf8")) as SessionSnapshot;
+      const raw = JSON.parse(await readFile(snapshotPath, "utf8"));
+      const parsed = SessionSnapshotSchema.safeParse(raw);
+      if (parsed.success) {
+        const normalized = normalizeSnapshot(parsed.data, Object.prototype.hasOwnProperty.call(raw, "debugMode"));
+        if (JSON.stringify(normalized) !== JSON.stringify(raw)) {
+          await this.writeSnapshot(normalized);
+        }
+        return normalized;
+      }
     }
     return this.rebuildSnapshot(sessionId);
   }
@@ -150,7 +159,7 @@ export class EventStore {
   async writeSnapshot(snapshot: SessionSnapshot) {
     GraphStateSchema.parse(snapshot.graph);
     const snapshotPath = path.join(this.sessionDir(snapshot.sessionId), "snapshot.json");
-    const tmpPath = `${snapshotPath}.${process.pid}.tmp`;
+    const tmpPath = `${snapshotPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
     await writeFile(tmpPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
     await rename(tmpPath, snapshotPath);
   }
@@ -253,4 +262,12 @@ function deriveStatus(events: SessionEvent[], agentId: string) {
   const latest = [...events].reverse().find((event: SessionEvent) => event.agentId === agentId && event.type === "agent.status");
   const status = latest?.payload.status;
   return typeof status === "string" ? status as GraphState["nodes"][number]["status"] : "idle";
+}
+
+function normalizeSnapshot(snapshot: SessionSnapshot, hasExplicitDebugMode: boolean): SessionSnapshot {
+  if (hasExplicitDebugMode) return snapshot;
+  return {
+    ...snapshot,
+    debugMode: snapshot.transcript.some((event) => event.payload.runtime === "deterministic")
+  };
 }

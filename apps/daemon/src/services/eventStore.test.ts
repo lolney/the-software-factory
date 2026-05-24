@@ -72,4 +72,48 @@ describe("EventStore", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("clears active tool calls when a result with the same call id is replayed", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-events-"));
+    try {
+      const store = new EventStore(root);
+      await store.createSession({
+        sessionId: "sess_tools",
+        title: "Tools session",
+        workspaceRoot: root,
+        workflowId: "orchestrator-basic",
+        debugMode: true,
+        graph: {
+          sessionId: "sess_tools",
+          workflowId: "orchestrator-basic",
+          nodes: [
+            { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", status: "idle", color: "#4f7cff", unreadCount: 0, errorCount: 0 }
+          ],
+          edges: [],
+          activeToolCalls: []
+        }
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: "sess_tools",
+        agentId: "orchestrator",
+        timestamp: new Date().toISOString(),
+        type: "agent.tool_call",
+        payload: { callId: "call_1", toolName: "debug.tool" }
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: "sess_tools",
+        agentId: "orchestrator",
+        timestamp: new Date().toISOString(),
+        type: "agent.tool_result",
+        payload: { callId: "call_1", toolName: "debug.tool" }
+      });
+
+      const rebuilt = await store.rebuildSnapshot("sess_tools");
+      expect(rebuilt.graph.activeToolCalls).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

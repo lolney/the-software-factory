@@ -12,6 +12,8 @@ final class SessionStore {
     var composerText = ""
     var connectionStatus = "Disconnected"
     var debugMode = true
+    var isCreatingSession = false
+    var lastError: String?
 
     var daemonPort: Int {
         get {
@@ -31,6 +33,22 @@ final class SessionStore {
 
     var canSendComposerMessage: Bool {
         daemon.isConnected && hasActiveSession && !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var orchestratorStatus: AgentStatus {
+        graph.nodes.first { $0.id == "orchestrator" }?.status ?? .idle
+    }
+
+    var canPauseOrchestrator: Bool {
+        daemon.isConnected && hasActiveSession && [.idle, .working, .waiting].contains(orchestratorStatus)
+    }
+
+    var canResumeOrchestrator: Bool {
+        daemon.isConnected && hasActiveSession && orchestratorStatus == .paused
+    }
+
+    var canCancelOrchestrator: Bool {
+        daemon.isConnected && hasActiveSession && ![.cancelled, .completed].contains(orchestratorStatus)
     }
 
     init() {
@@ -59,11 +77,19 @@ final class SessionStore {
                 self?.handleDaemonMessage(data)
             }
         }
+        daemon.onDisconnect = { [weak self] reason in
+            Task { @MainActor in
+                self?.connectionStatus = "Disconnected"
+                self?.lastError = reason
+                self?.isCreatingSession = false
+            }
+        }
     }
 
     func connectAndRefresh() {
         daemon.connect(port: daemonPort)
         connectionStatus = daemon.isConnected ? "Connected" : "Connecting"
+        lastError = nil
         daemon.sendRequest(method: "listSessions", params: [:])
     }
 
@@ -71,6 +97,8 @@ final class SessionStore {
         if !daemon.isConnected && !daemon.isConnecting {
             connectAndRefresh()
         }
+        isCreatingSession = true
+        lastError = nil
         daemon.sendRequest(method: "createSession", params: [
             "prompt": prompt,
             "workspaceRoot": FileManager.default.homeDirectoryForCurrentUser.path,
@@ -115,6 +143,14 @@ final class SessionStore {
             return
         }
 
+        if object["ok"] as? Bool == false {
+            if let error = object["error"] as? [String: Any],
+               let message = error["message"] as? String {
+                lastError = message
+            }
+            isCreatingSession = false
+            return
+        }
         guard object["ok"] as? Bool == true, let result = object["result"] else { return }
         if let resultData = try? JSONSerialization.data(withJSONObject: result),
            let snapshot = try? JSONDecoder().decode(SessionSnapshot.self, from: resultData) {
@@ -141,6 +177,8 @@ final class SessionStore {
         sessions.removeAll { $0.id == snapshot.sessionId }
         sessions.insert(summary, at: 0)
         connectionStatus = "Connected"
+        isCreatingSession = false
+        presentNewSession = false
     }
 
     private func apply(event: SessionEvent) {
@@ -157,6 +195,8 @@ final class SessionStore {
             sessions.removeAll { $0.id == event.sessionId }
             sessions.insert(SessionSummary(id: event.sessionId, title: title, detail: workflowId), at: 0)
             selectedSessionId = event.sessionId
+            isCreatingSession = false
+            presentNewSession = false
         case "agent.status":
             guard let agentId = event.agentId,
                   let statusText = event.payload["status"]?.stringValue,
