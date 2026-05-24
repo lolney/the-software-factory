@@ -54,7 +54,7 @@ describe("SessionManager deterministic debug sessions", () => {
         id: "req_list",
         method: "listSessions",
         params: {}
-      }) as { roles: Array<{ name: string }>; workflows: Array<{ id: string }> };
+      }) as { roles: Array<{ name: string; toolPolicy: { canWrite: boolean; canRunCommands: boolean; canCreatePlans: boolean } }>; workflows: Array<{ id: string }> };
 
       expect(result.roles.map((role) => role.name)).toEqual(expect.arrayContaining([
         "QAer",
@@ -63,9 +63,16 @@ describe("SessionManager deterministic debug sessions", () => {
         "Planner",
         "Researcher"
       ]));
+      const orchestrator = result.roles.find((role) => role.name === "Orchestrator");
+      const planner = result.roles.find((role) => role.name === "Planner");
+      expect(orchestrator).toBeDefined();
+      expect(planner).toBeDefined();
+      expect(orchestrator!.toolPolicy).toMatchObject({ canWrite: false, canRunCommands: false, canCreatePlans: false });
+      expect(planner!.toolPolicy).toMatchObject({ canWrite: false, canRunCommands: false, canCreatePlans: true });
       expect(result.workflows.map((workflow) => workflow.id)).toEqual(expect.arrayContaining([
         "implementor-qa-loop",
-        "implementor-reviewer"
+        "implementor-reviewer",
+        "implementation-review-qa"
       ]));
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -159,31 +166,34 @@ describe("SessionManager deterministic debug sessions", () => {
     }
   });
 
-  it("creates a working hello world Python program in the session workspace", async () => {
+  it("creates a planner-owned plan and produces a working temperature converter", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
     try {
       const manager = new SessionManager({ sessionsRoot: root });
       const snapshot = await manager.handle({
-        id: "req_hello_world",
+        id: "req_temperature_converter",
         method: "createSession",
         params: {
-          prompt: "Let’s write a hello world Python program",
+          prompt: "Build a Python CLI that converts temperatures between Celsius and Fahrenheit and include tests",
           workspaceRoot: root,
           workflowId: "planner-orchestrator",
-          debugMode: false
+          debugMode: true
         }
       }) as { sessionId: string; workspaceRoot: string };
 
-      const program = await readFile(path.join(snapshot.workspaceRoot, "hello_world.py"), "utf8");
-      expect(program).toBe("print(\"Hello, world!\")\n");
+      const program = await readFile(path.join(snapshot.workspaceRoot, "temperature_converter.py"), "utf8");
+      expect(program).toContain("def celsius_to_fahrenheit");
+      expect(program).toContain("argparse");
 
       const replay = await manager.handle({
-        id: "req_sub_hello",
+        id: "req_sub_temperature",
         method: "subscribeEvents",
         params: { sessionId: snapshot.sessionId }
       }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
-      expect(replay.events.some((event) => event.type === "workspace.file_touched" && String(event.payload.path).endsWith("hello_world.py"))).toBe(true);
-      expect(replay.events.some((event) => event.type === "agent.message" && String(event.payload.text).includes("python3 hello_world.py"))).toBe(true);
+      expect(replay.events.some((event) => event.type === "plan.created" && event.agentId === "planner")).toBe(true);
+      expect(replay.events.some((event) => event.type === "plan.instantiated" && event.agentId === "orchestrator")).toBe(true);
+      expect(replay.events.some((event) => event.type === "workspace.file_touched" && event.agentId?.includes("implementor") && String(event.payload.path).endsWith("temperature_converter.py"))).toBe(true);
+      expect(replay.events.some((event) => event.type === "agent.tool_result" && event.agentId?.includes("qa") && String(event.payload.output).includes("OK"))).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

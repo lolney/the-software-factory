@@ -74,6 +74,10 @@ private struct RoleEditor: View {
                 Toggle("Can read files", isOn: $role.toolPolicy.canRead)
                 Toggle("Can write files", isOn: $role.toolPolicy.canWrite)
                 Toggle("Can run commands", isOn: $role.toolPolicy.canRunCommands)
+                Toggle("Can create plans", isOn: Binding(
+                    get: { role.toolPolicy.canCreatePlans ?? false },
+                    set: { role.toolPolicy.canCreatePlans = $0 }
+                ))
             }
 
             Section("Workspace") {

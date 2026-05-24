@@ -251,7 +251,7 @@ final class SessionStore {
             color: "#7f8c8d",
             promptTemplate: "Describe this role's responsibilities.",
             model: "gpt-5.4",
-            toolPolicy: ToolPolicy(canRead: true, canWrite: false, canRunCommands: false),
+            toolPolicy: ToolPolicy(canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: false),
             workspace: RoleWorkspace(allowedRoots: ["."]),
             expectedOutputs: [],
             reviewResponsibilities: []
@@ -583,12 +583,7 @@ final class SessionStore {
     }
 
     private func selectedWorkflowId(for prompt: String) -> String {
-        guard debugMode else { return "planner-orchestrator" }
-        let lower = prompt.lowercased()
-        if lower.contains("qa") || lower.contains("test") || lower.contains("acceptance") || lower.contains("check") {
-            return "implementor-qa-loop"
-        }
-        return "implementor-reviewer"
+        return "planner-orchestrator"
     }
 
     private func parseTimestamp(_ timestamp: String) -> Date {
@@ -601,6 +596,13 @@ final class SessionStore {
         if let output = event.payload["output"]?.stringValue { return output }
         if let reason = event.payload["reason"]?.stringValue { return reason }
         switch event.type {
+        case "plan.created":
+            if let plan = event.payload["plan"]?.objectValue {
+                return "Plan created: \(plan["name"]?.stringValue ?? "Untitled plan")"
+            }
+            return "Plan created"
+        case "plan.instantiated":
+            return "Plan instantiated: \(event.payload["planId"]?.stringValue ?? "unknown")"
         case "agent.tool_call":
             return "Tool call: \(event.payload["toolName"]?.stringValue ?? "unknown")"
         case "agent.tool_result":

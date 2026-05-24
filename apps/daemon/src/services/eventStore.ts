@@ -15,6 +15,7 @@ import {
 export interface CreateSessionInput {
   sessionId: string;
   title: string;
+  goal?: string;
   workspaceRoot: string;
   workflowId: string;
   debugMode: boolean;
@@ -53,6 +54,7 @@ export class EventStore {
       type: "session.created",
       payload: {
         title: input.title,
+        goal: input.goal ?? input.title,
         workspaceRoot: input.workspaceRoot,
         workflowId: input.workflowId,
         debugMode: input.debugMode,

@@ -51,11 +51,11 @@ export class WorkflowEngine {
     const roles = new Map<string, RoleSpec>();
     for (const spec of this.specs.values()) {
       for (const role of spec.roles) {
-        roles.set(role.id, this.roleOverrides.get(role.id) ?? role);
+        roles.set(role.id, enforceRoleCapabilities(this.roleOverrides.get(role.id) ?? role));
       }
     }
     for (const [id, role] of this.roleOverrides) {
-      roles.set(id, role);
+      roles.set(id, enforceRoleCapabilities(role));
     }
     return [...roles.values()].sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -115,9 +115,36 @@ export class WorkflowEngine {
   private withRoleOverrides(spec: WorkflowSpec): WorkflowSpec {
     return {
       ...spec,
-      roles: spec.roles.map((role) => this.roleOverrides.get(role.id) ?? role)
+      roles: spec.roles.map((role) => enforceRoleCapabilities(this.roleOverrides.get(role.id) ?? role))
     };
   }
+}
+
+function enforceRoleCapabilities(role: RoleSpec): RoleSpec {
+  if (role.id === "orchestrator") {
+    return {
+      ...role,
+      toolPolicy: {
+        ...role.toolPolicy,
+        canRead: true,
+        canWrite: false,
+        canRunCommands: false,
+        canCreatePlans: false
+      }
+    };
+  }
+  if (role.id === "planner") {
+    return {
+      ...role,
+      toolPolicy: {
+        ...role.toolPolicy,
+        canCreatePlans: true,
+        canWrite: false,
+        canRunCommands: false
+      }
+    };
+  }
+  return role;
 }
 
 function assertGraphReferences(spec: WorkflowSpec) {
@@ -143,22 +170,26 @@ const baseRoles: WorkflowSpec["roles"] = [
     id: "orchestrator",
     name: "Orchestrator",
     color: "#4f7cff",
-    promptTemplate: "Oversee the workflow until the user's coding goal is complete.",
+    promptTemplate: [
+      "Coordinate the session without directly modifying files or creating plans.",
+      "You may instantiate planner-created plans, inspect agent state, read workspace files, and send messages to agents.",
+      "All implementation must happen through implementor, reviewer, QA, researcher, or other workflow agents."
+    ].join(" "),
     model: "gpt-5.4",
-    toolPolicy: { canRead: true, canWrite: true, canRunCommands: true },
+    toolPolicy: { canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: false },
     workspace: { allowedRoots: ["."] },
-    expectedOutputs: ["Completed user goal", "Durable transcript"],
+    expectedOutputs: ["Instantiated plan", "Agent coordination summary", "Durable transcript"],
     reviewResponsibilities: []
   },
   {
     id: "planner",
     name: "Planner",
     color: "#9b51e0",
-    promptTemplate: "Produce a decision-complete implementation workflow.",
+    promptTemplate: "Create a decision-complete plan: one or more workflows, agent prompts, and done criteria for each participating agent.",
     model: "gpt-5.4",
-    toolPolicy: { canRead: true, canWrite: false, canRunCommands: false },
+    toolPolicy: { canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: true },
     workspace: { allowedRoots: ["."] },
-    expectedOutputs: ["WorkflowSpec"],
+    expectedOutputs: ["PlanSpec"],
     reviewResponsibilities: []
   },
   {
@@ -167,7 +198,7 @@ const baseRoles: WorkflowSpec["roles"] = [
     color: "#27ae60",
     promptTemplate: "Implement scoped code changes inside the session workspace.",
     model: "gpt-5.4",
-    toolPolicy: { canRead: true, canWrite: true, canRunCommands: true },
+    toolPolicy: { canRead: true, canWrite: true, canRunCommands: true, canCreatePlans: false },
     workspace: { allowedRoots: ["."] },
     expectedOutputs: ["Code changes", "Implementation notes"],
     reviewResponsibilities: []
@@ -178,7 +209,7 @@ const baseRoles: WorkflowSpec["roles"] = [
     color: "#f2994a",
     promptTemplate: "Review implementation transcript and diffs, then send concise findings.",
     model: "gpt-5.4",
-    toolPolicy: { canRead: true, canWrite: false, canRunCommands: true },
+    toolPolicy: { canRead: true, canWrite: false, canRunCommands: true, canCreatePlans: false },
     workspace: { allowedRoots: ["."] },
     expectedOutputs: ["Review findings"],
     reviewResponsibilities: ["Correctness", "Regression risk", "Missing tests"]
@@ -189,7 +220,7 @@ const baseRoles: WorkflowSpec["roles"] = [
     color: "#eb5757",
     promptTemplate: "Run acceptance checks and decide whether to hand back issues.",
     model: "gpt-5.4",
-    toolPolicy: { canRead: true, canWrite: false, canRunCommands: true },
+    toolPolicy: { canRead: true, canWrite: false, canRunCommands: true, canCreatePlans: false },
     workspace: { allowedRoots: ["."] },
     expectedOutputs: ["Acceptance result"],
     reviewResponsibilities: ["Build", "Tests", "Manual QA"]
@@ -200,7 +231,7 @@ const baseRoles: WorkflowSpec["roles"] = [
     color: "#56ccf2",
     promptTemplate: "Research technical context, APIs, libraries, and project constraints before implementation.",
     model: "gpt-5.4",
-    toolPolicy: { canRead: true, canWrite: false, canRunCommands: true },
+    toolPolicy: { canRead: true, canWrite: false, canRunCommands: true, canCreatePlans: false },
     workspace: { allowedRoots: ["."] },
     expectedOutputs: ["Research notes", "Cited implementation context"],
     reviewResponsibilities: ["External context", "API correctness", "Dependency risk"]
@@ -265,5 +296,28 @@ const builtInWorkflows: WorkflowSpec[] = [
     concurrency: { maxActiveAgents: 2 },
     lifecycle: { orchestratorNodeId: "orchestrator" },
     stopCriteria: ["QA marks acceptance.", "Orchestrator summarizes completion."]
+  },
+  {
+    version: 1,
+    id: "implementation-review-qa",
+    name: "Implementation Review QA",
+    description: "Implementor builds, reviewer critiques, implementor revises, and QA verifies acceptance.",
+    roles: baseRoles,
+    nodes: [
+      { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", startsActive: true },
+      { id: "implementor", roleId: "implementor", label: "Implementor", startsActive: false },
+      { id: "reviewer", roleId: "reviewer", label: "Reviewer", startsActive: false },
+      { id: "qa", roleId: "qa", label: "QA", startsActive: false }
+    ],
+    edges: [
+      { id: "handoff-orchestrator-implementor", from: "orchestrator", to: "implementor", kind: "handoff", description: "Assign scoped implementation from the active plan." },
+      { id: "message-implementor-reviewer", from: "implementor", to: "reviewer", kind: "message", description: "Share implementation notes and touched files." },
+      { id: "message-reviewer-implementor", from: "reviewer", to: "implementor", kind: "message", description: "Return blocking review findings or approval." },
+      { id: "handoff-implementor-qa", from: "implementor", to: "qa", kind: "handoff", description: "Request acceptance checks after implementation and review." },
+      { id: "message-qa-implementor", from: "qa", to: "implementor", kind: "message", description: "Return acceptance result or issues." }
+    ],
+    concurrency: { maxActiveAgents: 3 },
+    lifecycle: { orchestratorNodeId: "orchestrator" },
+    stopCriteria: ["Implementation matches the plan.", "Reviewer has no blocking findings.", "QA acceptance checks pass."]
   }
 ];

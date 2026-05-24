@@ -23,7 +23,8 @@ export const RoleSpecSchema = z.object({
   toolPolicy: z.object({
     canRead: z.boolean().default(true),
     canWrite: z.boolean().default(true),
-    canRunCommands: z.boolean().default(true)
+    canRunCommands: z.boolean().default(true),
+    canCreatePlans: z.boolean().default(false)
   }).prefault({}),
   workspace: z.object({
     allowedRoots: z.array(z.string()).default(["."])
@@ -65,9 +66,28 @@ export const WorkflowSpecSchema = z.object({
   stopCriteria: z.array(z.string()).default([])
 });
 
+export const PlanWorkflowSchema = z.object({
+  workflowId: SafeIdSchema,
+  anchorNodeId: SafeIdSchema.optional(),
+  agentPrompts: z.record(SafeIdSchema, z.string()).default({}),
+  doneCriteria: z.record(SafeIdSchema, z.array(z.string())).default({})
+});
+
+export const PlanSpecSchema = z.object({
+  version: z.literal(1),
+  id: SafeIdSchema,
+  name: z.string().min(1),
+  description: z.string().default(""),
+  goal: z.string().min(1),
+  workflows: z.array(PlanWorkflowSchema).min(1),
+  globalDoneCriteria: z.array(z.string()).default([])
+});
+
 export const SessionEventTypeSchema = z.enum([
   "session.created",
   "session.snapshot",
+  "plan.created",
+  "plan.instantiated",
   "graph.updated",
   "workflow.instantiated",
   "agent.created",
@@ -201,6 +221,7 @@ export type AgentStatus = z.infer<typeof AgentStatusSchema>;
 export type WorkflowEdgeKind = z.infer<typeof WorkflowEdgeKindSchema>;
 export type RoleSpec = z.infer<typeof RoleSpecSchema>;
 export type WorkflowSpec = z.infer<typeof WorkflowSpecSchema>;
+export type PlanSpec = z.infer<typeof PlanSpecSchema>;
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
 export type DebugLogLevel = z.infer<typeof DebugLogLevelSchema>;
 export type DebugLogEntry = z.infer<typeof DebugLogEntrySchema>;

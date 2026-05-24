@@ -1,13 +1,17 @@
-import type { DaemonRequest, DebugLogEntry, DebugLogLevel, SessionEvent } from "@multiagent/shared";
+import { PlanSpecSchema, type DaemonRequest, type DebugLogEntry, type DebugLogLevel, type PlanSpec, type SessionEvent } from "@multiagent/shared";
 import { type GraphState, type SessionSnapshot } from "@multiagent/shared";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 import { EventStore, makeEventId, makeLogId } from "./eventStore.js";
 import { OpenAIAgentRuntime, type AgentRuntime } from "./agentRuntime.js";
 import { WorkflowEngine } from "./workflowEngine.js";
 import { WorkspaceCoordinator } from "./workspaceCoordinator.js";
 import { AuthManager, CODEX_PUBLIC_CLIENT_ID } from "./authManager.js";
+
+const execFileAsync = promisify(execFile);
 
 export class SessionManager {
   private readonly subscribers = new Map<string, Set<(event: SessionEvent) => void>>();
@@ -63,16 +67,16 @@ export class SessionManager {
       case "createSession": {
         const sessionId = `sess_${crypto.randomUUID()}`;
         const title = firstLine(request.params.prompt) || "Untitled Session";
-        const spec = this.workflows.get(request.params.workflowId ?? (request.params.debugMode ? "implementor-reviewer" : "planner-orchestrator"));
+        const spec = this.workflows.get(request.params.workflowId ?? "planner-orchestrator");
         const graph: GraphState = this.workflows.graphForSession(sessionId, spec);
         const workspaceRoot = await this.store.workspaceDir(sessionId, request.params.workspaceRoot);
-        const handledLocally = isHelloWorldPythonPrompt(request.params.prompt);
-        if (!request.params.debugMode && !handledLocally) {
+        if (!request.params.debugMode) {
           await this.assertLiveCredentialAvailable();
         }
         const snapshot = await this.store.createSession({
           sessionId,
           title,
+          goal: request.params.prompt,
           workspaceRoot,
           workflowId: spec.id,
           debugMode: request.params.debugMode,
@@ -83,15 +87,8 @@ export class SessionManager {
         }
         await this.initializeWorkspace(workspaceRoot, title);
         await this.appendDebugLog(snapshot.sessionId, "info", "workspace", `Initialized workspace at ${workspaceRoot}`, { workspaceRoot }, publishLog);
-        if (handledLocally) {
-          await this.implementHelloWorldPython(snapshot, request.params.prompt, publish, publishLog);
-          return this.store.readSnapshot(sessionId);
-        }
         await this.recordOrchestratorTurn(snapshot, request.params.prompt, request.params.debugMode, publish);
         await this.activateWorkflowStart(await this.store.readSnapshot(sessionId), publish);
-        if (request.params.debugMode) {
-          await this.seedDebugWorkspaceEvents(sessionId, workspaceRoot, publish);
-        }
         return this.store.readSnapshot(sessionId);
       }
       case "getSnapshot":
@@ -197,7 +194,7 @@ export class SessionManager {
       roleName: role?.name,
       instructions: role?.promptTemplate,
       apiKey: await this.openAIApiKey(debugMode),
-      workflowTools: this.workflowTools(snapshot.sessionId, publish),
+      workflowTools: this.workflowTools(snapshot, agentId, publish),
       causationId: promptEvent.eventId
     });
     for (const event of events) {
@@ -296,6 +293,7 @@ export class SessionManager {
     const maxIterationsPerAgent = 2;
     const initialGraphSize = snapshot.graph.nodes.length + snapshot.graph.edges.length + 1;
     const maxSteps = Math.max(1, initialGraphSize * maxIterationsPerAgent * 2);
+    let instantiatedPlanDuringActivation = false;
 
     for (let step = 0; step < maxSteps; step += 1) {
       snapshot = await this.store.readSnapshot(snapshot.sessionId);
@@ -368,8 +366,16 @@ export class SessionManager {
           }, publish);
           await this.runWorkflowAgent(snapshot, edge.to, `Workflow message from ${edge.from}: ${edge.id}`, message.eventId, publish);
           runCounts.set(edge.to, (runCounts.get(edge.to) ?? 0) + 1);
+        } else {
+          const plan = await this.latestUninstantiatedPlan(snapshot.sessionId);
+          if (plan) {
+            await this.instantiatePlan(snapshot.sessionId, plan.id, orchestratorId, publish);
+            runCounts.set(orchestratorId, (runCounts.get(orchestratorId) ?? 0) + 1);
+            instantiatedPlanDuringActivation = true;
+          }
         }
       }));
+      if (instantiatedPlanDuringActivation) break;
     }
 
     const stopSummary = spec.stopCriteria.length > 0 ? spec.stopCriteria.join("; ") : "workflow graph reached quiescence";
@@ -416,11 +422,16 @@ export class SessionManager {
       roleName: role?.name,
       instructions: role?.promptTemplate,
       apiKey: await this.openAIApiKey(snapshot.debugMode),
-      workflowTools: this.workflowTools(snapshot.sessionId, publish),
+      workflowTools: this.workflowTools(snapshot, agentId, publish),
       causationId
     });
     for (const event of events) {
       await this.appendAndPublish(event, publish);
+    }
+    if (role?.toolPolicy.canCreatePlans) {
+      await this.createPlanForSession(snapshot, agentId, causationId, publish);
+    } else if (snapshot.debugMode) {
+      await this.applyDeterministicRoleWork(snapshot, agentId, causationId, publish);
     }
     await this.store.rebuildSnapshot(snapshot.sessionId);
   }
@@ -435,76 +446,133 @@ export class SessionManager {
     }
   }
 
-  private async seedDebugWorkspaceEvents(sessionId: string, workspaceRoot: string, publish: (event: SessionEvent) => void) {
-    const policy = { sessionId, workspaceRoot, allowedRoots: ["."] };
-    await this.appendAndPublish(this.workspace.claimFile(policy, "implementor", "src/debug-feature.ts"), publish);
-    await this.appendAndPublish(this.workspace.recordTouched(policy, "implementor", "src/debug-feature.ts"), publish);
+  private async createPlanForSession(snapshot: SessionSnapshot, agentId: string, causationId: string, publish: (event: SessionEvent) => void) {
+    if ((await this.plansForSession(snapshot.sessionId)).length > 0) return;
+    const goal = await this.sessionGoal(snapshot.sessionId, snapshot.title);
+    const plan = PlanSpecSchema.parse({
+      version: 1,
+      id: `plan_${crypto.randomUUID()}`,
+      name: "Build, review, and QA the requested CLI",
+      description: "Planner-selected plan that delegates implementation, review, and acceptance checks to workflow agents.",
+      goal,
+      workflows: [
+        {
+          workflowId: "implementation-review-qa",
+          agentPrompts: {
+            implementor: `Implement the requested coding task in the session workspace. Goal: ${goal}`,
+            reviewer: "Review the implementation for correctness, CLI behavior, and test coverage. Send actionable findings to the implementor.",
+            qa: "Run acceptance checks for the generated CLI and report pass/fail with the commands used."
+          },
+          doneCriteria: {
+            implementor: ["Creates runnable source files inside the workspace", "Records touched files"],
+            reviewer: ["Reviews transcript and touched files", "Reports no blocking findings or clear fixes"],
+            qa: ["Runs deterministic acceptance checks", "Reports passing output"]
+          }
+        }
+      ],
+      globalDoneCriteria: ["All planned workflows are instantiated", "Implementation exists in the workspace", "QA reports acceptance"]
+    });
     await this.appendAndPublish({
       eventId: makeEventId(),
-      sessionId,
-      agentId: "reviewer",
+      sessionId: snapshot.sessionId,
+      agentId,
       timestamp: new Date().toISOString(),
-      type: "message.sent",
-      payload: {
-        from: "reviewer",
-        to: "implementor",
-        text: "Debug reviewer: add a deterministic QA assertion before marking complete."
-      }
+      type: "plan.created",
+      payload: { plan },
+      causationId
     }, publish);
-    await this.appendAndPublish({
-      eventId: makeEventId(),
-      sessionId,
-      agentId: "implementor",
-      timestamp: new Date().toISOString(),
-      type: "agent.status",
-      payload: { status: "waiting" }
-    }, publish);
-    await this.store.rebuildSnapshot(sessionId);
   }
 
-  private async implementHelloWorldPython(
-    snapshot: SessionSnapshot,
-    userText: string,
-    publish: (event: SessionEvent) => void,
-    publishLog: (entry: DebugLogEntry) => void
-  ) {
-    const agentId = "orchestrator";
-    const filePath = "hello_world.py";
-    const absolutePath = path.join(snapshot.workspaceRoot, filePath);
+  private async applyDeterministicRoleWork(snapshot: SessionSnapshot, agentId: string, causationId: string, publish: (event: SessionEvent) => void) {
+    const role = this.resolveRole(snapshot, agentId);
+    const roleId = role?.id ?? snapshot.graph.nodes.find((node) => node.id === agentId)?.roleId ?? agentId;
+    if (roleId === "implementor") {
+      await this.writeTemperatureConverter(snapshot, agentId, causationId, publish);
+    } else if (roleId === "reviewer") {
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId,
+        timestamp: new Date().toISOString(),
+        type: "message.sent",
+        payload: {
+          from: agentId,
+          to: this.firstNodeForRole(snapshot, "implementor") ?? "implementor",
+          text: "Review complete: converter formulas, CLI parsing, and unit tests are covered. No blocking findings."
+        },
+        causationId
+      }, publish);
+    } else if (roleId === "qa") {
+      await this.runTemperatureConverterQA(snapshot, agentId, causationId, publish);
+    }
+  }
+
+  private async writeTemperatureConverter(snapshot: SessionSnapshot, agentId: string, causationId: string, publish: (event: SessionEvent) => void) {
+    const role = this.resolveRole(snapshot, agentId);
+    if (!role?.toolPolicy.canWrite) {
+      throw new Error(`Agent ${agentId} is not allowed to write files.`);
+    }
+    const files = new Map([
+      ["temperature_converter.py", temperatureConverterProgram()],
+      ["test_temperature_converter.py", temperatureConverterTests()]
+    ]);
+    const policy = { sessionId: snapshot.sessionId, workspaceRoot: snapshot.workspaceRoot, allowedRoots: role.workspace.allowedRoots };
+    for (const [relativePath, content] of files) {
+      const absolutePath = path.join(snapshot.workspaceRoot, relativePath);
+      const callId = `call_${crypto.randomUUID()}`;
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId,
+        timestamp: new Date().toISOString(),
+        type: "agent.tool_call",
+        payload: { callId, toolName: "workspace.write_file", input: { path: relativePath } },
+        causationId
+      }, publish);
+      await mkdir(path.dirname(absolutePath), { recursive: true });
+      await writeFile(absolutePath, content, "utf8");
+      await this.appendAndPublish(this.workspace.claimFile(policy, agentId, relativePath), publish);
+      await this.appendAndPublish(this.workspace.recordTouched(policy, agentId, relativePath), publish);
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId,
+        timestamp: new Date().toISOString(),
+        type: "agent.tool_result",
+        payload: { callId, toolName: "workspace.write_file", output: `Wrote ${absolutePath}` },
+        causationId
+      }, publish);
+    }
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.message",
+      payload: {
+        text: "Implemented temperature_converter.py with celsius/fahrenheit conversion helpers, a CLI, and unittest coverage.",
+        runtime: "workflow-engine"
+      },
+      causationId
+    }, publish);
+  }
+
+  private async runTemperatureConverterQA(snapshot: SessionSnapshot, agentId: string, causationId: string, publish: (event: SessionEvent) => void) {
+    const role = this.resolveRole(snapshot, agentId);
+    if (!role?.toolPolicy.canRunCommands) {
+      throw new Error(`Agent ${agentId} is not allowed to run commands.`);
+    }
     const callId = `call_${crypto.randomUUID()}`;
     await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId: snapshot.sessionId,
       agentId,
       timestamp: new Date().toISOString(),
-      type: "message.sent",
-      payload: { from: "user", to: agentId, text: userText }
-    }, publish);
-    await this.appendAndPublish({
-      eventId: makeEventId(),
-      sessionId: snapshot.sessionId,
-      agentId,
-      timestamp: new Date().toISOString(),
-      type: "agent.status",
-      payload: { status: "working" }
-    }, publish);
-    await this.appendAndPublish({
-      eventId: makeEventId(),
-      sessionId: snapshot.sessionId,
-      agentId,
-      timestamp: new Date().toISOString(),
       type: "agent.tool_call",
-      payload: {
-        callId,
-        toolName: "workspace.write_file",
-        input: { path: filePath }
-      }
+      payload: { callId, toolName: "workspace.run_command", input: { command: "python3 -m unittest test_temperature_converter.py" } },
+      causationId
     }, publish);
-    await mkdir(path.dirname(absolutePath), { recursive: true });
-    await writeFile(absolutePath, "print(\"Hello, world!\")\n", "utf8");
-    const policy = { sessionId: snapshot.sessionId, workspaceRoot: snapshot.workspaceRoot, allowedRoots: ["."] };
-    await this.appendAndPublish(this.workspace.claimFile(policy, agentId, filePath), publish);
-    await this.appendAndPublish(this.workspace.recordTouched(policy, agentId, filePath), publish);
+    const result = await execFileAsync("python3", ["-m", "unittest", "test_temperature_converter.py"], { cwd: snapshot.workspaceRoot });
     await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId: snapshot.sessionId,
@@ -513,19 +581,11 @@ export class SessionManager {
       type: "agent.tool_result",
       payload: {
         callId,
-        toolName: "workspace.write_file",
-        output: `Wrote ${absolutePath}`
-      }
+        toolName: "workspace.run_command",
+        output: `${result.stdout}${result.stderr}`
+      },
+      causationId
     }, publish);
-    await this.appendDebugLog(
-      snapshot.sessionId,
-      "info",
-      "workspace",
-      "Created hello world Python program",
-      { path: absolutePath },
-      publishLog,
-      agentId
-    );
     await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId: snapshot.sessionId,
@@ -533,19 +593,11 @@ export class SessionManager {
       timestamp: new Date().toISOString(),
       type: "agent.message",
       payload: {
-        text: `Created ${filePath}. Run it with: python3 ${filePath}`,
+        text: "QA acceptance passed: python3 -m unittest test_temperature_converter.py completed successfully.",
         runtime: "workflow-engine"
-      }
+      },
+      causationId
     }, publish);
-    await this.appendAndPublish({
-      eventId: makeEventId(),
-      sessionId: snapshot.sessionId,
-      agentId,
-      timestamp: new Date().toISOString(),
-      type: "agent.status",
-      payload: { status: "idle" }
-    }, publish);
-    await this.store.rebuildSnapshot(snapshot.sessionId);
   }
 
   private async instantiateWorkflow(
@@ -553,6 +605,16 @@ export class SessionManager {
     workflowId: string,
     anchorNodeId = "orchestrator",
     publish: (event: SessionEvent) => void
+  ) {
+    return (await this.instantiateWorkflowGraph(sessionId, workflowId, anchorNodeId, publish)).snapshot;
+  }
+
+  private async instantiateWorkflowGraph(
+    sessionId: string,
+    workflowId: string,
+    anchorNodeId: string,
+    publish: (event: SessionEvent) => void,
+    causationId?: string
   ) {
     await this.store.assertSessionExists(sessionId);
     const snapshot = await this.store.readSnapshot(sessionId);
@@ -594,7 +656,8 @@ export class SessionManager {
       agentId: anchorNodeId,
       timestamp: new Date().toISOString(),
       type: "workflow.instantiated",
-      payload: { workflowId, anchorNodeId, nodeMap: Object.fromEntries(nodeMap) }
+      payload: { workflowId, anchorNodeId, nodeMap: Object.fromEntries(nodeMap) },
+      causationId
     }, publish);
     for (const node of newNodes) {
       await this.appendAndPublish({
@@ -620,23 +683,181 @@ export class SessionManager {
       payload: { graph },
       causationId: instantiated.eventId
     }, publish);
+    return {
+      snapshot: await this.store.rebuildSnapshot(sessionId),
+      spec,
+      nodeMap,
+      eventId: instantiated.eventId
+    };
+  }
+
+  private async instantiatePlan(sessionId: string, planId: string, anchorNodeId: string, publish: (event: SessionEvent) => void) {
+    const plan = (await this.plansForSession(sessionId)).find((candidate) => candidate.id === planId);
+    if (!plan) throw new Error(`Unknown plan: ${planId}`);
+    const alreadyInstantiated = (await this.store.readEvents(sessionId))
+      .some((event) => event.type === "plan.instantiated" && event.payload.planId === planId);
+    if (alreadyInstantiated) return this.store.readSnapshot(sessionId);
+    const instantiated = await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId: anchorNodeId,
+      timestamp: new Date().toISOString(),
+      type: "plan.instantiated",
+      payload: { planId, workflowIds: plan.workflows.map((workflow) => workflow.workflowId) }
+    }, publish);
+    for (const workflow of plan.workflows) {
+      const graphResult = await this.instantiateWorkflowGraph(
+        sessionId,
+        workflow.workflowId,
+        workflow.anchorNodeId ?? anchorNodeId,
+        publish,
+        instantiated.eventId
+      );
+      await this.executeMappedWorkflow(graphResult.snapshot, graphResult.spec, graphResult.nodeMap, workflow, graphResult.eventId, publish);
+    }
     return this.store.rebuildSnapshot(sessionId);
   }
 
-  private workflowTools(sessionId: string, publish: (event: SessionEvent) => void) {
-    return {
-      listWorkflows: () => this.workflows.list().map((workflow) => ({
+  private async executeMappedWorkflow(
+    snapshot: SessionSnapshot,
+    spec: ReturnType<WorkflowEngine["get"]>,
+    nodeMap: Map<string, string>,
+    planWorkflow: PlanSpec["workflows"][number],
+    causationId: string,
+    publish: (event: SessionEvent) => void
+  ) {
+    const orchestratorId = nodeMap.get(spec.lifecycle.orchestratorNodeId) ?? spec.lifecycle.orchestratorNodeId;
+    const runCounts = new Map<string, number>([[orchestratorId, 1]]);
+    const processedHandoffs = new Set<string>();
+    const maxIterationsPerAgent = 1;
+    const maxSteps = Math.max(1, spec.edges.length * maxIterationsPerAgent + 2);
+    for (let step = 0; step < maxSteps; step += 1) {
+      snapshot = await this.store.readSnapshot(snapshot.sessionId);
+      const readyHandoff = spec.edges
+        .filter((edge) => edge.kind === "handoff")
+        .find((edge) => {
+          const from = nodeMap.get(edge.from) ?? edge.from;
+          const to = nodeMap.get(edge.to) ?? edge.to;
+          return (runCounts.get(from) ?? 0) > 0
+            && !processedHandoffs.has(edge.id)
+            && this.canSchedule(snapshot, from)
+            && this.canSchedule(snapshot, to);
+        });
+      if (readyHandoff) {
+        processedHandoffs.add(readyHandoff.id);
+        const from = nodeMap.get(readyHandoff.from) ?? readyHandoff.from;
+        const to = nodeMap.get(readyHandoff.to) ?? readyHandoff.to;
+        const handoff = await this.appendAndPublish({
+          eventId: makeEventId(),
+          sessionId: snapshot.sessionId,
+          agentId: from,
+          timestamp: new Date().toISOString(),
+          type: "handoff.created",
+          payload: { from, to, reason: `plan workflow ${planWorkflow.workflowId}: ${readyHandoff.description}` },
+          causationId
+        }, publish);
+        if (to !== orchestratorId) {
+          await this.appendAndPublish({
+            eventId: makeEventId(),
+            sessionId: snapshot.sessionId,
+            agentId: to,
+            timestamp: new Date().toISOString(),
+            type: "agent.status",
+            payload: { status: snapshot.debugMode ? "waiting" : "working" },
+            causationId: handoff.eventId
+          }, publish);
+          await this.runWorkflowAgent(snapshot, to, this.promptForPlanAgent(planWorkflow, readyHandoff.to), handoff.eventId, publish);
+          runCounts.set(to, (runCounts.get(to) ?? 0) + 1);
+        }
+        continue;
+      }
+
+      const readyMessage = spec.edges
+        .filter((edge) => edge.kind === "message")
+        .find((edge) => {
+          const from = nodeMap.get(edge.from) ?? edge.from;
+          const to = nodeMap.get(edge.to) ?? edge.to;
+          return (runCounts.get(from) ?? 0) > 0
+            && (runCounts.get(to) ?? 0) < maxIterationsPerAgent
+            && this.canSchedule(snapshot, from)
+            && this.canSchedule(snapshot, to);
+        });
+      if (!readyMessage) break;
+      const from = nodeMap.get(readyMessage.from) ?? readyMessage.from;
+      const to = nodeMap.get(readyMessage.to) ?? readyMessage.to;
+      const message = await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: from,
+        timestamp: new Date().toISOString(),
+        type: "message.sent",
+        payload: { from, to, text: `Plan workflow message: ${readyMessage.description}` },
+        causationId
+      }, publish);
+      if (to !== orchestratorId) {
+        await this.appendAndPublish({
+          eventId: makeEventId(),
+          sessionId: snapshot.sessionId,
+          agentId: to,
+          timestamp: new Date().toISOString(),
+          type: "agent.status",
+          payload: { status: snapshot.debugMode ? "waiting" : "working" },
+          causationId: message.eventId
+        }, publish);
+        await this.runWorkflowAgent(snapshot, to, this.promptForPlanAgent(planWorkflow, readyMessage.to), message.eventId, publish);
+        runCounts.set(to, (runCounts.get(to) ?? 0) + 1);
+      }
+    }
+  }
+
+  private workflowTools(snapshot: SessionSnapshot, agentId: string, publish: (event: SessionEvent) => void) {
+    const role = this.resolveRole(snapshot, agentId);
+    const roleId = role?.id ?? snapshot.graph.nodes.find((node) => node.id === agentId)?.roleId;
+    const tools: NonNullable<Parameters<AgentRuntime["runTurn"]>[0]["workflowTools"]> = {};
+    if (role?.toolPolicy.canRead) {
+      tools.listWorkflows = () => this.workflows.list().map((workflow) => ({
         id: workflow.id,
         name: workflow.name,
         description: workflow.description,
         nodes: workflow.nodes.map((node) => ({ id: node.id, roleId: node.roleId, label: node.label })),
         edges: workflow.edges.map((edge) => ({ id: edge.id, from: edge.from, to: edge.to, kind: edge.kind, description: edge.description }))
-      })),
-      instantiateWorkflow: async (workflowId: string) => {
-        await this.instantiateWorkflow(sessionId, workflowId, "orchestrator", publish);
-        return `Instantiated workflow ${workflowId} into session ${sessionId}.`;
-      }
-    };
+      }));
+    }
+    if (role?.toolPolicy.canCreatePlans) {
+      tools.createPlan = async (rawPlan: unknown) => {
+        const plan = PlanSpecSchema.parse(rawPlan);
+        await this.appendAndPublish({
+          eventId: makeEventId(),
+          sessionId: snapshot.sessionId,
+          agentId,
+          timestamp: new Date().toISOString(),
+          type: "plan.created",
+          payload: { plan }
+        }, publish);
+        return `Created plan ${plan.id}.`;
+      };
+    }
+    if (roleId === "orchestrator") {
+      tools.instantiatePlan = async (planId: string) => {
+        await this.instantiatePlan(snapshot.sessionId, planId, agentId, publish);
+        return `Instantiated plan ${planId}.`;
+      };
+      tools.inspectAgents = () => snapshot.graph;
+      tools.readWorkspaceFile = async (relativePath: string) => readFile(containedPath(snapshot.workspaceRoot, relativePath), "utf8");
+      tools.sendAgentMessage = async (targetAgentId: string, text: string) => {
+        this.assertAgentCanReceive(await this.store.readSnapshot(snapshot.sessionId), targetAgentId);
+        await this.appendAndPublish({
+          eventId: makeEventId(),
+          sessionId: snapshot.sessionId,
+          agentId,
+          timestamp: new Date().toISOString(),
+          type: "message.sent",
+          payload: { from: agentId, to: targetAgentId, text }
+        }, publish);
+        return `Sent message to ${targetAgentId}.`;
+      };
+    }
+    return tools;
   }
 
   private async assertLiveCredentialAvailable() {
@@ -645,6 +866,41 @@ export class SessionManager {
     const tokens = await this.auth.loadTokens();
     if (tokens?.accessToken && !(await this.auth.needsRefresh())) return;
     throw new Error("OpenAI authentication is required for non-debug sessions. Connect OpenAI OAuth in Settings or set OPENAI_API_KEY.");
+  }
+
+  private async plansForSession(sessionId: string) {
+    const plans: PlanSpec[] = [];
+    for (const event of await this.store.readEvents(sessionId)) {
+      if (event.type !== "plan.created") continue;
+      const parsed = PlanSpecSchema.safeParse(event.payload.plan);
+      if (parsed.success) plans.push(parsed.data);
+    }
+    return plans;
+  }
+
+  private async latestUninstantiatedPlan(sessionId: string) {
+    const plans = await this.plansForSession(sessionId);
+    const instantiatedPlanIds = new Set(
+      (await this.store.readEvents(sessionId))
+        .filter((event) => event.type === "plan.instantiated")
+        .map((event) => String(event.payload.planId ?? ""))
+    );
+    return [...plans].reverse().find((plan) => !instantiatedPlanIds.has(plan.id));
+  }
+
+  private async sessionGoal(sessionId: string, fallback: string) {
+    const created = (await this.store.readEvents(sessionId)).find((event) => event.type === "session.created");
+    return String(created?.payload.goal ?? created?.payload.title ?? fallback);
+  }
+
+  private firstNodeForRole(snapshot: SessionSnapshot, roleId: string) {
+    return snapshot.graph.nodes.find((node) => node.roleId === roleId)?.id;
+  }
+
+  private promptForPlanAgent(planWorkflow: PlanSpec["workflows"][number], nodeId: string) {
+    return planWorkflow.agentPrompts[nodeId]
+      ?? planWorkflow.agentPrompts[nodeId.split("_").at(-1) ?? nodeId]
+      ?? `Execute plan workflow ${planWorkflow.workflowId} as ${nodeId}.`;
   }
 
   private async openAIApiKey(debugMode: boolean) {
@@ -764,11 +1020,6 @@ function firstLine(text: string) {
   return text.trim().split("\n").find(Boolean)?.slice(0, 80) ?? "";
 }
 
-function isHelloWorldPythonPrompt(text: string) {
-  const normalized = text.toLowerCase();
-  return normalized.includes("hello world") && normalized.includes("python");
-}
-
 function runKey(sessionId: string, agentId: string) {
   return `${sessionId}:${agentId}`;
 }
@@ -781,4 +1032,74 @@ function uniqueId(base: string, existing: Set<string>) {
     suffix += 1;
   }
   return candidate;
+}
+
+function containedPath(root: string, relativePath: string) {
+  const resolvedRoot = path.resolve(root);
+  const resolved = path.resolve(resolvedRoot, relativePath);
+  if (resolved !== resolvedRoot && !resolved.startsWith(`${resolvedRoot}${path.sep}`)) {
+    throw new Error(`Path escapes workspace: ${relativePath}`);
+  }
+  return resolved;
+}
+
+function temperatureConverterProgram() {
+  return `#!/usr/bin/env python3
+import argparse
+
+
+def celsius_to_fahrenheit(celsius: float) -> float:
+    return (celsius * 9 / 5) + 32
+
+
+def fahrenheit_to_celsius(fahrenheit: float) -> float:
+    return (fahrenheit - 32) * 5 / 9
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Convert temperatures between Celsius and Fahrenheit.")
+    parser.add_argument("value", type=float)
+    parser.add_argument("--from-unit", choices=["c", "f"], required=True)
+    args = parser.parse_args()
+    if args.from_unit == "c":
+        print(f"{celsius_to_fahrenheit(args.value):.2f} F")
+    else:
+        print(f"{fahrenheit_to_celsius(args.value):.2f} C")
+
+
+if __name__ == "__main__":
+    main()
+`;
+}
+
+function temperatureConverterTests() {
+  return `import subprocess
+import sys
+import unittest
+
+from temperature_converter import celsius_to_fahrenheit, fahrenheit_to_celsius
+
+
+class TemperatureConverterTests(unittest.TestCase):
+    def test_celsius_to_fahrenheit(self):
+        self.assertEqual(celsius_to_fahrenheit(0), 32)
+        self.assertEqual(celsius_to_fahrenheit(100), 212)
+
+    def test_fahrenheit_to_celsius(self):
+        self.assertEqual(fahrenheit_to_celsius(32), 0)
+        self.assertEqual(fahrenheit_to_celsius(212), 100)
+
+    def test_cli(self):
+        result = subprocess.run(
+            [sys.executable, "temperature_converter.py", "100", "--from-unit", "c"],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(result.stdout.strip(), "212.00 F")
+
+
+if __name__ == "__main__":
+    unittest.main()
+`;
 }

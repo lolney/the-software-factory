@@ -36,6 +36,7 @@ struct ToolPolicy: Hashable, Codable {
     var canRead: Bool
     var canWrite: Bool
     var canRunCommands: Bool
+    var canCreatePlans: Bool?
 }
 
 struct RoleWorkspace: Hashable, Codable {
@@ -232,6 +233,11 @@ enum JSONValue: Codable, Hashable {
 
     var boolValue: Bool? {
         if case .bool(let value) = self { return value }
+        return nil
+    }
+
+    var objectValue: [String: JSONValue]? {
+        if case .object(let value) = self { return value }
         return nil
     }
 }
