@@ -2,6 +2,7 @@ import Foundation
 import Observation
 
 @Observable
+@MainActor
 final class DaemonClient {
     private var task: URLSessionWebSocketTask?
     var isConnected = false
@@ -44,20 +45,22 @@ final class DaemonClient {
 
     private func receiveNext() {
         task?.receive { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success(.data(let data)):
-                self.onMessage?(data)
-                self.receiveNext()
-            case .success(.string(let text)):
-                self.onMessage?(Data(text.utf8))
-                self.receiveNext()
-            case .failure(let error):
-                print("WebSocket receive failed: \(error)")
-                self.task = nil
-                self.isConnected = false
-            @unknown default:
-                self.receiveNext()
+            Task { @MainActor in
+                guard let self else { return }
+                switch result {
+                case .success(.data(let data)):
+                    self.onMessage?(data)
+                    self.receiveNext()
+                case .success(.string(let text)):
+                    self.onMessage?(Data(text.utf8))
+                    self.receiveNext()
+                case .failure(let error):
+                    print("WebSocket receive failed: \(error)")
+                    self.task = nil
+                    self.isConnected = false
+                @unknown default:
+                    self.receiveNext()
+                }
             }
         }
     }

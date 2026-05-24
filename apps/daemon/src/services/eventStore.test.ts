@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -38,6 +38,34 @@ describe("EventStore", () => {
       expect(rebuilt.title).toBe("Test session");
       expect(rebuilt.transcript).toHaveLength(3);
       expect(rebuilt.graph.nodes[0]?.unreadCount).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("skips malformed JSONL lines and keeps valid events replayable", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-events-"));
+    try {
+      const store = new EventStore(root);
+      await store.createSession({
+        sessionId: "sess_repair",
+        title: "Repair session",
+        workspaceRoot: root,
+        workflowId: "orchestrator-basic",
+        graph: {
+          sessionId: "sess_repair",
+          workflowId: "orchestrator-basic",
+          nodes: [
+            { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", status: "idle", color: "#4f7cff", unreadCount: 0, errorCount: 0 }
+          ],
+          edges: [],
+          activeToolCalls: []
+        }
+      });
+      await appendFile(path.join(root, "sess_repair", "events.jsonl"), "{not-json}\n", "utf8");
+
+      const rebuilt = await store.rebuildSnapshot("sess_repair");
+      expect(rebuilt.transcript.length).toBeGreaterThan(0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

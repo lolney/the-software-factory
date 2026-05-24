@@ -55,7 +55,7 @@ final class SessionStore {
         }
         daemon.sendRequest(method: "createSession", params: [
             "prompt": prompt,
-            "workspaceRoot": FileManager.default.currentDirectoryPath,
+            "workspaceRoot": FileManager.default.homeDirectoryForCurrentUser.path,
             "workflowId": debugMode ? "implementor-reviewer" : "planner-orchestrator",
             "debugMode": debugMode
         ])
@@ -126,6 +126,43 @@ final class SessionStore {
 
     private func apply(event: SessionEvent) {
         transcript.append(transcriptItem(event))
+        switch event.type {
+        case "session.created":
+            if let graphValue = event.payload["graph"],
+               let data = try? JSONEncoder().encode(graphValue),
+               let decoded = try? JSONDecoder().decode(GraphState.self, from: data) {
+                graph = decoded
+            }
+            let title = event.payload["title"]?.stringValue ?? event.sessionId
+            let workflowId = event.payload["workflowId"]?.stringValue ?? graph.workflowId
+            sessions.removeAll { $0.id == event.sessionId }
+            sessions.insert(SessionSummary(id: event.sessionId, title: title, detail: workflowId), at: 0)
+            selectedSessionId = event.sessionId
+        case "agent.status":
+            guard let agentId = event.agentId,
+                  let statusText = event.payload["status"]?.stringValue,
+                  let status = AgentStatus(rawValue: statusText),
+                  let index = graph.nodes.firstIndex(where: { $0.id == agentId }) else { return }
+            graph.nodes[index].status = status
+        case "handoff.created", "message.sent":
+            guard let from = event.payload["from"]?.stringValue,
+                  let to = event.payload["to"]?.stringValue else { return }
+            for index in graph.edges.indices where graph.edges[index].from == from && graph.edges[index].to == to {
+                graph.edges[index].active = true
+            }
+        case "agent.message":
+            if let agentId = event.agentId,
+               let index = graph.nodes.firstIndex(where: { $0.id == agentId }) {
+                graph.nodes[index].unreadCount += 1
+            }
+        case "error":
+            if let agentId = event.agentId,
+               let index = graph.nodes.firstIndex(where: { $0.id == agentId }) {
+                graph.nodes[index].errorCount += 1
+            }
+        default:
+            break
+        }
     }
 
     private func transcriptItem(_ event: SessionEvent) -> TranscriptItem {

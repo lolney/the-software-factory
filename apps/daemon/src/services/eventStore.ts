@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, writeFile, appendFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile, appendFile, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import {
@@ -121,10 +121,19 @@ export class EventStore {
     const file = path.join(this.sessionDir(sessionId), "events.jsonl");
     if (!existsSync(file)) return [];
     const raw = await readFile(file, "utf8");
-    return raw
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => SessionEventSchema.parse(JSON.parse(line)));
+    const events: SessionEvent[] = [];
+    const invalidLines: string[] = [];
+    for (const line of raw.split("\n").filter(Boolean)) {
+      try {
+        events.push(SessionEventSchema.parse(JSON.parse(line)));
+      } catch {
+        invalidLines.push(line);
+      }
+    }
+    if (invalidLines.length > 0) {
+      await appendFile(path.join(this.sessionDir(sessionId), "events.invalid.jsonl"), invalidLines.join("\n") + "\n", "utf8");
+    }
+    return events;
   }
 
   async readSnapshot(sessionId: string): Promise<SessionSnapshot> {
@@ -137,11 +146,10 @@ export class EventStore {
 
   async writeSnapshot(snapshot: SessionSnapshot) {
     GraphStateSchema.parse(snapshot.graph);
-    await writeFile(
-      path.join(this.sessionDir(snapshot.sessionId), "snapshot.json"),
-      `${JSON.stringify(snapshot, null, 2)}\n`,
-      "utf8"
-    );
+    const snapshotPath = path.join(this.sessionDir(snapshot.sessionId), "snapshot.json");
+    const tmpPath = `${snapshotPath}.${process.pid}.tmp`;
+    await writeFile(tmpPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+    await rename(tmpPath, snapshotPath);
   }
 
   async rebuildSnapshot(sessionId: string): Promise<SessionSnapshot> {

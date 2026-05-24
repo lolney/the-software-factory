@@ -14,6 +14,7 @@ npm install
 npm run typecheck
 npm test
 npm run daemon
+npm run dev:node -w @multiagent/daemon # fallback when Bun is unavailable
 ./script/build_and_run.sh
 ```
 
