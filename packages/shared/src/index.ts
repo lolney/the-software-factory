@@ -125,6 +125,17 @@ export const GraphStateSchema = z.object({
   })).default([])
 });
 
+export const SessionSnapshotSchema = z.object({
+  sessionId: z.string(),
+  title: z.string(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  workspaceRoot: z.string(),
+  workflowId: z.string(),
+  graph: GraphStateSchema,
+  transcript: z.array(SessionEventSchema)
+});
+
 export const DaemonRequestSchema = z.discriminatedUnion("method", [
   z.object({ id: z.string(), method: z.literal("createSession"), params: z.object({ prompt: z.string(), workspaceRoot: z.string().optional(), workflowId: z.string().optional() }) }),
   z.object({ id: z.string(), method: z.literal("sendMessage"), params: z.object({ sessionId: z.string(), targetAgentId: z.string().optional(), text: z.string() }) }),
@@ -158,5 +169,6 @@ export type RoleSpec = z.infer<typeof RoleSpecSchema>;
 export type WorkflowSpec = z.infer<typeof WorkflowSpecSchema>;
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
 export type GraphState = z.infer<typeof GraphStateSchema>;
+export type SessionSnapshot = z.infer<typeof SessionSnapshotSchema>;
 export type DaemonRequest = z.infer<typeof DaemonRequestSchema>;
 export type DaemonResponse = z.infer<typeof DaemonResponseSchema>;

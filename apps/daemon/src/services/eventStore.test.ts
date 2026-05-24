@@ -1,0 +1,45 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import { EventStore, makeEventId } from "./eventStore.js";
+
+describe("EventStore", () => {
+  it("persists events and rebuilds a snapshot from JSONL", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-events-"));
+    try {
+      const store = new EventStore(root);
+      const snapshot = await store.createSession({
+        sessionId: "sess_test",
+        title: "Test session",
+        workspaceRoot: root,
+        workflowId: "orchestrator-basic",
+        graph: {
+          sessionId: "sess_test",
+          workflowId: "orchestrator-basic",
+          nodes: [
+            { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", status: "idle", color: "#4f7cff", unreadCount: 0, errorCount: 0 }
+          ],
+          edges: [],
+          activeToolCalls: []
+        }
+      });
+
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: "orchestrator",
+        timestamp: new Date().toISOString(),
+        type: "agent.message",
+        payload: { text: "hello" }
+      });
+
+      const rebuilt = await store.rebuildSnapshot(snapshot.sessionId);
+      expect(rebuilt.title).toBe("Test session");
+      expect(rebuilt.transcript).toHaveLength(3);
+      expect(rebuilt.graph.nodes[0]?.unreadCount).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
