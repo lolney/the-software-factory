@@ -1,5 +1,8 @@
 import type { DaemonRequest, SessionEvent } from "@multiagent/shared";
 import { type GraphState, type SessionSnapshot } from "@multiagent/shared";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { EventStore, makeEventId } from "./eventStore.js";
 import { OpenAIAgentRuntime, type AgentRuntime } from "./agentRuntime.js";
 import { WorkflowEngine } from "./workflowEngine.js";
@@ -14,6 +17,7 @@ export class SessionManager {
   private readonly workspace = new WorkspaceCoordinator();
   private readonly activeRuns = new Map<string, AbortController>();
   private readonly auth = new AuthManager();
+  private roleOverridesLoaded = false;
 
   constructor(private readonly options: { sessionsRoot: string; runtime?: AgentRuntime }) {
     this.store = new EventStore(options.sessionsRoot);
@@ -26,34 +30,53 @@ export class SessionManager {
 
   async handle(request: DaemonRequest, publish: (event: SessionEvent) => void = () => {}): Promise<unknown> {
     await this.workflows.loadPredefined();
+    await this.loadRoleOverrides();
     switch (request.method) {
       case "listSessions":
         return {
           sessionsRoot: this.options.sessionsRoot,
           workflows: this.workflows.list(),
-          codexOAuth: {
-            clientId: CODEX_PUBLIC_CLIENT_ID,
-            hasTokens: Boolean(await this.auth.loadTokens())
-          },
+          roles: this.workflows.listRoles(),
+          codexOAuth: await this.auth.status(),
           sessions: await this.store.listSessions()
         };
+      case "getAuthStatus":
+        return this.auth.status();
+      case "beginOpenAIOAuth":
+        return this.auth.beginOAuth();
+      case "disconnectOpenAIOAuth":
+        await this.auth.deleteTokens();
+        return this.auth.status();
+      case "listRoles":
+        return { roles: this.workflows.listRoles() };
+      case "upsertRole":
+        this.workflows.upsertRole(request.params.role);
+        await this.saveRoleOverrides();
+        return { roles: this.workflows.listRoles() };
+      case "listWorkflows":
+        return { workflows: this.workflows.list() };
       case "createSession": {
         const sessionId = `sess_${crypto.randomUUID()}`;
         const title = firstLine(request.params.prompt) || "Untitled Session";
         const spec = this.workflows.get(request.params.workflowId ?? (request.params.debugMode ? "implementor-reviewer" : "planner-orchestrator"));
         const graph: GraphState = this.workflows.graphForSession(sessionId, spec);
+        const workspaceRoot = await this.store.workspaceDir(sessionId);
+        if (!request.params.debugMode) {
+          await this.assertLiveCredentialAvailable();
+        }
         const snapshot = await this.store.createSession({
           sessionId,
           title,
-          workspaceRoot: request.params.workspaceRoot ?? process.cwd(),
+          workspaceRoot,
           workflowId: spec.id,
           debugMode: request.params.debugMode,
           graph
         });
+        await this.initializeWorkspace(workspaceRoot, title);
         await this.recordOrchestratorTurn(snapshot, request.params.prompt, request.params.debugMode, publish);
         await this.activateWorkflowStart(snapshot, publish);
         if (request.params.debugMode) {
-          await this.seedDebugWorkspaceEvents(sessionId, request.params.workspaceRoot ?? process.cwd(), publish);
+          await this.seedDebugWorkspaceEvents(sessionId, workspaceRoot, publish);
         }
         return this.store.readSnapshot(sessionId);
       }
@@ -99,7 +122,13 @@ export class SessionManager {
           payload: { ackedEventId: request.params.eventId }
         }, publish);
         return this.store.rebuildSnapshot(request.params.sessionId);
+      case "instantiateWorkflow":
+        return this.instantiateWorkflow(request.params.sessionId, request.params.workflowId, request.params.anchorNodeId, publish);
     }
+  }
+
+  async completeOAuthCallback(callbackUrl: string) {
+    return this.auth.completeOAuthCallback(callbackUrl);
   }
 
   emit(event: SessionEvent) {
@@ -146,6 +175,7 @@ export class SessionManager {
       debugMode,
       roleName: role?.name,
       instructions: role?.promptTemplate,
+      apiKey: await this.openAIApiKey(debugMode),
       causationId: promptEvent.eventId
     });
     for (const event of events) {
@@ -311,6 +341,7 @@ export class SessionManager {
       debugMode: snapshot.debugMode,
       roleName: role?.name,
       instructions: role?.promptTemplate,
+      apiKey: await this.openAIApiKey(snapshot.debugMode),
       causationId
     });
     for (const event of events) {
@@ -355,6 +386,121 @@ export class SessionManager {
     await this.store.rebuildSnapshot(sessionId);
   }
 
+  private async instantiateWorkflow(
+    sessionId: string,
+    workflowId: string,
+    anchorNodeId = "orchestrator",
+    publish: (event: SessionEvent) => void
+  ) {
+    await this.store.assertSessionExists(sessionId);
+    const snapshot = await this.store.readSnapshot(sessionId);
+    const spec = this.workflows.get(workflowId);
+    const subgraph = this.workflows.graphForSession(sessionId, spec);
+    const existingNodeIds = new Set(snapshot.graph.nodes.map((node) => node.id));
+    const existingEdgeIds = new Set(snapshot.graph.edges.map((edge) => edge.id));
+    const nodeMap = new Map<string, string>();
+    const newNodes: GraphState["nodes"] = [];
+    for (const node of subgraph.nodes) {
+      if (node.roleId === "orchestrator" || node.id === spec.lifecycle.orchestratorNodeId) {
+        nodeMap.set(node.id, anchorNodeId);
+        continue;
+      }
+      const mappedId = uniqueId(`${workflowId}_${node.id}`, existingNodeIds);
+      existingNodeIds.add(mappedId);
+      nodeMap.set(node.id, mappedId);
+      newNodes.push({ ...node, id: mappedId, status: "idle", unreadCount: 0, errorCount: 0 });
+    }
+    const newEdges: GraphState["edges"] = [];
+    for (const edge of subgraph.edges) {
+      const from = nodeMap.get(edge.from) ?? edge.from;
+      const to = nodeMap.get(edge.to) ?? edge.to;
+      const mappedId = uniqueId(`${workflowId}_${edge.id}`, existingEdgeIds);
+      existingEdgeIds.add(mappedId);
+      if (snapshot.graph.edges.some((candidate) => candidate.from === from && candidate.to === to && candidate.kind === edge.kind)) {
+        continue;
+      }
+      newEdges.push({ ...edge, id: mappedId, from, to, active: false });
+    }
+    const graph: GraphState = {
+      ...snapshot.graph,
+      nodes: [...snapshot.graph.nodes, ...newNodes],
+      edges: [...snapshot.graph.edges, ...newEdges]
+    };
+    const instantiated = await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId: anchorNodeId,
+      timestamp: new Date().toISOString(),
+      type: "workflow.instantiated",
+      payload: { workflowId, anchorNodeId, nodeMap: Object.fromEntries(nodeMap) }
+    }, publish);
+    for (const node of newNodes) {
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId,
+        agentId: node.id,
+        timestamp: new Date().toISOString(),
+        type: "agent.created",
+        payload: {
+          roleId: node.roleId,
+          label: node.label,
+          color: node.color
+        },
+        causationId: instantiated.eventId
+      }, publish);
+    }
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId: anchorNodeId,
+      timestamp: new Date().toISOString(),
+      type: "graph.updated",
+      payload: { graph },
+      causationId: instantiated.eventId
+    }, publish);
+    return this.store.rebuildSnapshot(sessionId);
+  }
+
+  private async assertLiveCredentialAvailable() {
+    if (this.options.runtime) return;
+    if (process.env.OPENAI_API_KEY) return;
+    const tokens = await this.auth.loadTokens();
+    if (tokens?.accessToken) return;
+    throw new Error("OpenAI authentication is required for non-debug sessions. Connect OpenAI OAuth in Settings or set OPENAI_API_KEY.");
+  }
+
+  private async openAIApiKey(debugMode: boolean) {
+    if (debugMode) return undefined;
+    if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
+    return (await this.auth.loadTokens())?.accessToken;
+  }
+
+  private async initializeWorkspace(workspaceRoot: string, title: string) {
+    await mkdir(workspaceRoot, { recursive: true });
+    const readme = path.join(workspaceRoot, "README.md");
+    if (!existsSync(readme)) {
+      await writeFile(readme, `# ${title}\n\nThis workspace was initialized for a local multiagent coding session.\n`, "utf8");
+    }
+  }
+
+  private async loadRoleOverrides() {
+    if (this.roleOverridesLoaded) return;
+    this.roleOverridesLoaded = true;
+    const file = this.roleOverridesPath();
+    if (!existsSync(file)) return;
+    const roles = JSON.parse(await readFile(file, "utf8")) as unknown[];
+    this.workflows.setRoleOverrides(roles as never);
+  }
+
+  private async saveRoleOverrides() {
+    await mkdir(path.dirname(this.roleOverridesPath()), { recursive: true });
+    await writeFile(this.roleOverridesPath(), JSON.stringify(this.workflows.listRoles(), null, 2) + "\n", "utf8");
+  }
+
+  private roleOverridesPath() {
+    return path.join(this.options.sessionsRoot, "config", "roles.json");
+  }
+
   private addSubscriber(sessionId: string, publish: (event: SessionEvent) => void) {
     const subscribers = this.subscribers.get(sessionId) ?? new Set<(event: SessionEvent) => void>();
     subscribers.add(publish);
@@ -390,4 +536,14 @@ function firstLine(text: string) {
 
 function runKey(sessionId: string, agentId: string) {
   return `${sessionId}:${agentId}`;
+}
+
+function uniqueId(base: string, existing: Set<string>) {
+  let candidate = base.replace(/[^A-Za-z0-9_-]/g, "_");
+  let suffix = 2;
+  while (existing.has(candidate)) {
+    candidate = `${base}_${suffix}`.replace(/[^A-Za-z0-9_-]/g, "_");
+    suffix += 1;
+  }
+  return candidate;
 }

@@ -17,6 +17,27 @@ struct SessionDetailView: View {
         }
         .toolbar {
             ToolbarItemGroup {
+                Menu {
+                    Button {
+                        store.openWorkspace(tool: .vsCode)
+                    } label: {
+                        Label("VS Code", systemImage: "chevron.left.forwardslash.chevron.right")
+                    }
+                    Button {
+                        store.openWorkspace(tool: .finder)
+                    } label: {
+                        Label("Finder", systemImage: "folder")
+                    }
+                    Button {
+                        store.openWorkspace(tool: .iTerm)
+                    } label: {
+                        Label("iTerm", systemImage: "terminal")
+                    }
+                } label: {
+                    Label("Open", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+                .disabled(store.currentWorkspaceRoot == nil)
+
                 Button {
                     store.connectAndRefresh()
                 } label: {

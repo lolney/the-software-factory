@@ -11,7 +11,21 @@ export function createDaemonServer(options: DaemonServerOptions) {
 
   return Bun.serve({
     port: options.port,
-    fetch(request, server) {
+    async fetch(request, server) {
+      const url = new URL(request.url);
+      if (url.pathname === "/oauth/callback") {
+        try {
+          await manager.completeOAuthCallback(request.url);
+          return new Response("OpenAI OAuth connected. You can close this window and return to Multiagent Coding.", {
+            headers: { "content-type": "text/plain" }
+          });
+        } catch (error) {
+          return new Response(error instanceof Error ? error.message : String(error), {
+            status: 400,
+            headers: { "content-type": "text/plain" }
+          });
+        }
+      }
       if (server.upgrade(request)) {
         return undefined;
       }

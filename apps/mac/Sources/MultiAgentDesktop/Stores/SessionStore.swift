@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Observation
 
 @MainActor
@@ -6,12 +7,17 @@ import Observation
 final class SessionStore {
     var sessions: [SessionSummary] = []
     var selectedSessionId: String?
+    var selectedSidebarItem: String?
     var graph = GraphState(sessionId: "", workflowId: "", nodes: [], edges: [])
     var transcript: [TranscriptItem] = []
+    var roles: [RoleSpec] = []
+    var workflows: [WorkflowSpec] = []
+    var authStatus: AuthStatus?
+    var currentWorkspaceRoot: String?
     var presentNewSession = false
     var composerText = ""
     var connectionStatus = "Disconnected"
-    var debugMode = true
+    var debugMode = false
     var isCreatingSession = false
     var lastError: String?
     var selectedAgentId: String?
@@ -80,7 +86,8 @@ final class SessionStore {
             SessionSummary(id: "local-preview", title: "Local Preview", detail: "Daemon not connected")
         ]
         selectedSessionId = sessions.first?.id
-        selectedAgentId = "orchestrator"
+        selectedSidebarItem = sessions.first?.id
+        selectedAgentId = nil
         resetPreview()
         daemon.onMessage = { [weak self] data in
             Task { @MainActor in
@@ -109,6 +116,13 @@ final class SessionStore {
         connectionStatus = daemon.isConnected ? "Connected" : "Connecting"
         lastError = nil
         daemon.sendRequest(method: "listSessions", params: [:])
+        refreshCatalogs()
+    }
+
+    func refreshCatalogs() {
+        daemon.sendRequest(method: "listRoles", params: [:])
+        daemon.sendRequest(method: "listWorkflows", params: [:])
+        daemon.sendRequest(method: "getAuthStatus", params: [:])
     }
 
     func createSession(prompt: String) {
@@ -128,15 +142,24 @@ final class SessionStore {
         let workflowId = selectedWorkflowId(for: prompt)
         daemon.sendRequest(method: "createSession", params: [
             "prompt": prompt,
-            "workspaceRoot": FileManager.default.homeDirectoryForCurrentUser.path,
             "workflowId": workflowId,
             "debugMode": debugMode
         ])
     }
 
+    func selectSidebarItem(_ item: String?) {
+        selectedSidebarItem = item
+        guard let item else { return }
+        if item == "roles" || item == "workflows" {
+            return
+        }
+        selectSession(item)
+    }
+
     func selectSession(_ sessionId: String?) {
         guard let sessionId else { return }
         selectedSessionId = sessionId
+        selectedSidebarItem = sessionId
         guard sessionId != "local-preview" else {
             resetPreview()
             return
@@ -185,6 +208,63 @@ final class SessionStore {
         daemon.sendRequest(method: "cancelAgent", params: ["sessionId": selectedSessionId, "agentId": selectedControlAgentId])
     }
 
+    func saveRole(_ role: RoleSpec) {
+        guard let payload = jsonObject(role) else { return }
+        daemon.sendRequest(method: "upsertRole", params: ["role": payload])
+    }
+
+    func addRole() {
+        let role = RoleSpec(
+            id: "custom_role_\(Int(Date().timeIntervalSince1970))",
+            name: "New Role",
+            color: "#7f8c8d",
+            promptTemplate: "Describe this role's responsibilities.",
+            model: "gpt-5.4",
+            toolPolicy: ToolPolicy(canRead: true, canWrite: false, canRunCommands: false),
+            workspace: RoleWorkspace(allowedRoots: ["."]),
+            expectedOutputs: [],
+            reviewResponsibilities: []
+        )
+        roles.append(role)
+        saveRole(role)
+    }
+
+    func instantiateWorkflow(_ workflowId: String) {
+        guard let selectedSessionId, selectedSessionId != "local-preview" else {
+            lastError = "Select a real session before instantiating a workflow."
+            return
+        }
+        daemon.sendRequest(method: "instantiateWorkflow", params: ["sessionId": selectedSessionId, "workflowId": workflowId])
+    }
+
+    func beginOpenAIOAuth() {
+        daemon.sendRequest(method: "beginOpenAIOAuth", params: [:])
+    }
+
+    func refreshAuthStatus() {
+        daemon.sendRequest(method: "getAuthStatus", params: [:])
+    }
+
+    func disconnectOpenAIOAuth() {
+        daemon.sendRequest(method: "disconnectOpenAIOAuth", params: [:])
+    }
+
+    func openWorkspace(tool: WorkspaceOpenTool = .vsCode) {
+        guard let currentWorkspaceRoot else {
+            lastError = "This session does not have a workspace yet."
+            return
+        }
+        let url = URL(fileURLWithPath: currentWorkspaceRoot)
+        switch tool {
+        case .finder:
+            NSWorkspace.shared.open(url)
+        case .vsCode:
+            openApplication("Visual Studio Code", path: currentWorkspaceRoot)
+        case .iTerm:
+            openApplication("iTerm", path: currentWorkspaceRoot)
+        }
+    }
+
     private func handleDaemonMessage(_ data: Data) {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         connectionStatus = "Connected"
@@ -217,10 +297,51 @@ final class SessionStore {
         }
 
         if let resultDict = result as? [String: Any],
+           let authURL = resultDict["authorizationUrl"] as? String,
+           let url = URL(string: authURL) {
+            NSWorkspace.shared.open(url)
+            return
+        }
+
+        if let resultDict = result as? [String: Any],
+           let clientId = resultDict["clientId"] as? String,
+           let authData = try? JSONSerialization.data(withJSONObject: resultDict),
+           let decoded = try? JSONDecoder().decode(AuthStatus.self, from: authData) {
+            authStatus = decoded
+            if clientId.isEmpty { authStatus = nil }
+            return
+        }
+
+        if let resultDict = result as? [String: Any],
+           let rolesValue = resultDict["roles"],
+           let rolesData = try? JSONSerialization.data(withJSONObject: rolesValue),
+           let decodedRoles = try? JSONDecoder().decode([RoleSpec].self, from: rolesData) {
+            roles = decodedRoles
+            return
+        }
+
+        if let resultDict = result as? [String: Any],
+           let workflowsValue = resultDict["workflows"],
+           let workflowsData = try? JSONSerialization.data(withJSONObject: workflowsValue),
+           let decodedWorkflows = try? JSONDecoder().decode([WorkflowSpec].self, from: workflowsData) {
+            workflows = decodedWorkflows
+            if let rolesValue = resultDict["roles"],
+               let rolesData = try? JSONSerialization.data(withJSONObject: rolesValue),
+               let decodedRoles = try? JSONDecoder().decode([RoleSpec].self, from: rolesData) {
+                roles = decodedRoles
+            }
+            if let authValue = resultDict["codexOAuth"],
+               let authData = try? JSONSerialization.data(withJSONObject: authValue),
+               let decodedAuth = try? JSONDecoder().decode(AuthStatus.self, from: authData) {
+                authStatus = decodedAuth
+            }
+        }
+
+        if let resultDict = result as? [String: Any],
            let sessionsValue = resultDict["sessions"],
            let sessionsData = try? JSONSerialization.data(withJSONObject: sessionsValue),
             let summaries = try? JSONDecoder().decode([SessionSummary].self, from: sessionsData) {
-            sessions = summaries.map { SessionSummary(id: $0.id, title: $0.title, detail: $0.detail) }
+            sessions = summaries
             if let first = sessions.first, selectedSessionId == nil || sessions.allSatisfy({ $0.id != selectedSessionId }) {
                 selectSession(first.id)
             }
@@ -229,15 +350,16 @@ final class SessionStore {
 
     private func apply(snapshot: SessionSnapshot) {
         selectedSessionId = snapshot.sessionId
+        selectedSidebarItem = snapshot.sessionId
         subscribe(to: snapshot.sessionId)
         graph = snapshot.graph
         transcript = snapshot.transcript.map(transcriptItem)
-        if selectedAgentId == nil || graph.nodes.allSatisfy({ $0.id != selectedAgentId }) {
-            selectedAgentId = "orchestrator"
+        if let selectedAgentId, graph.nodes.allSatisfy({ $0.id != selectedAgentId }) {
+            self.selectedAgentId = nil
         }
-        let summary = SessionSummary(id: snapshot.sessionId, title: snapshot.title, detail: snapshot.workflowId)
-        sessions.removeAll { $0.id == snapshot.sessionId }
-        sessions.insert(summary, at: 0)
+        currentWorkspaceRoot = snapshot.workspaceRoot
+        let summary = SessionSummary(id: snapshot.sessionId, title: snapshot.title, detail: snapshot.workflowId, createdAt: snapshot.createdAt, workspaceRoot: snapshot.workspaceRoot)
+        upsertSessionSummary(summary)
         connectionStatus = "Connected"
         isCreatingSession = false
         isLoadingSelection = false
@@ -249,8 +371,8 @@ final class SessionStore {
             if event.type == "session.created" {
                 let title = event.payload["title"]?.stringValue ?? event.sessionId
                 let workflowId = event.payload["workflowId"]?.stringValue ?? ""
-                sessions.removeAll { $0.id == event.sessionId }
-                sessions.insert(SessionSummary(id: event.sessionId, title: title, detail: workflowId), at: 0)
+                let workspaceRoot = event.payload["workspaceRoot"]?.stringValue
+                upsertSessionSummary(SessionSummary(id: event.sessionId, title: title, detail: workflowId, createdAt: event.timestamp, workspaceRoot: workspaceRoot))
             }
             return
         }
@@ -264,14 +386,21 @@ final class SessionStore {
             }
             let title = event.payload["title"]?.stringValue ?? event.sessionId
             let workflowId = event.payload["workflowId"]?.stringValue ?? graph.workflowId
-            sessions.removeAll { $0.id == event.sessionId }
-            sessions.insert(SessionSummary(id: event.sessionId, title: title, detail: workflowId), at: 0)
+            currentWorkspaceRoot = event.payload["workspaceRoot"]?.stringValue
+            upsertSessionSummary(SessionSummary(id: event.sessionId, title: title, detail: workflowId, createdAt: event.timestamp, workspaceRoot: currentWorkspaceRoot))
             selectedSessionId = event.sessionId
+            selectedSidebarItem = event.sessionId
             subscribe(to: event.sessionId)
-            selectedAgentId = "orchestrator"
+            selectedAgentId = nil
             isCreatingSession = false
             isLoadingSelection = false
             presentNewSession = false
+        case "graph.updated":
+            if let graphValue = event.payload["graph"],
+               let data = try? JSONEncoder().encode(graphValue),
+               let decoded = try? JSONDecoder().decode(GraphState.self, from: data) {
+                graph = decoded
+            }
         case "agent.status":
             guard let agentId = event.agentId,
                   let statusText = event.payload["status"]?.stringValue,
@@ -314,7 +443,8 @@ final class SessionStore {
     }
 
     private func resetPreview() {
-        selectedAgentId = "orchestrator"
+        selectedAgentId = nil
+        currentWorkspaceRoot = nil
         isLoadingSelection = false
         graph = GraphState(
             sessionId: "local-preview",
@@ -332,6 +462,17 @@ final class SessionStore {
         transcript = [
             TranscriptItem(id: UUID().uuidString, agentId: "orchestrator", sender: "orchestrator", recipient: nil, type: "message", text: "Create a new session to connect to the daemon and launch a workflow.", timestamp: Date())
         ]
+    }
+
+    private func upsertSessionSummary(_ summary: SessionSummary) {
+        if let index = sessions.firstIndex(where: { $0.id == summary.id }) {
+            sessions[index] = summary
+        } else {
+            sessions.append(summary)
+        }
+        sessions.sort { left, right in
+            (left.createdAt ?? "") > (right.createdAt ?? "")
+        }
     }
 
     private func selectedWorkflowId(for prompt: String) -> String {
@@ -365,4 +506,22 @@ final class SessionStore {
             return event.type
         }
     }
+}
+
+enum WorkspaceOpenTool {
+    case vsCode
+    case finder
+    case iTerm
+}
+
+private func jsonObject<T: Encodable>(_ value: T) -> Any? {
+    guard let data = try? JSONEncoder().encode(value) else { return nil }
+    return try? JSONSerialization.jsonObject(with: data)
+}
+
+private func openApplication(_ appName: String, path: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    process.arguments = ["-a", appName, path]
+    try? process.run()
 }

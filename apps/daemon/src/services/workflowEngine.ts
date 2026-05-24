@@ -2,10 +2,11 @@ import { readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
-import { GraphStateSchema, WorkflowSpecSchema, type GraphState, type WorkflowSpec } from "@multiagent/shared";
+import { GraphStateSchema, RoleSpecSchema, WorkflowSpecSchema, type GraphState, type RoleSpec, type WorkflowSpec } from "@multiagent/shared";
 
 export class WorkflowEngine {
   private specs = new Map<string, WorkflowSpec>();
+  private roleOverrides = new Map<string, RoleSpec>();
   private loaded = false;
 
   constructor(private readonly workflowDir = path.join(process.cwd(), "apps/daemon/src/workflows")) {
@@ -39,11 +40,37 @@ export class WorkflowEngine {
     if (!spec) {
       throw new Error(`Unknown workflow spec: ${id}`);
     }
-    return this.validate(spec);
+    return this.validate(this.withRoleOverrides(spec));
   }
 
   list() {
-    return [...this.specs.values()].map((spec) => ({ id: spec.id, name: spec.name, description: spec.description }));
+    return [...this.specs.values()].map((spec) => this.withRoleOverrides(spec));
+  }
+
+  listRoles() {
+    const roles = new Map<string, RoleSpec>();
+    for (const spec of this.specs.values()) {
+      for (const role of spec.roles) {
+        roles.set(role.id, this.roleOverrides.get(role.id) ?? role);
+      }
+    }
+    for (const [id, role] of this.roleOverrides) {
+      roles.set(id, role);
+    }
+    return [...roles.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  upsertRole(role: RoleSpec) {
+    const parsed = RoleSpecSchema.parse(role);
+    this.roleOverrides.set(parsed.id, parsed);
+    return parsed;
+  }
+
+  setRoleOverrides(roles: RoleSpec[]) {
+    this.roleOverrides.clear();
+    for (const role of roles) {
+      this.upsertRole(role);
+    }
   }
 
   graphForSession(sessionId: string, spec: WorkflowSpec): GraphState {
@@ -79,6 +106,13 @@ export class WorkflowEngine {
     const node = spec.nodes.find((candidate) => candidate.id === nodeId);
     if (!node) return undefined;
     return spec.roles.find((role) => role.id === node.roleId);
+  }
+
+  private withRoleOverrides(spec: WorkflowSpec): WorkflowSpec {
+    return {
+      ...spec,
+      roles: spec.roles.map((role) => this.roleOverrides.get(role.id) ?? role)
+    };
   }
 }
 
@@ -155,6 +189,17 @@ const baseRoles: WorkflowSpec["roles"] = [
     workspace: { allowedRoots: ["."] },
     expectedOutputs: ["Acceptance result"],
     reviewResponsibilities: ["Build", "Tests", "Manual QA"]
+  },
+  {
+    id: "researcher",
+    name: "Researcher",
+    color: "#56ccf2",
+    promptTemplate: "Research technical context, APIs, libraries, and project constraints before implementation.",
+    model: "gpt-5.4",
+    toolPolicy: { canRead: true, canWrite: false, canRunCommands: true },
+    workspace: { allowedRoots: ["."] },
+    expectedOutputs: ["Research notes", "Cited implementation context"],
+    reviewResponsibilities: ["External context", "API correctness", "Dependency risk"]
   }
 ];
 

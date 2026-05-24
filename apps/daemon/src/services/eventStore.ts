@@ -94,6 +94,12 @@ export class EventStore {
     return snapshot;
   }
 
+  async workspaceDir(sessionId: string) {
+    const workspaceDir = path.join(this.sessionDir(sessionId), "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    return workspaceDir;
+  }
+
   async append(event: SessionEvent): Promise<SessionEvent> {
     const parsed = SessionEventSchema.parse(event);
     const dir = this.sessionDir(parsed.sessionId);
@@ -121,11 +127,13 @@ export class EventStore {
       sessions.push({
         id: snapshot.sessionId,
         title: snapshot.title,
+        createdAt: snapshot.createdAt,
         updatedAt: snapshot.updatedAt,
-        workflowId: snapshot.workflowId
+        workflowId: snapshot.workflowId,
+        workspaceRoot: snapshot.workspaceRoot
       });
     }
-    return sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return sessions.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   async readEvents(sessionId: string): Promise<SessionEvent[]> {
@@ -184,7 +192,7 @@ export class EventStore {
     const debugMode = created.payload.debugMode === true;
     const updatedAt = events.at(-1)?.timestamp ?? created.timestamp;
     const parsedGraph = GraphStateSchema.safeParse(created.payload.graph);
-    const graph: GraphState = parsedGraph.success ? parsedGraph.data : {
+    let graph: GraphState = parsedGraph.success ? parsedGraph.data : {
       sessionId,
       workflowId,
       nodes: [
@@ -201,6 +209,13 @@ export class EventStore {
       edges: [],
       activeToolCalls: []
     };
+    for (const event of events) {
+      if (event.type !== "graph.updated") continue;
+      const parsed = GraphStateSchema.safeParse(event.payload.graph);
+      if (parsed.success) {
+        graph = parsed.data;
+      }
+    }
     const ackedEventIds = new Set(
       events
         .filter((event) => event.type === "client.ack")

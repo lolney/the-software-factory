@@ -8,7 +8,14 @@ struct ContentView: View {
             SidebarView(store: store)
                 .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
         } detail: {
-            SessionDetailView(store: store)
+            switch store.selectedSidebarItem {
+            case "roles":
+                RolesView(store: store)
+            case "workflows":
+                WorkflowsView(store: store)
+            default:
+                SessionDetailView(store: store)
+            }
         }
         .sheet(isPresented: $store.presentNewSession) {
             NewSessionView(store: store)

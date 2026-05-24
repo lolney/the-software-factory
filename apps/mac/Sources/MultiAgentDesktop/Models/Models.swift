@@ -20,12 +20,73 @@ struct SessionSummary: Identifiable, Hashable, Codable {
     let id: String
     var title: String
     var detail: String
+    var createdAt: String? = nil
+    var workspaceRoot: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id
         case title
         case detail = "workflowId"
+        case createdAt
+        case workspaceRoot
     }
+}
+
+struct ToolPolicy: Hashable, Codable {
+    var canRead: Bool
+    var canWrite: Bool
+    var canRunCommands: Bool
+}
+
+struct RoleWorkspace: Hashable, Codable {
+    var allowedRoots: [String]
+}
+
+struct RoleSpec: Identifiable, Hashable, Codable {
+    var id: String
+    var name: String
+    var color: String
+    var promptTemplate: String
+    var model: String
+    var toolPolicy: ToolPolicy
+    var workspace: RoleWorkspace
+    var expectedOutputs: [String]
+    var reviewResponsibilities: [String]
+}
+
+struct WorkflowNodeSpec: Identifiable, Hashable, Codable {
+    var id: String
+    var roleId: String
+    var label: String
+    var startsActive: Bool?
+}
+
+struct WorkflowEdgeSpec: Identifiable, Hashable, Codable {
+    var id: String
+    var from: String
+    var to: String
+    var kind: EdgeKind
+    var description: String
+}
+
+struct WorkflowSpec: Identifiable, Hashable, Codable {
+    var version: Int
+    var id: String
+    var name: String
+    var description: String
+    var roles: [RoleSpec]
+    var nodes: [WorkflowNodeSpec]
+    var edges: [WorkflowEdgeSpec]
+    var stopCriteria: [String]
+}
+
+struct AuthStatus: Hashable, Codable {
+    var clientId: String
+    var connected: Bool
+    var hasTokens: Bool?
+    var email: String?
+    var expiresAt: String?
+    var needsRefresh: Bool?
 }
 
 struct AgentNode: Identifiable, Hashable, Codable {

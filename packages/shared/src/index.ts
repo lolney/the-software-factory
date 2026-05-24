@@ -68,6 +68,8 @@ export const WorkflowSpecSchema = z.object({
 export const SessionEventTypeSchema = z.enum([
   "session.created",
   "session.snapshot",
+  "graph.updated",
+  "workflow.instantiated",
   "agent.created",
   "agent.status",
   "agent.message",
@@ -149,7 +151,14 @@ export const DaemonRequestSchema = z.discriminatedUnion("method", [
   z.object({ id: z.string(), method: z.literal("getSnapshot"), params: z.object({ sessionId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("listSessions"), params: z.object({}).default({}) }),
   z.object({ id: z.string(), method: z.literal("subscribeEvents"), params: z.object({ sessionId: SafeIdSchema }) }),
-  z.object({ id: z.string(), method: z.literal("ackClientEvent"), params: z.object({ sessionId: SafeIdSchema, eventId: SafeIdSchema }) })
+  z.object({ id: z.string(), method: z.literal("ackClientEvent"), params: z.object({ sessionId: SafeIdSchema, eventId: SafeIdSchema }) }),
+  z.object({ id: z.string(), method: z.literal("getAuthStatus"), params: z.object({}).default({}) }),
+  z.object({ id: z.string(), method: z.literal("beginOpenAIOAuth"), params: z.object({}).default({}) }),
+  z.object({ id: z.string(), method: z.literal("disconnectOpenAIOAuth"), params: z.object({}).default({}) }),
+  z.object({ id: z.string(), method: z.literal("listRoles"), params: z.object({}).default({}) }),
+  z.object({ id: z.string(), method: z.literal("upsertRole"), params: z.object({ role: RoleSpecSchema }) }),
+  z.object({ id: z.string(), method: z.literal("listWorkflows"), params: z.object({}).default({}) }),
+  z.object({ id: z.string(), method: z.literal("instantiateWorkflow"), params: z.object({ sessionId: SafeIdSchema, workflowId: SafeIdSchema, anchorNodeId: SafeIdSchema.optional() }) })
 ]);
 
 export const DaemonResponseSchema = z.object({

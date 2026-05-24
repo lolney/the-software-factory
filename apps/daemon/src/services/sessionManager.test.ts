@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -24,6 +25,8 @@ describe("SessionManager deterministic debug sessions", () => {
       });
 
       expect(JSON.stringify(snapshot)).toContain("implementor-reviewer");
+      expect((snapshot as { workspaceRoot: string }).workspaceRoot.endsWith(`${path.sep}workspace`)).toBe(true);
+      expect(existsSync((snapshot as { workspaceRoot: string }).workspaceRoot)).toBe(true);
       expect(events).toContain("agent.tool_call");
       expect(events).toContain("workspace.file_touched");
       expect(events).toContain("message.sent");
@@ -161,6 +164,39 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "handoff.created" && event.payload.from === "implementor" && event.payload.to === "qa")).toBe(true);
       expect(replay.events.some((event) => event.type === "agent.message" && event.agentId === "qa")).toBe(true);
       expect(replay.events.some((event) => event.type === "message.sent" && event.payload.from === "qa" && event.payload.to === "implementor")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("instantiates a workflow into an existing session graph", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      const snapshot = await manager.handle({
+        id: "req_create_base",
+        method: "createSession",
+        params: {
+          prompt: "plan only",
+          workflowId: "planner-orchestrator",
+          debugMode: true
+        }
+      }) as { sessionId: string; graph: { nodes: unknown[]; edges: unknown[] } };
+      const expanded = await manager.handle({
+        id: "req_instantiate",
+        method: "instantiateWorkflow",
+        params: { sessionId: snapshot.sessionId, workflowId: "implementor-reviewer" }
+      }) as { graph: { nodes: Array<{ id: string }>; edges: unknown[] } };
+
+      expect(expanded.graph.nodes.length).toBeGreaterThan(snapshot.graph.nodes.length);
+      expect(expanded.graph.nodes.some((node) => node.id.includes("implementor"))).toBe(true);
+      const replay = await manager.handle({
+        id: "req_sub_expanded",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string }> };
+      expect(replay.events.some((event) => event.type === "workflow.instantiated")).toBe(true);
+      expect(replay.events.some((event) => event.type === "graph.updated")).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

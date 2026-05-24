@@ -4,28 +4,37 @@ struct SidebarView: View {
     @Bindable var store: SessionStore
 
     var body: some View {
-        List(selection: $store.selectedSessionId) {
-            ForEach(store.sessions) { session in
-                HStack(spacing: 10) {
-                    Image(systemName: "rectangle.3.group.bubble")
-                        .foregroundStyle(.secondary)
-                        .frame(width: 16)
+        List(selection: $store.selectedSidebarItem) {
+            Section("Menu") {
+                Label("Roles", systemImage: "person.2")
+                    .tag("roles")
+                Label("Workflows", systemImage: "point.3.connected.trianglepath.dotted")
+                    .tag("workflows")
+            }
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(session.title)
-                            .lineLimit(1)
-                        Text(session.detail)
-                            .font(.caption)
+            Section("Sessions") {
+                ForEach(store.sessions) { session in
+                    HStack(spacing: 10) {
+                        Image(systemName: "rectangle.3.group.bubble")
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .frame(width: 16)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(session.title)
+                                .lineLimit(1)
+                            Text(session.detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
+                    .tag(session.id)
                 }
-                .tag(session.id)
             }
         }
         .listStyle(.sidebar)
-        .onChange(of: store.selectedSessionId) { _, newValue in
-            store.selectSession(newValue)
+        .onChange(of: store.selectedSidebarItem) { _, newValue in
+            store.selectSidebarItem(newValue)
         }
         .safeAreaInset(edge: .bottom) {
             Button {
@@ -36,6 +45,9 @@ struct SidebarView: View {
             }
             .buttonStyle(.borderedProminent)
             .padding()
+        }
+        .task {
+            store.connectAndRefresh()
         }
     }
 }

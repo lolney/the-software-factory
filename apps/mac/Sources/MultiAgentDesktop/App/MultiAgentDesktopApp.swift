@@ -21,7 +21,7 @@ struct MultiAgentDesktopApp: App {
         }
 
         Settings {
-            SettingsView()
+            SettingsView(store: store)
         }
     }
 }

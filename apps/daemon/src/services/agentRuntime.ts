@@ -1,4 +1,4 @@
-import { Agent, run } from "@openai/agents";
+import { Agent, run, setDefaultOpenAIKey } from "@openai/agents";
 import type { SessionEvent } from "@multiagent/shared";
 import { makeEventId } from "./eventStore.js";
 
@@ -9,6 +9,7 @@ export interface AgentTurnInput {
   debugMode: boolean;
   roleName?: string;
   instructions?: string;
+  apiKey?: string;
   signal?: AbortSignal;
   causationId?: string;
 }
@@ -20,9 +21,14 @@ export interface AgentRuntime {
 export class OpenAIAgentRuntime implements AgentRuntime {
   async runTurn(input: AgentTurnInput): Promise<SessionEvent[]> {
     if (input.signal?.aborted) return [statusEvent(input, "cancelled")];
-    if (input.debugMode || !process.env.OPENAI_API_KEY) {
+    if (input.debugMode) {
       return new DeterministicAgentRuntime().runTurn(input);
     }
+    const apiKey = input.apiKey ?? process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error("OpenAI authentication is required for non-debug sessions. Connect OpenAI OAuth in Settings or set OPENAI_API_KEY.");
+    }
+    setDefaultOpenAIKey(apiKey);
 
     const startedAt = new Date().toISOString();
     const agent = new Agent({

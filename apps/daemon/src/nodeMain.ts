@@ -7,7 +7,19 @@ const port = Number(process.env.MULTIAGENT_DAEMON_PORT ?? 3767);
 const sessionsRoot = process.env.MULTIAGENT_SESSIONS_ROOT ?? "sessions";
 const manager = new SessionManager({ sessionsRoot });
 
-const server = http.createServer((_request, response) => {
+const server = http.createServer(async (request, response) => {
+  const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
+  if (url.pathname === "/oauth/callback") {
+    try {
+      await manager.completeOAuthCallback(url.toString());
+      response.writeHead(200, { "content-type": "text/plain" });
+      response.end("OpenAI OAuth connected. You can close this window and return to Multiagent Coding.");
+    } catch (error) {
+      response.writeHead(400, { "content-type": "text/plain" });
+      response.end(error instanceof Error ? error.message : String(error));
+    }
+    return;
+  }
   response.writeHead(200, { "content-type": "application/json" });
   response.end(JSON.stringify({ ok: true, service: "multiagent-daemon-node" }));
 });

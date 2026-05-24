@@ -11,4 +11,16 @@ describe("WorkflowEngine", () => {
     expect(graph.edges.some((edge) => edge.kind === "handoff")).toBe(true);
     expect(graph.edges.some((edge) => edge.kind === "message")).toBe(true);
   });
+
+  it("exposes the default role registry including researcher", () => {
+    const engine = new WorkflowEngine();
+    const roles = engine.listRoles().map((role) => role.name);
+    expect(roles).toEqual(expect.arrayContaining([
+      "QAer",
+      "Adversarial Reviewer",
+      "Implementor",
+      "Planner",
+      "Researcher"
+    ]));
+  });
 });
