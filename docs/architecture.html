@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Multiagent Coding Workflow Engine — Current State</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #111936;
+      --panel2: #0f1730;
+      --ink: #eef3ff;
+      --muted: #a9b5d6;
+      --line: rgba(255,255,255,.16);
+      --client: #76e4f7;
+      --server: #a78bfa;
+      --shared: #fbbf24;
+      --storage: #86efac;
+      --danger: #fb7185;
+      --ok: #34d399;
+      --shadow: 0 20px 80px rgba(0,0,0,.35);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: radial-gradient(circle at 20% 0%, #1c2a59 0%, transparent 36%), radial-gradient(circle at 90% 10%, #3b1b65 0%, transparent 36%), var(--bg); color: var(--ink); line-height: 1.5; }
+    a { color: #93c5fd; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    header { padding: 56px 32px 28px; max-width: 1200px; margin: auto; }
+    h1 { margin: 0 0 12px; font-size: clamp(34px, 5vw, 64px); line-height: 1; letter-spacing: -0.05em; }
+    .subtitle { max-width: 840px; color: var(--muted); font-size: 18px; }
+    .meta { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 22px; }
+    .pill { border: 1px solid var(--line); background: rgba(255,255,255,.06); color: var(--muted); border-radius: 999px; padding: 7px 11px; font-size: 13px; }
+    main { max-width: 1200px; margin: auto; padding: 0 32px 64px; }
+    section { margin: 26px 0; }
+    h2 { font-size: 26px; letter-spacing: -0.025em; margin: 0 0 16px; }
+    h3 { font-size: 18px; margin: 0 0 10px; }
+    .grid { display: grid; gap: 16px; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    @media (max-width: 900px) { .grid.two, .grid.three { grid-template-columns: 1fr; } }
+    .card { background: linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.04)); border: 1px solid var(--line); border-radius: 24px; padding: 20px; box-shadow: var(--shadow); }
+    .card.client { border-color: color-mix(in oklab, var(--client), white 20%); }
+    .card.server { border-color: color-mix(in oklab, var(--server), white 20%); }
+    .card.shared { border-color: color-mix(in oklab, var(--shared), white 20%); }
+    .card.storage { border-color: color-mix(in oklab, var(--storage), white 20%); }
+    .small { color: var(--muted); font-size: 14px; }
+    ul { margin: 8px 0 0 20px; padding: 0; }
+    li { margin: 5px 0; }
+    code { color: #dbeafe; background: rgba(255,255,255,.08); padding: 2px 6px; border-radius: 8px; }
+    pre { overflow: auto; background: rgba(0,0,0,.28); border: 1px solid var(--line); border-radius: 18px; padding: 16px; color: #dbeafe; }
+    .diagram { background: #090e1d; border: 1px solid var(--line); border-radius: 28px; padding: 18px; box-shadow: var(--shadow); overflow-x: auto; }
+    svg { max-width: 100%; height: auto; display: block; }
+    .legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; color: var(--muted); font-size: 13px; }
+    .dot { width: 10px; height: 10px; border-radius: 999px; display: inline-block; margin-right: 6px; }
+    .kpi { font-size: 32px; font-weight: 750; letter-spacing: -0.04em; }
+    .diff { border-left: 4px solid var(--ok); padding-left: 14px; }
+    .warn { border-left: 4px solid var(--danger); padding-left: 14px; }
+    .table { width: 100%; border-collapse: collapse; overflow: hidden; border-radius: 18px; border: 1px solid var(--line); }
+    .table th, .table td { border-bottom: 1px solid var(--line); padding: 12px 14px; text-align: left; vertical-align: top; }
+    .table th { color: var(--muted); font-size: 13px; background: rgba(255,255,255,.05); }
+    .table tr:last-child td { border-bottom: 0; }
+    footer { color: var(--muted); max-width: 1200px; margin: auto; padding: 0 32px 60px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="meta">
+      <span class="pill">Repo: lolney/multiagent-coding-workflow-engine</span>
+      <span class="pill">Generated: May 24, 2026</span>
+      <span class="pill">State: local alpha</span>
+    </div>
+    <h1>Multiagent Coding Workflow Engine</h1>
+    <p class="subtitle">Current-state architecture note for the local multiagent coding workflow engine: a SwiftUI macOS client driving a Bun/TypeScript daemon over WebSockets, with shared Zod schemas acting as the protocol boundary and append-only session logs as the durable substrate.</p>
+  </header>
+
+  <main>
+    <section class="grid three">
+      <div class="card client"><div class="kpi">Client</div><p>SwiftUI desktop app in <code>apps/mac</code>. It renders sessions, graphs, transcripts, role/workflow editors, OpenAI auth state, and workspace launch actions.</p></div>
+      <div class="card server"><div class="kpi">Daemon</div><p>Bun-first TypeScript service in <code>apps/daemon</code>, with a Node fallback. It owns sessions, workflow execution, auth, event storage, workspace coordination, and OpenAI agent runtime calls.</p></div>
+      <div class="card shared"><div class="kpi">Protocol</div><p><code>packages/shared</code> defines the Zod contract for requests, responses, notifications, events, roles, workflows, snapshots, and graph state.</p></div>
+    </section>
+
+    <section>
+      <h2>What changed since the first pass</h2>
+      <div class="grid two">
+        <div class="card diff">
+          <h3>Workflow/role surface became first-class</h3>
+          <p>The client now has menu entries for <strong>Roles</strong> and <strong>Workflows</strong>, can edit role definitions, and can instantiate workflow templates into an active session graph. The daemon backs this with <code>listRoles</code>, <code>upsertRole</code>, <code>listWorkflows</code>, and <code>instantiateWorkflow</code>.</p>
+        </div>
+        <div class="card diff">
+          <h3>Auth moved from placeholder to operational seam</h3>
+          <p>The server exposes OpenAI OAuth lifecycle endpoints through WebSocket methods plus an HTTP callback route. Non-debug sessions require either <code>OPENAI_API_KEY</code> or a connected OAuth token.</p>
+        </div>
+        <div class="card diff">
+          <h3>Runtime now has a real OpenAI Agents path</h3>
+          <p><code>OpenAIAgentRuntime</code> builds role-specific agents, injects workflow tools, runs with a bounded turn count, and emits structured session events. Debug mode still routes to a deterministic runtime.</p>
+        </div>
+        <div class="card diff">
+          <h3>Workspace/event model got heavier</h3>
+          <p>The daemon initializes per-session workspaces, tracks file claims/touches/conflicts, stores append-only JSONL event streams, rebuilds snapshots, and tracks active tool calls from tool_call/tool_result event pairs.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>System boundary</h2>
+      <div class="diagram">
+        <svg width="1120" height="520" viewBox="0 0 1120 520" role="img" aria-label="Client and server system architecture diagram">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#cbd5e1"/></marker>
+            <filter id="glow"><feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#000" flood-opacity="0.35"/></filter>
+          </defs>
+          <rect x="30" y="40" width="450" height="420" rx="28" fill="#0b2530" stroke="#76e4f7" stroke-width="2" filter="url(#glow)"/>
+          <text x="58" y="78" fill="#76e4f7" font-size="22" font-weight="700">SwiftUI macOS Client</text>
+          <rect x="60" y="105" width="165" height="70" rx="16" fill="#123748" stroke="#76e4f7"/>
+          <text x="82" y="135" fill="#eef3ff" font-size="15" font-weight="700">ContentView</text><text x="82" y="156" fill="#a9b5d6" font-size="12">sidebar/detail router</text>
+          <rect x="255" y="105" width="185" height="70" rx="16" fill="#123748" stroke="#76e4f7"/>
+          <text x="277" y="135" fill="#eef3ff" font-size="15" font-weight="700">SessionStore</text><text x="277" y="156" fill="#a9b5d6" font-size="12">reactive projection</text>
+          <rect x="60" y="205" width="165" height="70" rx="16" fill="#123748" stroke="#76e4f7"/>
+          <text x="82" y="235" fill="#eef3ff" font-size="15" font-weight="700">RolesView</text><text x="82" y="256" fill="#a9b5d6" font-size="12">role editor</text>
+          <rect x="255" y="205" width="185" height="70" rx="16" fill="#123748" stroke="#76e4f7"/>
+          <text x="277" y="235" fill="#eef3ff" font-size="15" font-weight="700">WorkflowsView</text><text x="277" y="256" fill="#a9b5d6" font-size="12">instantiate templates</text>
+          <rect x="60" y="305" width="165" height="70" rx="16" fill="#123748" stroke="#76e4f7"/>
+          <text x="82" y="335" fill="#eef3ff" font-size="15" font-weight="700">SessionDetail</text><text x="82" y="356" fill="#a9b5d6" font-size="12">chat + inspector</text>
+          <rect x="255" y="305" width="185" height="70" rx="16" fill="#123748" stroke="#76e4f7"/>
+          <text x="277" y="335" fill="#eef3ff" font-size="15" font-weight="700">DaemonClient</text><text x="277" y="356" fill="#a9b5d6" font-size="12">URLSession WebSocket</text>
+          <rect x="640" y="40" width="450" height="420" rx="28" fill="#20143c" stroke="#a78bfa" stroke-width="2" filter="url(#glow)"/>
+          <text x="668" y="78" fill="#c4b5fd" font-size="22" font-weight="700">Bun/TypeScript Daemon</text>
+          <rect x="670" y="105" width="170" height="70" rx="16" fill="#2d1f52" stroke="#a78bfa"/>
+          <text x="692" y="135" fill="#eef3ff" font-size="15" font-weight="700">server.ts</text><text x="692" y="156" fill="#a9b5d6" font-size="12">WS + OAuth callback</text>
+          <rect x="870" y="105" width="180" height="70" rx="16" fill="#2d1f52" stroke="#a78bfa"/>
+          <text x="892" y="135" fill="#eef3ff" font-size="15" font-weight="700">router.ts</text><text x="892" y="156" fill="#a9b5d6" font-size="12">Zod request routing</text>
+          <rect x="670" y="205" width="170" height="70" rx="16" fill="#2d1f52" stroke="#a78bfa"/>
+          <text x="692" y="235" fill="#eef3ff" font-size="15" font-weight="700">SessionManager</text><text x="692" y="256" fill="#a9b5d6" font-size="12">application core</text>
+          <rect x="870" y="205" width="180" height="70" rx="16" fill="#2d1f52" stroke="#a78bfa"/>
+          <text x="892" y="235" fill="#eef3ff" font-size="15" font-weight="700">WorkflowEngine</text><text x="892" y="256" fill="#a9b5d6" font-size="12">roles + graphs</text>
+          <rect x="670" y="305" width="170" height="70" rx="16" fill="#2d1f52" stroke="#a78bfa"/>
+          <text x="692" y="335" fill="#eef3ff" font-size="15" font-weight="700">AgentRuntime</text><text x="692" y="356" fill="#a9b5d6" font-size="12">OpenAI Agents/debug</text>
+          <rect x="870" y="305" width="180" height="70" rx="16" fill="#2d1f52" stroke="#a78bfa"/>
+          <text x="892" y="335" fill="#eef3ff" font-size="15" font-weight="700">EventStore</text><text x="892" y="356" fill="#a9b5d6" font-size="12">JSONL + snapshots</text>
+          <rect x="505" y="206" width="110" height="100" rx="18" fill="#2a230e" stroke="#fbbf24"/>
+          <text x="532" y="240" fill="#fbbf24" font-size="15" font-weight="700">Shared</text><text x="523" y="262" fill="#eef3ff" font-size="12">Zod schemas</text><text x="525" y="282" fill="#a9b5d6" font-size="12">JSON protocol</text>
+          <line x1="440" y1="340" x2="505" y2="256" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arrow)"/>
+          <line x1="615" y1="256" x2="670" y2="140" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arrow)"/>
+          <line x1="670" y1="140" x2="440" y2="340" stroke="#cbd5e1" stroke-width="2" stroke-dasharray="7 7" marker-end="url(#arrow)"/>
+          <text x="468" y="176" fill="#dbeafe" font-size="13">ws://127.0.0.1:3767</text>
+          <text x="458" y="196" fill="#a9b5d6" font-size="12">requests, responses, event notifications</text>
+        </svg>
+        <div class="legend"><span><i class="dot" style="background:var(--client)"></i>client-owned state/UI</span><span><i class="dot" style="background:var(--server)"></i>daemon-owned execution</span><span><i class="dot" style="background:var(--shared)"></i>schema/protocol boundary</span></div>
+      </div>
+    </section>
+
+    <section class="grid two">
+      <div class="card client">
+        <h2>Client architecture</h2>
+        <p>The Swift app is a shell around <code>SessionStore</code>. Views are fairly thin: they select/edit state, then call store actions which emit WebSocket requests.</p>
+        <ul>
+          <li><strong>Navigation:</strong> <code>ContentView</code> switches between sessions, roles, and workflows.</li>
+          <li><strong>Connection:</strong> <code>DaemonClient</code> manages <code>URLSessionWebSocketTask</code>.</li>
+          <li><strong>State:</strong> <code>SessionStore</code> tracks sessions, selected agent, graph, transcript, roles, workflows, auth, debug mode, and workspace root.</li>
+          <li><strong>UI affordances:</strong> open workspace in VS Code/Finder/iTerm; pause/resume/cancel selected agent; instantiate workflows; begin/disconnect OAuth.</li>
+        </ul>
+      </div>
+      <div class="card server">
+        <h2>Server architecture</h2>
+        <p>The daemon is a local control plane. It validates requests through shared schemas, mutates append-only event logs, rebuilds snapshots, and fans events back to subscribers.</p>
+        <ul>
+          <li><strong>Transport:</strong> Bun <code>Bun.serve</code> on port 3767, with Node fallback using <code>ws</code>.</li>
+          <li><strong>Core:</strong> <code>SessionManager</code> owns request handling and workflow activation.</li>
+          <li><strong>Runtime:</strong> OpenAI Agents SDK for live mode; deterministic runtime for debug mode.</li>
+          <li><strong>Persistence:</strong> per-session <code>events.jsonl</code>, per-agent <code>transcript.jsonl</code>, and <code>snapshot.json</code>.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <h2>Client-side flow</h2>
+      <div class="diagram">
+        <svg width="1120" height="360" viewBox="0 0 1120 360" role="img" aria-label="Client architecture diagram">
+          <defs><marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#cbd5e1"/></marker></defs>
+          <rect x="40" y="45" width="170" height="80" rx="18" fill="#123748" stroke="#76e4f7"/><text x="70" y="80" fill="#eef3ff" font-size="16" font-weight="700">SwiftUI Views</text><text x="64" y="102" fill="#a9b5d6" font-size="12">Sidebar / Roles / Workflows</text>
+          <rect x="270" y="45" width="190" height="80" rx="18" fill="#123748" stroke="#76e4f7"/><text x="310" y="80" fill="#eef3ff" font-size="16" font-weight="700">SessionStore</text><text x="297" y="102" fill="#a9b5d6" font-size="12">@Observable state machine</text>
+          <rect x="530" y="45" width="190" height="80" rx="18" fill="#123748" stroke="#76e4f7"/><text x="574" y="80" fill="#eef3ff" font-size="16" font-weight="700">DaemonClient</text><text x="563" y="102" fill="#a9b5d6" font-size="12">serialize request JSON</text>
+          <rect x="790" y="45" width="250" height="80" rx="18" fill="#20143c" stroke="#a78bfa"/><text x="850" y="80" fill="#eef3ff" font-size="16" font-weight="700">Local daemon</text><text x="840" y="102" fill="#a9b5d6" font-size="12">response/event frames</text>
+          <line x1="210" y1="85" x2="270" y2="85" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arrow2)"/><line x1="460" y1="85" x2="530" y2="85" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arrow2)"/><line x1="720" y1="85" x2="790" y2="85" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arrow2)"/>
+          <path d="M 790 120 C 710 205 605 205 460 120" fill="none" stroke="#cbd5e1" stroke-width="2" stroke-dasharray="7 7" marker-end="url(#arrow2)"/><text x="545" y="206" fill="#dbeafe" font-size="13">decode snapshot/event → apply to graph/transcript</text>
+          <rect x="90" y="240" width="210" height="70" rx="16" fill="#0b2530" stroke="#76e4f7"/><text x="120" y="270" fill="#eef3ff" font-size="14" font-weight="700">Command buttons</text><text x="116" y="290" fill="#a9b5d6" font-size="12">pause/resume/cancel/open</text>
+          <rect x="360" y="240" width="210" height="70" rx="16" fill="#0b2530" stroke="#76e4f7"/><text x="394" y="270" fill="#eef3ff" font-size="14" font-weight="700">Catalog editors</text><text x="398" y="290" fill="#a9b5d6" font-size="12">roles/workflows/auth</text>
+          <rect x="630" y="240" width="260" height="70" rx="16" fill="#0b2530" stroke="#76e4f7"/><text x="676" y="270" fill="#eef3ff" font-size="14" font-weight="700">Session projection</text><text x="682" y="290" fill="#a9b5d6" font-size="12">graph, transcript, unread/error counts</text>
+        </svg>
+      </div>
+    </section>
+
+    <section>
+      <h2>Server-side flow</h2>
+      <div class="diagram">
+        <svg width="1120" height="460" viewBox="0 0 1120 460" role="img" aria-label="Server architecture diagram">
+          <defs><marker id="arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#cbd5e1"/></marker></defs>
+          <rect x="40" y="70" width="165" height="72" rx="16" fill="#2d1f52" stroke="#a78bfa"/><text x="80" y="101" fill="#eef3ff" font-size="15" font-weight="700">server.ts</text><text x="70" y="122" fill="#a9b5d6" font-size="12">WebSocket/HTTP</text>
+          <rect x="260" y="70" width="165" height="72" rx="16" fill="#2d1f52" stroke="#a78bfa"/><text x="305" y="101" fill="#eef3ff" font-size="15" font-weight="700">router.ts</text><text x="289" y="122" fill="#a9b5d6" font-size="12">validate + route</text>
+          <rect x="480" y="70" width="190" height="72" rx="16" fill="#2d1f52" stroke="#a78bfa"/><text x="522" y="101" fill="#eef3ff" font-size="15" font-weight="700">SessionManager</text><text x="520" y="122" fill="#a9b5d6" font-size="12">request handler</text>
+          <line x1="205" y1="106" x2="260" y2="106" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arrow3)"/><line x1="425" y1="106" x2="480" y2="106" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arrow3)"/>
+          <rect x="760" y="30" width="180" height="72" rx="16" fill="#192b18" stroke="#86efac"/><text x="806" y="61" fill="#eef3ff" font-size="15" font-weight="700">EventStore</text><text x="790" y="82" fill="#a9b5d6" font-size="12">events + snapshots</text>
+          <rect x="760" y="125" width="180" height="72" rx="16" fill="#2d1f52" stroke="#a78bfa"/><text x="798" y="156" fill="#eef3ff" font-size="15" font-weight="700">WorkflowEngine</text><text x="794" y="177" fill="#a9b5d6" font-size="12">roles/specs/graphs</text>
+          <rect x="760" y="220" width="180" height="72" rx="16" fill="#2d1f52" stroke="#a78bfa"/><text x="805" y="251" fill="#eef3ff" font-size="15" font-weight="700">AgentRuntime</text><text x="795" y="272" fill="#a9b5d6" font-size="12">OpenAI/debug runs</text>
+          <rect x="760" y="315" width="180" height="72" rx="16" fill="#243018" stroke="#86efac"/><text x="784" y="346" fill="#eef3ff" font-size="15" font-weight="700">WorkspaceCoordinator</text><text x="795" y="367" fill="#a9b5d6" font-size="12">file claims/touches</text>
+          <line x1="670" y1="106" x2="760" y2="66" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arrow3)"/><line x1="670" y1="106" x2="760" y2="161" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arrow3)"/><line x1="620" y1="142" x2="760" y2="256" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arrow3)"/><line x1="580" y1="142" x2="760" y2="351" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arrow3)"/>
+          <rect x="965" y="30" width="125" height="72" rx="16" fill="#2a230e" stroke="#fbbf24"/><text x="990" y="62" fill="#eef3ff" font-size="15" font-weight="700">JSONL</text><text x="990" y="82" fill="#a9b5d6" font-size="12">sessions/*</text>
+          <rect x="965" y="220" width="125" height="72" rx="16" fill="#301323" stroke="#fb7185"/><text x="989" y="252" fill="#eef3ff" font-size="15" font-weight="700">OpenAI</text><text x="985" y="272" fill="#a9b5d6" font-size="12">Agents SDK</text>
+          <line x1="940" y1="66" x2="965" y2="66" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arrow3)"/><line x1="940" y1="256" x2="965" y2="256" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arrow3)"/>
+          <path d="M 760 66 C 610 395 310 360 130 142" fill="none" stroke="#cbd5e1" stroke-width="2" stroke-dasharray="7 7" marker-end="url(#arrow3)"/><text x="305" y="385" fill="#dbeafe" font-size="13">append event → rebuild snapshot → publish notification to WebSocket subscribers</text>
+        </svg>
+      </div>
+    </section>
+
+    <section>
+      <h2>Protocol surface</h2>
+      <table class="table">
+        <thead><tr><th>Category</th><th>Methods / events</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>Session lifecycle</td><td><code>createSession</code>, <code>listSessions</code>, <code>getSnapshot</code>, <code>subscribeEvents</code>, <code>ackClientEvent</code></td><td>Create, resume, subscribe, and acknowledge event streams.</td></tr>
+          <tr><td>Agent controls</td><td><code>sendMessage</code>, <code>pauseAgent</code>, <code>resumeAgent</code>, <code>cancelAgent</code></td><td>Route user nudges and lifecycle controls to a selected graph node.</td></tr>
+          <tr><td>Catalog/auth</td><td><code>listRoles</code>, <code>upsertRole</code>, <code>listWorkflows</code>, <code>instantiateWorkflow</code>, <code>getAuthStatus</code>, <code>beginOpenAIOAuth</code>, <code>disconnectOpenAIOAuth</code></td><td>Expose editable role catalog, predefined workflows, graph insertion, and OpenAI OAuth setup.</td></tr>
+          <tr><td>Event stream</td><td><code>session.created</code>, <code>graph.updated</code>, <code>workflow.instantiated</code>, <code>agent.*</code>, <code>handoff.created</code>, <code>message.sent</code>, <code>workspace.*</code>, <code>control.*</code>, <code>error</code></td><td>The event log is the truth; snapshots are a projection.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="grid two">
+      <div class="card">
+        <h2>Workflow model</h2>
+        <p>Workflows are declarative graph specs. Each spec names roles, nodes, edges, concurrency, lifecycle, and stop criteria. Built-ins currently include:</p>
+        <ul>
+          <li><code>planner-orchestrator</code>: orchestrator asks planner for workflow details, planner replies.</li>
+          <li><code>implementor-reviewer</code>: orchestrator hands to implementor; implementor and reviewer exchange messages.</li>
+          <li><code>implementor-qa-loop</code>: implementor hands to QA; QA sends issues/acceptance back.</li>
+        </ul>
+      </div>
+      <div class="card warn">
+        <h2>Current constraints / sharp edges</h2>
+        <ul>
+          <li>The repo still presents itself as a local alpha; no release artifacts.</li>
+          <li>Auth refresh appears deliberately conservative: if OAuth needs refresh, live runs ask the user to reconnect.</li>
+          <li>The WebSocket protocol is simple JSON envelopes, not a formal JSON-RPC implementation.</li>
+          <li>Workflow execution is bounded and deterministic-ish at the graph-scheduler level, but live agent output is obviously non-deterministic.</li>
+          <li>The Swift model surface appears to be evolving; role editor references <code>canCreatePlans</code>, while the shared schema shown here defines read/write/run-command policy.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <h2>Operational mental model</h2>
+      <pre>Client intent
+  → WebSocket JSON request
+    → Zod validation
+      → SessionManager command
+        → EventStore append
+          → snapshot rebuild
+            → WebSocket event notification
+              → SessionStore applies event
+                → SwiftUI graph/transcript rerender</pre>
+      <p class="small">The architecture is basically Event Sourcing: Bedroom Edition. The client is not the authority; it’s a fast, optimistic retina over the daemon’s log-shaped soul.</p>
+    </section>
+
+    <section>
+      <h2>Source map</h2>
+      <div class="grid two">
+        <div class="card"><h3>Client</h3><ul><li><code>apps/mac/Sources/MultiAgentDesktop/App</code></li><li><code>.../Views</code></li><li><code>.../Stores/SessionStore.swift</code></li><li><code>.../Services/DaemonClient.swift</code></li><li><code>.../Models/Models.swift</code></li></ul></div>
+        <div class="card"><h3>Server</h3><ul><li><code>apps/daemon/src/server.ts</code></li><li><code>apps/daemon/src/protocol/router.ts</code></li><li><code>apps/daemon/src/services/sessionManager.ts</code></li><li><code>apps/daemon/src/services/workflowEngine.ts</code></li><li><code>apps/daemon/src/services/agentRuntime.ts</code></li><li><code>apps/daemon/src/services/eventStore.ts</code></li><li><code>apps/daemon/src/services/workspaceCoordinator.ts</code></li></ul></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>Generated from the public GitHub repository state visible on May 24, 2026. This document intentionally separates the SwiftUI client projection from the daemon control plane; confusing those two is how local-first agent tools become haunted spreadsheets with sockets.</p>
+  </footer>
+</body>
+</html>
