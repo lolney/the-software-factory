@@ -3,8 +3,10 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import {
   GraphStateSchema,
+  DebugLogEntrySchema,
   SessionEventSchema,
   SessionSnapshotSchema,
+  type DebugLogEntry,
   type GraphState,
   type SessionEvent,
   type SessionSnapshot
@@ -117,6 +119,14 @@ export class EventStore {
     return parsed;
   }
 
+  async appendDebugLog(entry: DebugLogEntry): Promise<DebugLogEntry> {
+    const parsed = DebugLogEntrySchema.parse(entry);
+    const dir = this.sessionDir(parsed.sessionId);
+    await mkdir(dir, { recursive: true });
+    await appendFile(path.join(dir, "debug.jsonl"), `${JSON.stringify(parsed)}\n`, "utf8");
+    return parsed;
+  }
+
   async listSessions() {
     await this.ensureRoot();
     const entries = await readdir(this.sessionsRoot, { withFileTypes: true });
@@ -155,6 +165,25 @@ export class EventStore {
       await appendFile(path.join(this.sessionDir(sessionId), "events.invalid.jsonl"), invalidLines.join("\n") + "\n", "utf8");
     }
     return events;
+  }
+
+  async readDebugLogs(sessionId: string): Promise<DebugLogEntry[]> {
+    const file = path.join(this.sessionDir(sessionId), "debug.jsonl");
+    if (!existsSync(file)) return [];
+    const raw = await readFile(file, "utf8");
+    const entries: DebugLogEntry[] = [];
+    const invalidLines: string[] = [];
+    for (const line of raw.split("\n").filter(Boolean)) {
+      try {
+        entries.push(DebugLogEntrySchema.parse(JSON.parse(line)));
+      } catch {
+        invalidLines.push(line);
+      }
+    }
+    if (invalidLines.length > 0) {
+      await appendFile(path.join(this.sessionDir(sessionId), "debug.invalid.jsonl"), invalidLines.join("\n") + "\n", "utf8");
+    }
+    return entries;
   }
 
   async readSnapshot(sessionId: string): Promise<SessionSnapshot> {
@@ -290,6 +319,10 @@ export class EventStore {
 
 export function makeEventId() {
   return `evt_${crypto.randomUUID()}`;
+}
+
+export function makeLogId() {
+  return `log_${crypto.randomUUID()}`;
 }
 
 function deriveStatus(events: SessionEvent[], agentId: string) {

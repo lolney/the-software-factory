@@ -12,7 +12,7 @@ struct SessionDetailView: View {
                 ComposerView(store: store)
             }
 
-            GraphPanelView(store: store)
+            InspectorPanelView(store: store)
                 .frame(minWidth: 360, idealWidth: 440)
         }
         .toolbar {

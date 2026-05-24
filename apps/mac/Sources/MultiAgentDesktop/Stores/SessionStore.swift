@@ -10,6 +10,8 @@ final class SessionStore {
     var selectedSidebarItem: String?
     var graph = GraphState(sessionId: "", workflowId: "", nodes: [], edges: [])
     var transcript: [TranscriptItem] = []
+    var debugLogs: [DebugLogItem] = []
+    var inspectorPanel: InspectorPanel = .graph
     var roles: [RoleSpec] = []
     var workflows: [WorkflowSpec] = []
     var authStatus: AuthStatus?
@@ -24,6 +26,7 @@ final class SessionStore {
     var selectedAgentId: String?
     var isLoadingSelection = false
     private var subscribedSessionIds = Set<String>()
+    private var subscribedDebugLogSessionIds = Set<String>()
     private var pendingCreatePrompt: String?
     private var pendingOpenAIOAuth = false
     private let localDaemonLauncher = LocalDaemonLauncher()
@@ -193,8 +196,10 @@ final class SessionStore {
         currentSessionDebugMode = nil
         graph = GraphState(sessionId: sessionId, workflowId: "", nodes: [], edges: [])
         transcript = []
+        debugLogs = []
         daemon.sendRequest(method: "getSnapshot", params: ["sessionId": sessionId])
         subscribe(to: sessionId)
+        subscribeDebugLogs(to: sessionId)
     }
 
     func selectAgent(_ agentId: String?) {
@@ -330,6 +335,13 @@ final class SessionStore {
             apply(event: event)
             return
         }
+        if object["method"] as? String == "debugLog",
+           let params = object["params"],
+           let entryData = try? JSONSerialization.data(withJSONObject: params),
+           let entry = try? JSONDecoder().decode(DebugLogItem.self, from: entryData) {
+            apply(debugLog: entry)
+            return
+        }
 
         if object["ok"] as? Bool == false {
             if let error = object["error"] as? [String: Any],
@@ -389,6 +401,14 @@ final class SessionStore {
         }
 
         if let resultDict = result as? [String: Any],
+           let logsValue = resultDict["logs"],
+           let logsData = try? JSONSerialization.data(withJSONObject: logsValue),
+           let decodedLogs = try? JSONDecoder().decode([DebugLogItem].self, from: logsData) {
+            debugLogs = decodedLogs
+            return
+        }
+
+        if let resultDict = result as? [String: Any],
            let sessionsValue = resultDict["sessions"],
            let sessionsData = try? JSONSerialization.data(withJSONObject: sessionsValue),
             let summaries = try? JSONDecoder().decode([SessionSummary].self, from: sessionsData) {
@@ -405,6 +425,7 @@ final class SessionStore {
         subscribe(to: snapshot.sessionId)
         graph = snapshot.graph
         transcript = snapshot.transcript.map(transcriptItem)
+        subscribeDebugLogs(to: snapshot.sessionId)
         if let selectedAgentId, graph.nodes.allSatisfy({ $0.id != selectedAgentId }) {
             self.selectedAgentId = nil
         }
@@ -431,12 +452,14 @@ final class SessionStore {
                     currentWorkspaceRoot = workspaceRoot
                     currentSessionDebugMode = event.payload["debugMode"]?.boolValue
                     transcript = []
+                    debugLogs = []
                     if let graphValue = event.payload["graph"],
                        let data = try? JSONEncoder().encode(graphValue),
                        let decoded = try? JSONDecoder().decode(GraphState.self, from: data) {
                         graph = decoded
                     }
                     subscribe(to: event.sessionId)
+                    subscribeDebugLogs(to: event.sessionId)
                     isCreatingSession = false
                     presentNewSession = false
                 }
@@ -459,6 +482,7 @@ final class SessionStore {
             selectedSessionId = event.sessionId
             selectedSidebarItem = event.sessionId
             subscribe(to: event.sessionId)
+            subscribeDebugLogs(to: event.sessionId)
             selectedAgentId = nil
             isCreatingSession = false
             isLoadingSelection = false
@@ -504,10 +528,23 @@ final class SessionStore {
         return TranscriptItem(id: event.eventId, agentId: event.agentId, sender: sender, recipient: recipient, type: event.type, text: displayText(for: event), timestamp: parseTimestamp(event.timestamp))
     }
 
+    private func apply(debugLog entry: DebugLogItem) {
+        guard entry.sessionId == selectedSessionId else { return }
+        if !debugLogs.contains(where: { $0.logId == entry.logId }) {
+            debugLogs.append(entry)
+        }
+    }
+
     private func subscribe(to sessionId: String) {
         guard !subscribedSessionIds.contains(sessionId) else { return }
         subscribedSessionIds.insert(sessionId)
         daemon.sendRequest(method: "subscribeEvents", params: ["sessionId": sessionId])
+    }
+
+    private func subscribeDebugLogs(to sessionId: String) {
+        guard !subscribedDebugLogSessionIds.contains(sessionId) else { return }
+        subscribedDebugLogSessionIds.insert(sessionId)
+        daemon.sendRequest(method: "subscribeDebugLogs", params: ["sessionId": sessionId])
     }
 
     private func resetPreview() {
@@ -531,6 +568,7 @@ final class SessionStore {
         transcript = [
             TranscriptItem(id: UUID().uuidString, agentId: "orchestrator", sender: "orchestrator", recipient: nil, type: "message", text: "Create a new session to connect to the daemon and launch a workflow.", timestamp: Date())
         ]
+        debugLogs = []
     }
 
     private func upsertSessionSummary(_ summary: SessionSummary) {

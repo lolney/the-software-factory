@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -148,6 +148,42 @@ describe("SessionManager deterministic debug sessions", () => {
 
       expect(replay.events.some((event) => event.type === "error" && event.payload.message === "model unavailable")).toBe(true);
       expect(replay.events.some((event) => event.type === "agent.status" && event.agentId === "orchestrator" && event.payload.status === "failed")).toBe(true);
+      const logs = await manager.handle({
+        id: "req_sub_logs_failure",
+        method: "subscribeDebugLogs",
+        params: { sessionId: snapshot.sessionId }
+      }) as { logs: Array<{ level: string; message: string }> };
+      expect(logs.logs.some((entry) => entry.level === "error" && entry.message === "model unavailable")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("creates a working hello world Python program in the session workspace", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      const snapshot = await manager.handle({
+        id: "req_hello_world",
+        method: "createSession",
+        params: {
+          prompt: "Let’s write a hello world Python program",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string; workspaceRoot: string };
+
+      const program = await readFile(path.join(snapshot.workspaceRoot, "hello_world.py"), "utf8");
+      expect(program).toBe("print(\"Hello, world!\")\n");
+
+      const replay = await manager.handle({
+        id: "req_sub_hello",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
+      expect(replay.events.some((event) => event.type === "workspace.file_touched" && String(event.payload.path).endsWith("hello_world.py"))).toBe(true);
+      expect(replay.events.some((event) => event.type === "agent.message" && String(event.payload.text).includes("python3 hello_world.py"))).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

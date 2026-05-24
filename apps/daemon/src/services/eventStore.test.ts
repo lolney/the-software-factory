@@ -2,7 +2,7 @@ import { appendFile, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { EventStore, makeEventId } from "./eventStore.js";
+import { EventStore, makeEventId, makeLogId } from "./eventStore.js";
 
 describe("EventStore", () => {
   it("persists events and rebuilds a snapshot from JSONL", async () => {
@@ -68,6 +68,47 @@ describe("EventStore", () => {
 
       const rebuilt = await store.rebuildSnapshot("sess_repair");
       expect(rebuilt.transcript.length).toBeGreaterThan(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("persists and repairs session debug logs", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-events-"));
+    try {
+      const store = new EventStore(root);
+      await store.createSession({
+        sessionId: "sess_logs",
+        title: "Logs session",
+        workspaceRoot: root,
+        workflowId: "orchestrator-basic",
+        debugMode: false,
+        graph: {
+          sessionId: "sess_logs",
+          workflowId: "orchestrator-basic",
+          nodes: [
+            { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", status: "idle", color: "#4f7cff", unreadCount: 0, errorCount: 0 }
+          ],
+          edges: [],
+          activeToolCalls: []
+        }
+      });
+      await store.appendDebugLog({
+        logId: makeLogId(),
+        sessionId: "sess_logs",
+        timestamp: new Date().toISOString(),
+        level: "error",
+        source: "runtime",
+        agentId: "orchestrator",
+        message: "model unavailable",
+        payload: { code: "unavailable" }
+      });
+      await appendFile(path.join(root, "sess_logs", "debug.jsonl"), "{not-json}\n", "utf8");
+
+      const logs = await store.readDebugLogs("sess_logs");
+      expect(logs).toHaveLength(1);
+      expect(logs[0]?.level).toBe("error");
+      expect(logs[0]?.message).toBe("model unavailable");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

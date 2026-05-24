@@ -13,7 +13,7 @@ export function createDaemonServer(options: DaemonServerOptions) {
     port: options.port,
     async fetch(request, server) {
       const url = new URL(request.url);
-      if (url.pathname === "/oauth/callback") {
+      if (url.pathname === "/oauth/callback" || url.pathname === "/auth/callback") {
         try {
           await manager.completeOAuthCallback(request.url);
           return new Response("OpenAI OAuth connected. You can close this window and return to Multiagent Coding.", {
@@ -37,6 +37,8 @@ export function createDaemonServer(options: DaemonServerOptions) {
       async message(ws, raw) {
         const response = await routeDaemonMessage(manager, String(raw), (event) => {
           ws.send(JSON.stringify({ method: "event", params: event }));
+        }, (entry) => {
+          ws.send(JSON.stringify({ method: "debugLog", params: entry }));
         });
         ws.send(JSON.stringify(response));
       }

@@ -100,6 +100,21 @@ export const SessionEventSchema = z.object({
   correlationId: z.string().optional()
 });
 
+export const DebugLogLevelSchema = z.enum(["debug", "info", "warn", "error"]);
+
+export const DebugLogEntrySchema = z.object({
+  logId: SafeIdSchema,
+  sessionId: SafeIdSchema,
+  timestamp: z.string().datetime(),
+  level: DebugLogLevelSchema,
+  source: z.string().default("daemon"),
+  agentId: SafeIdSchema.optional(),
+  message: z.string(),
+  payload: z.record(z.string(), z.unknown()).default({}),
+  causationId: z.string().optional(),
+  correlationId: z.string().optional()
+});
+
 export const GraphNodeSchema = z.object({
   id: SafeIdSchema,
   roleId: SafeIdSchema,
@@ -151,6 +166,7 @@ export const DaemonRequestSchema = z.discriminatedUnion("method", [
   z.object({ id: z.string(), method: z.literal("getSnapshot"), params: z.object({ sessionId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("listSessions"), params: z.object({}).default({}) }),
   z.object({ id: z.string(), method: z.literal("subscribeEvents"), params: z.object({ sessionId: SafeIdSchema }) }),
+  z.object({ id: z.string(), method: z.literal("subscribeDebugLogs"), params: z.object({ sessionId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("ackClientEvent"), params: z.object({ sessionId: SafeIdSchema, eventId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("getAuthStatus"), params: z.object({}).default({}) }),
   z.object({ id: z.string(), method: z.literal("beginOpenAIOAuth"), params: z.object({ port: z.number().int().positive().optional() }).default({}) }),
@@ -176,11 +192,18 @@ export const DaemonNotificationSchema = z.object({
   params: SessionEventSchema
 });
 
+export const DaemonDebugLogNotificationSchema = z.object({
+  method: z.literal("debugLog"),
+  params: DebugLogEntrySchema
+});
+
 export type AgentStatus = z.infer<typeof AgentStatusSchema>;
 export type WorkflowEdgeKind = z.infer<typeof WorkflowEdgeKindSchema>;
 export type RoleSpec = z.infer<typeof RoleSpecSchema>;
 export type WorkflowSpec = z.infer<typeof WorkflowSpecSchema>;
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
+export type DebugLogLevel = z.infer<typeof DebugLogLevelSchema>;
+export type DebugLogEntry = z.infer<typeof DebugLogEntrySchema>;
 export type GraphState = z.infer<typeof GraphStateSchema>;
 export type SessionSnapshot = z.infer<typeof SessionSnapshotSchema>;
 export type DaemonRequest = z.infer<typeof DaemonRequestSchema>;

@@ -29,6 +29,8 @@ wss.on("connection", (ws) => {
   ws.on("message", async (raw) => {
     const response = await routeDaemonMessage(manager, String(raw), (event) => {
       ws.send(JSON.stringify({ method: "event", params: event }));
+    }, (entry) => {
+      ws.send(JSON.stringify({ method: "debugLog", params: entry }));
     });
     ws.send(JSON.stringify(response));
   });

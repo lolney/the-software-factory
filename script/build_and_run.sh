@@ -16,6 +16,7 @@ APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+pkill -f "$ROOT_DIR/node_modules/.bin/tsx apps/daemon/src/nodeMain.ts" >/dev/null 2>&1 || true
 
 swift build --package-path "$MAC_DIR"
 BUILD_BINARY="$(swift build --package-path "$MAC_DIR" --show-bin-path)/$APP_NAME"

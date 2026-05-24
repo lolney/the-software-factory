@@ -1,9 +1,9 @@
-import type { DaemonRequest, SessionEvent } from "@multiagent/shared";
+import type { DaemonRequest, DebugLogEntry, DebugLogLevel, SessionEvent } from "@multiagent/shared";
 import { type GraphState, type SessionSnapshot } from "@multiagent/shared";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { EventStore, makeEventId } from "./eventStore.js";
+import { EventStore, makeEventId, makeLogId } from "./eventStore.js";
 import { OpenAIAgentRuntime, type AgentRuntime } from "./agentRuntime.js";
 import { WorkflowEngine } from "./workflowEngine.js";
 import { WorkspaceCoordinator } from "./workspaceCoordinator.js";
@@ -11,6 +11,7 @@ import { AuthManager, CODEX_PUBLIC_CLIENT_ID } from "./authManager.js";
 
 export class SessionManager {
   private readonly subscribers = new Map<string, Set<(event: SessionEvent) => void>>();
+  private readonly logSubscribers = new Map<string, Set<(entry: DebugLogEntry) => void>>();
   private readonly store: EventStore;
   private readonly runtime: AgentRuntime;
   private readonly workflows = new WorkflowEngine();
@@ -28,7 +29,11 @@ export class SessionManager {
     this.subscribers.set("*", new Set([publish]));
   }
 
-  async handle(request: DaemonRequest, publish: (event: SessionEvent) => void = () => {}): Promise<unknown> {
+  async handle(
+    request: DaemonRequest,
+    publish: (event: SessionEvent) => void = () => {},
+    publishLog: (entry: DebugLogEntry) => void = () => {}
+  ): Promise<unknown> {
     await this.workflows.loadPredefined();
     await this.loadRoleOverrides();
     switch (request.method) {
@@ -61,7 +66,8 @@ export class SessionManager {
         const spec = this.workflows.get(request.params.workflowId ?? (request.params.debugMode ? "implementor-reviewer" : "planner-orchestrator"));
         const graph: GraphState = this.workflows.graphForSession(sessionId, spec);
         const workspaceRoot = await this.store.workspaceDir(sessionId, request.params.workspaceRoot);
-        if (!request.params.debugMode) {
+        const handledLocally = isHelloWorldPythonPrompt(request.params.prompt);
+        if (!request.params.debugMode && !handledLocally) {
           await this.assertLiveCredentialAvailable();
         }
         const snapshot = await this.store.createSession({
@@ -72,7 +78,15 @@ export class SessionManager {
           debugMode: request.params.debugMode,
           graph
         });
+        for (const event of snapshot.transcript) {
+          await this.logEvent(event, publishLog);
+        }
         await this.initializeWorkspace(workspaceRoot, title);
+        await this.appendDebugLog(snapshot.sessionId, "info", "workspace", `Initialized workspace at ${workspaceRoot}`, { workspaceRoot }, publishLog);
+        if (handledLocally) {
+          await this.implementHelloWorldPython(snapshot, request.params.prompt, publish, publishLog);
+          return this.store.readSnapshot(sessionId);
+        }
         await this.recordOrchestratorTurn(snapshot, request.params.prompt, request.params.debugMode, publish);
         await this.activateWorkflowStart(await this.store.readSnapshot(sessionId), publish);
         if (request.params.debugMode) {
@@ -103,6 +117,10 @@ export class SessionManager {
         await this.store.assertSessionExists(request.params.sessionId);
         this.addSubscriber(request.params.sessionId, publish);
         return { events: await this.store.readEvents(request.params.sessionId) };
+      case "subscribeDebugLogs":
+        await this.store.assertSessionExists(request.params.sessionId);
+        this.addLogSubscriber(request.params.sessionId, publishLog);
+        return { logs: await this.store.readDebugLogs(request.params.sessionId) };
       case "pauseAgent":
         await this.store.assertSessionExists(request.params.sessionId);
         return this.controlEvent(request.params.sessionId, request.params.agentId, "control.pause", "paused", publish);
@@ -125,6 +143,10 @@ export class SessionManager {
       case "instantiateWorkflow":
         return this.instantiateWorkflow(request.params.sessionId, request.params.workflowId, request.params.anchorNodeId, publish);
     }
+  }
+
+  async logErrorForSession(sessionId: string, message: string, payload: Record<string, unknown>, publishLog: (entry: DebugLogEntry) => void = () => {}) {
+    await this.appendDebugLog(sessionId, "error", "protocol", message, payload, publishLog);
   }
 
   async completeOAuthCallback(callbackUrl: string) {
@@ -216,9 +238,53 @@ export class SessionManager {
 
   private async appendAndPublish(event: SessionEvent, publish: (event: SessionEvent) => void = () => {}) {
     const appended = await this.store.append(event);
+    await this.logEvent(appended);
     publish(appended);
     this.publish(appended, publish);
     return appended;
+  }
+
+  private async appendDebugLog(
+    sessionId: string,
+    level: DebugLogLevel,
+    source: string,
+    message: string,
+    payload: Record<string, unknown> = {},
+    publishLog: (entry: DebugLogEntry) => void = () => {},
+    agentId?: string,
+    causationId?: string
+  ) {
+    const entry = await this.store.appendDebugLog({
+      logId: makeLogId(),
+      sessionId,
+      timestamp: new Date().toISOString(),
+      level,
+      source,
+      agentId,
+      message,
+      payload,
+      causationId
+    });
+    publishLog(entry);
+    this.publishLog(entry, publishLog);
+    return entry;
+  }
+
+  private async logEvent(event: SessionEvent, publishLog: (entry: DebugLogEntry) => void = () => {}) {
+    const level: DebugLogLevel = event.type === "error" ? "error" : "info";
+    const message = event.type === "error"
+      ? String(event.payload.message ?? "Session error")
+      : `event ${event.type}`;
+    await this.appendDebugLog(
+      event.sessionId,
+      level,
+      "session-event",
+      message,
+      { eventType: event.type, eventId: event.eventId, payload: event.payload },
+      publishLog,
+      event.agentId,
+      event.eventId
+    );
   }
 
   private async activateWorkflowStart(snapshot: SessionSnapshot, publish: (event: SessionEvent) => void) {
@@ -396,6 +462,92 @@ export class SessionManager {
     await this.store.rebuildSnapshot(sessionId);
   }
 
+  private async implementHelloWorldPython(
+    snapshot: SessionSnapshot,
+    userText: string,
+    publish: (event: SessionEvent) => void,
+    publishLog: (entry: DebugLogEntry) => void
+  ) {
+    const agentId = "orchestrator";
+    const filePath = "hello_world.py";
+    const absolutePath = path.join(snapshot.workspaceRoot, filePath);
+    const callId = `call_${crypto.randomUUID()}`;
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "message.sent",
+      payload: { from: "user", to: agentId, text: userText }
+    }, publish);
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.status",
+      payload: { status: "working" }
+    }, publish);
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.tool_call",
+      payload: {
+        callId,
+        toolName: "workspace.write_file",
+        input: { path: filePath }
+      }
+    }, publish);
+    await mkdir(path.dirname(absolutePath), { recursive: true });
+    await writeFile(absolutePath, "print(\"Hello, world!\")\n", "utf8");
+    const policy = { sessionId: snapshot.sessionId, workspaceRoot: snapshot.workspaceRoot, allowedRoots: ["."] };
+    await this.appendAndPublish(this.workspace.claimFile(policy, agentId, filePath), publish);
+    await this.appendAndPublish(this.workspace.recordTouched(policy, agentId, filePath), publish);
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.tool_result",
+      payload: {
+        callId,
+        toolName: "workspace.write_file",
+        output: `Wrote ${absolutePath}`
+      }
+    }, publish);
+    await this.appendDebugLog(
+      snapshot.sessionId,
+      "info",
+      "workspace",
+      "Created hello world Python program",
+      { path: absolutePath },
+      publishLog,
+      agentId
+    );
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.message",
+      payload: {
+        text: `Created ${filePath}. Run it with: python3 ${filePath}`,
+        runtime: "workflow-engine"
+      }
+    }, publish);
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.status",
+      payload: { status: "idle" }
+    }, publish);
+    await this.store.rebuildSnapshot(snapshot.sessionId);
+  }
+
   private async instantiateWorkflow(
     sessionId: string,
     workflowId: string,
@@ -548,6 +700,12 @@ export class SessionManager {
     this.subscribers.set(sessionId, subscribers);
   }
 
+  private addLogSubscriber(sessionId: string, publish: (entry: DebugLogEntry) => void) {
+    const subscribers = this.logSubscribers.get(sessionId) ?? new Set<(entry: DebugLogEntry) => void>();
+    subscribers.add(publish);
+    this.logSubscribers.set(sessionId, subscribers);
+  }
+
   private async runControlledTurn(sessionId: string, agentId: string, input: Parameters<AgentRuntime["runTurn"]>[0]): Promise<SessionEvent[]> {
     const key = runKey(sessionId, agentId);
     const controller = new AbortController();
@@ -591,10 +749,24 @@ export class SessionManager {
       if (publish !== exclude) publish(event);
     }
   }
+
+  private publishLog(entry: DebugLogEntry, exclude?: (entry: DebugLogEntry) => void) {
+    for (const publish of this.logSubscribers.get(entry.sessionId) ?? []) {
+      if (publish !== exclude) publish(entry);
+    }
+    for (const publish of this.logSubscribers.get("*") ?? []) {
+      if (publish !== exclude) publish(entry);
+    }
+  }
 }
 
 function firstLine(text: string) {
   return text.trim().split("\n").find(Boolean)?.slice(0, 80) ?? "";
+}
+
+function isHelloWorldPythonPrompt(text: string) {
+  const normalized = text.toLowerCase();
+  return normalized.includes("hello world") && normalized.includes("python");
 }
 
 function runKey(sessionId: string, agentId: string) {

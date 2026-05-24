@@ -127,6 +127,35 @@ struct TranscriptItem: Identifiable, Hashable {
     var timestamp: Date
 }
 
+enum DebugLogLevel: String, Codable, CaseIterable {
+    case debug
+    case info
+    case warn
+    case error
+}
+
+struct DebugLogItem: Identifiable, Hashable, Codable {
+    var logId: String
+    var sessionId: String
+    var timestamp: String
+    var level: DebugLogLevel
+    var source: String
+    var agentId: String?
+    var message: String
+    var payload: [String: JSONValue]
+    var causationId: String?
+    var correlationId: String?
+
+    var id: String { logId }
+}
+
+enum InspectorPanel: String, CaseIterable, Identifiable {
+    case graph = "Graph"
+    case debug = "Debug"
+
+    var id: String { rawValue }
+}
+
 struct GraphState: Hashable, Codable {
     var sessionId: String
     var workflowId: String
