@@ -9,6 +9,15 @@ struct GraphPanelView: View {
                 .font(.headline)
                 .padding([.top, .horizontal])
 
+            HStack(spacing: 12) {
+                Label("Handoff", systemImage: "arrow.right")
+                Label("Message", systemImage: "ellipsis.message")
+                Label("Active", systemImage: "bolt.fill")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal)
+
             Canvas { context, size in
                 let positions = layout(size: size)
 
@@ -19,6 +28,7 @@ struct GraphPanelView: View {
                     path.addLine(to: end)
                     let style = StrokeStyle(lineWidth: edge.active ? 2.5 : 1.5, dash: edge.kind == .message ? [5, 5] : [])
                     context.stroke(path, with: .color(edge.active ? .accentColor : .secondary), style: style)
+                    drawArrowhead(context: context, from: start, to: end, active: edge.active)
                 }
 
                 for node in graph.nodes {
@@ -28,6 +38,9 @@ struct GraphPanelView: View {
                     context.stroke(Path(roundedRect: rect, cornerRadius: 8), with: .color(Color(hex: node.colorHex)), lineWidth: 2)
                     context.draw(Text(node.label).font(.caption.weight(.semibold)), at: CGPoint(x: rect.midX, y: rect.midY - 8), anchor: .center)
                     context.draw(Text(node.status.rawValue).font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: rect.midX, y: rect.midY + 12), anchor: .center)
+                    if node.errorCount > 0 || node.unreadCount > 0 {
+                        context.draw(Text(badgeText(for: node)).font(.caption2.weight(.bold)), at: CGPoint(x: rect.maxX - 10, y: rect.minY + 10), anchor: .center)
+                    }
                 }
             }
             .frame(minHeight: 320)
@@ -39,6 +52,18 @@ struct GraphPanelView: View {
                         .frame(width: 9, height: 9)
                     Text(node.label)
                     Spacer()
+                    if node.unreadCount > 0 {
+                        Text("\(node.unreadCount)")
+                            .font(.caption2.weight(.bold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.blue.opacity(0.18), in: Capsule())
+                    }
+                    if node.errorCount > 0 {
+                        Text("!\(node.errorCount)")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.red)
+                    }
                     Text(node.status.rawValue)
                         .foregroundStyle(.secondary)
                 }
@@ -54,5 +79,22 @@ struct GraphPanelView: View {
             let angle = (Double(index) / Double(graph.nodes.count)) * Double.pi * 2 - Double.pi / 2
             return (node.id, CGPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius))
         })
+    }
+
+    private func drawArrowhead(context: GraphicsContext, from start: CGPoint, to end: CGPoint, active: Bool) {
+        let angle = atan2(end.y - start.y, end.x - start.x)
+        let length: CGFloat = 10
+        let insetEnd = CGPoint(x: end.x - cos(angle) * 78, y: end.y - sin(angle) * 38)
+        var arrow = Path()
+        arrow.move(to: insetEnd)
+        arrow.addLine(to: CGPoint(x: insetEnd.x - cos(angle - .pi / 6) * length, y: insetEnd.y - sin(angle - .pi / 6) * length))
+        arrow.move(to: insetEnd)
+        arrow.addLine(to: CGPoint(x: insetEnd.x - cos(angle + .pi / 6) * length, y: insetEnd.y - sin(angle + .pi / 6) * length))
+        context.stroke(arrow, with: .color(active ? .accentColor : .secondary), lineWidth: active ? 2.5 : 1.5)
+    }
+
+    private func badgeText(for node: AgentNode) -> String {
+        if node.errorCount > 0 { return "!\(node.errorCount)" }
+        return "\(node.unreadCount)"
     }
 }

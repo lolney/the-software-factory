@@ -14,6 +14,7 @@ final class SessionStore {
     var debugMode = true
     var isCreatingSession = false
     var lastError: String?
+    private var subscribedSessionIds = Set<String>()
 
     var daemonPort: Int {
         get {
@@ -32,7 +33,7 @@ final class SessionStore {
     }
 
     var canSendComposerMessage: Bool {
-        daemon.isConnected && hasActiveSession && !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        daemon.isConnected && hasActiveSession && ![.cancelled, .failed, .completed].contains(orchestratorStatus) && !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var orchestratorStatus: AgentStatus {
@@ -70,7 +71,7 @@ final class SessionStore {
             ]
         )
         transcript = [
-            TranscriptItem(id: UUID().uuidString, agentId: "orchestrator", type: "message", text: "Create a new session to connect to the daemon and launch a workflow.", timestamp: Date())
+            TranscriptItem(id: UUID().uuidString, agentId: "orchestrator", sender: "orchestrator", recipient: nil, type: "message", text: "Create a new session to connect to the daemon and launch a workflow.", timestamp: Date())
         ]
         daemon.onMessage = { [weak self] data in
             Task { @MainActor in
@@ -99,12 +100,21 @@ final class SessionStore {
         }
         isCreatingSession = true
         lastError = nil
+        let workflowId = selectedWorkflowId(for: prompt)
         daemon.sendRequest(method: "createSession", params: [
             "prompt": prompt,
             "workspaceRoot": FileManager.default.homeDirectoryForCurrentUser.path,
-            "workflowId": debugMode ? "implementor-reviewer" : "planner-orchestrator",
+            "workflowId": workflowId,
             "debugMode": debugMode
         ])
+    }
+
+    func selectSession(_ sessionId: String?) {
+        guard let sessionId else { return }
+        selectedSessionId = sessionId
+        guard sessionId != "local-preview" else { return }
+        daemon.sendRequest(method: "getSnapshot", params: ["sessionId": sessionId])
+        subscribe(to: sessionId)
     }
 
     func sendComposerMessage() {
@@ -161,16 +171,17 @@ final class SessionStore {
         if let resultDict = result as? [String: Any],
            let sessionsValue = resultDict["sessions"],
            let sessionsData = try? JSONSerialization.data(withJSONObject: sessionsValue),
-           let summaries = try? JSONDecoder().decode([SessionSummary].self, from: sessionsData) {
+            let summaries = try? JSONDecoder().decode([SessionSummary].self, from: sessionsData) {
             sessions = summaries.map { SessionSummary(id: $0.id, title: $0.title, detail: $0.detail) }
-            if selectedSessionId == nil {
-                selectedSessionId = sessions.first?.id
+            if let first = sessions.first, selectedSessionId == nil || sessions.allSatisfy({ $0.id != selectedSessionId }) {
+                selectSession(first.id)
             }
         }
     }
 
     private func apply(snapshot: SessionSnapshot) {
         selectedSessionId = snapshot.sessionId
+        subscribe(to: snapshot.sessionId)
         graph = snapshot.graph
         transcript = snapshot.transcript.map(transcriptItem)
         let summary = SessionSummary(id: snapshot.sessionId, title: snapshot.title, detail: snapshot.workflowId)
@@ -195,6 +206,7 @@ final class SessionStore {
             sessions.removeAll { $0.id == event.sessionId }
             sessions.insert(SessionSummary(id: event.sessionId, title: title, detail: workflowId), at: 0)
             selectedSessionId = event.sessionId
+            subscribe(to: event.sessionId)
             isCreatingSession = false
             presentNewSession = false
         case "agent.status":
@@ -225,11 +237,28 @@ final class SessionStore {
     }
 
     private func transcriptItem(_ event: SessionEvent) -> TranscriptItem {
+        let sender = event.payload["from"]?.stringValue ?? event.agentId ?? "system"
+        let recipient = event.payload["to"]?.stringValue
         let text = event.payload["text"]?.stringValue
             ?? event.payload["summary"]?.stringValue
             ?? event.payload["output"]?.stringValue
             ?? event.payload["reason"]?.stringValue
             ?? event.type
-        return TranscriptItem(id: event.eventId, agentId: event.agentId, type: event.type, text: text, timestamp: Date())
+        return TranscriptItem(id: event.eventId, agentId: event.agentId, sender: sender, recipient: recipient, type: event.type, text: text, timestamp: Date())
+    }
+
+    private func subscribe(to sessionId: String) {
+        guard !subscribedSessionIds.contains(sessionId) else { return }
+        subscribedSessionIds.insert(sessionId)
+        daemon.sendRequest(method: "subscribeEvents", params: ["sessionId": sessionId])
+    }
+
+    private func selectedWorkflowId(for prompt: String) -> String {
+        guard debugMode else { return "planner-orchestrator" }
+        let lower = prompt.lowercased()
+        if lower.contains("qa") || lower.contains("test") || lower.contains("acceptance") || lower.contains("check") {
+            return "implementor-qa-loop"
+        }
+        return "implementor-reviewer"
     }
 }

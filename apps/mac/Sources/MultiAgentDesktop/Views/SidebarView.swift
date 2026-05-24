@@ -24,6 +24,9 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .onChange(of: store.selectedSessionId) { _, newValue in
+            store.selectSession(newValue)
+        }
         .safeAreaInset(edge: .bottom) {
             Button {
                 store.presentNewSession = true

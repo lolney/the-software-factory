@@ -59,6 +59,8 @@ struct AgentEdge: Identifiable, Hashable, Codable {
 struct TranscriptItem: Identifiable, Hashable {
     let id: String
     var agentId: String?
+    var sender: String
+    var recipient: String?
     var type: String
     var text: String
     var timestamp: Date

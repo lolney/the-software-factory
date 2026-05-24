@@ -47,10 +47,13 @@ export class SessionManager {
         return this.store.readSnapshot(sessionId);
       }
       case "getSnapshot":
+        await this.store.assertSessionExists(request.params.sessionId);
         return this.store.readSnapshot(request.params.sessionId);
       case "sendMessage": {
+        await this.store.assertSessionExists(request.params.sessionId);
         const snapshot = await this.store.readSnapshot(request.params.sessionId);
         const targetAgentId = request.params.targetAgentId ?? "orchestrator";
+        this.assertAgentCanReceive(snapshot, targetAgentId);
         const nudge = await this.appendAndPublish({
           eventId: makeEventId(),
           sessionId: request.params.sessionId,
@@ -59,17 +62,21 @@ export class SessionManager {
           type: "control.nudge",
           payload: { text: request.params.text }
         }, publish);
-        await this.recordOrchestratorTurn(snapshot, request.params.text, snapshot.debugMode, publish, nudge.eventId);
+        await this.recordAgentTurn(snapshot, targetAgentId, request.params.text, snapshot.debugMode, publish, nudge.eventId);
         return this.store.readSnapshot(request.params.sessionId);
       }
       case "subscribeEvents":
+        await this.store.assertSessionExists(request.params.sessionId);
         this.addSubscriber(request.params.sessionId, publish);
         return { events: await this.store.readEvents(request.params.sessionId) };
       case "pauseAgent":
+        await this.store.assertSessionExists(request.params.sessionId);
         return this.controlEvent(request.params.sessionId, request.params.agentId, "control.pause", "paused", publish);
       case "resumeAgent":
+        await this.store.assertSessionExists(request.params.sessionId);
         return this.controlEvent(request.params.sessionId, request.params.agentId, "control.resume", "idle", publish);
       case "cancelAgent":
+        await this.store.assertSessionExists(request.params.sessionId);
         return this.controlEvent(request.params.sessionId, request.params.agentId, "control.cancel", "cancelled", publish);
       case "ackClientEvent":
         return { accepted: true };
@@ -87,22 +94,33 @@ export class SessionManager {
     publish: (event: SessionEvent) => void,
     causationId?: string
   ) {
+    await this.recordAgentTurn(snapshot, "orchestrator", userText, debugMode, publish, causationId);
+  }
+
+  private async recordAgentTurn(
+    snapshot: SessionSnapshot,
+    agentId: string,
+    userText: string,
+    debugMode: boolean,
+    publish: (event: SessionEvent) => void,
+    causationId?: string
+  ) {
     const promptEvent = await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId: snapshot.sessionId,
-      agentId: "orchestrator",
+      agentId,
       timestamp: new Date().toISOString(),
       type: "message.sent",
       payload: {
         from: "user",
-        to: "orchestrator",
+        to: agentId,
         text: userText
       },
       causationId
     }, publish);
     const events = await this.runtime.runTurn({
       sessionId: snapshot.sessionId,
-      agentId: "orchestrator",
+      agentId,
       prompt: userText,
       debugMode,
       causationId: promptEvent.eventId
@@ -171,6 +189,18 @@ export class SessionManager {
         payload: { status: snapshot.debugMode ? "waiting" : "working" },
         causationId: handoff.eventId
       }, publish);
+      if (edge.to !== "orchestrator") {
+        const events = await this.runtime.runTurn({
+          sessionId: snapshot.sessionId,
+          agentId: edge.to,
+          prompt: `Workflow handoff from ${edge.from}: ${edge.id}`,
+          debugMode: snapshot.debugMode,
+          causationId: handoff.eventId
+        });
+        for (const event of events) {
+          await this.appendAndPublish(event, publish);
+        }
+      }
     }
     for (const edge of graph.edges.filter((candidate) => candidate.kind === "message")) {
       await this.appendAndPublish({
@@ -200,6 +230,16 @@ export class SessionManager {
       }
     }
     await this.store.rebuildSnapshot(snapshot.sessionId);
+  }
+
+  private assertAgentCanReceive(snapshot: SessionSnapshot, agentId: string) {
+    const node = snapshot.graph.nodes.find((candidate) => candidate.id === agentId);
+    if (!node) {
+      throw new Error(`Unknown agent ${agentId} in session ${snapshot.sessionId}`);
+    }
+    if (["cancelled", "failed", "completed"].includes(node.status)) {
+      throw new Error(`Agent ${agentId} cannot receive messages while ${node.status}.`);
+    }
   }
 
   private async seedDebugWorkspaceEvents(sessionId: string, workspaceRoot: string, publish: (event: SessionEvent) => void) {

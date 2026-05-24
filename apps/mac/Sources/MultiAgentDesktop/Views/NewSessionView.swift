@@ -11,7 +11,7 @@ struct NewSessionView: View {
 
             TextEditor(text: $prompt)
                 .font(.body)
-                .frame(width: 620, height: 260)
+                .frame(minWidth: 420, idealWidth: 620, maxWidth: 720, minHeight: 180, idealHeight: 260, maxHeight: 320)
                 .scrollContentBackground(.hidden)
                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
 

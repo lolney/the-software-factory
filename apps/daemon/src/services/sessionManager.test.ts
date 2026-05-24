@@ -88,4 +88,53 @@ describe("SessionManager deterministic debug sessions", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects path-traversal session ids before writing control events", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      await expect(manager.handle({
+        id: "req_pause",
+        method: "pauseAgent",
+        params: { sessionId: "../escape", agentId: "orchestrator" }
+      })).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("routes targeted messages to the requested agent", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      const snapshot = await manager.handle({
+        id: "req_create",
+        method: "createSession",
+        params: {
+          prompt: "debug review",
+          workspaceRoot: root,
+          workflowId: "implementor-reviewer",
+          debugMode: true
+        }
+      }) as { sessionId: string };
+      await manager.handle({
+        id: "req_target",
+        method: "sendMessage",
+        params: {
+          sessionId: snapshot.sessionId,
+          targetAgentId: "reviewer",
+          text: "review this"
+        }
+      });
+      const replay = await manager.handle({
+        id: "req_sub",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
+      expect(replay.events.some((event) => event.type === "message.sent" && event.agentId === "reviewer" && event.payload.to === "reviewer")).toBe(true);
+      expect(replay.events.some((event) => event.type === "agent.message" && event.agentId === "reviewer")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

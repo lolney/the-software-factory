@@ -27,7 +27,14 @@ export class EventStore {
   }
 
   sessionDir(sessionId: string) {
-    return path.join(this.sessionsRoot, sessionId);
+    return containedPath(this.sessionsRoot, sessionId);
+  }
+
+  async assertSessionExists(sessionId: string) {
+    const dir = this.sessionDir(sessionId);
+    if (!existsSync(path.join(dir, "events.jsonl"))) {
+      throw new Error(`Unknown session: ${sessionId}`);
+    }
   }
 
   async createSession(input: CreateSessionInput): Promise<SessionSnapshot> {
@@ -94,7 +101,7 @@ export class EventStore {
     await appendFile(path.join(dir, "events.jsonl"), `${JSON.stringify(parsed)}\n`, "utf8");
 
     if (parsed.agentId) {
-      const agentDir = path.join(dir, parsed.agentId);
+      const agentDir = containedPath(dir, parsed.agentId);
       await mkdir(agentDir, { recursive: true });
       await appendFile(path.join(agentDir, "transcript.jsonl"), `${JSON.stringify(parsed)}\n`, "utf8");
     }
@@ -262,6 +269,18 @@ function deriveStatus(events: SessionEvent[], agentId: string) {
   const latest = [...events].reverse().find((event: SessionEvent) => event.agentId === agentId && event.type === "agent.status");
   const status = latest?.payload.status;
   return typeof status === "string" ? status as GraphState["nodes"][number]["status"] : "idle";
+}
+
+function containedPath(root: string, child: string) {
+  if (!/^[A-Za-z0-9_-]+$/.test(child)) {
+    throw new Error(`Unsafe path id: ${child}`);
+  }
+  const resolvedRoot = path.resolve(root);
+  const resolved = path.resolve(resolvedRoot, child);
+  if (resolved !== resolvedRoot && !resolved.startsWith(`${resolvedRoot}${path.sep}`)) {
+    throw new Error(`Path escapes root: ${child}`);
+  }
+  return resolved;
 }
 
 function normalizeSnapshot(snapshot: SessionSnapshot, hasExplicitDebugMode: boolean): SessionSnapshot {

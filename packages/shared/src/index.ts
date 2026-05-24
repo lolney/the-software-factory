@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const SafeIdSchema = z.string().regex(/^[A-Za-z0-9_-]+$/);
+
 export const AgentStatusSchema = z.enum([
   "idle",
   "working",
@@ -13,7 +15,7 @@ export const AgentStatusSchema = z.enum([
 export const WorkflowEdgeKindSchema = z.enum(["handoff", "message"]);
 
 export const RoleSpecSchema = z.object({
-  id: z.string().min(1),
+  id: SafeIdSchema,
   name: z.string().min(1),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   promptTemplate: z.string().min(1),
@@ -31,23 +33,23 @@ export const RoleSpecSchema = z.object({
 });
 
 export const WorkflowNodeSchema = z.object({
-  id: z.string().min(1),
-  roleId: z.string().min(1),
+  id: SafeIdSchema,
+  roleId: SafeIdSchema,
   label: z.string().min(1),
   startsActive: z.boolean().default(false)
 });
 
 export const WorkflowEdgeSchema = z.object({
-  id: z.string().min(1),
-  from: z.string().min(1),
-  to: z.string().min(1),
+  id: SafeIdSchema,
+  from: SafeIdSchema,
+  to: SafeIdSchema,
   kind: WorkflowEdgeKindSchema,
   description: z.string().default("")
 });
 
 export const WorkflowSpecSchema = z.object({
   version: z.literal(1),
-  id: z.string().min(1),
+  id: SafeIdSchema,
   name: z.string().min(1),
   description: z.string().default(""),
   roles: z.array(RoleSpecSchema).min(1),
@@ -57,8 +59,8 @@ export const WorkflowSpecSchema = z.object({
     maxActiveAgents: z.number().int().positive().default(4)
   }).prefault({}),
   lifecycle: z.object({
-    plannerNodeId: z.string().optional(),
-    orchestratorNodeId: z.string().min(1)
+    plannerNodeId: SafeIdSchema.optional(),
+    orchestratorNodeId: SafeIdSchema
   }),
   stopCriteria: z.array(z.string()).default([])
 });
@@ -85,9 +87,9 @@ export const SessionEventTypeSchema = z.enum([
 ]);
 
 export const SessionEventSchema = z.object({
-  eventId: z.string().min(1),
-  sessionId: z.string().min(1),
-  agentId: z.string().min(1).optional(),
+  eventId: SafeIdSchema,
+  sessionId: SafeIdSchema,
+  agentId: SafeIdSchema.optional(),
   timestamp: z.string().datetime(),
   type: SessionEventTypeSchema,
   payload: z.record(z.string(), z.unknown()).default({}),
@@ -96,8 +98,8 @@ export const SessionEventSchema = z.object({
 });
 
 export const GraphNodeSchema = z.object({
-  id: z.string(),
-  roleId: z.string(),
+  id: SafeIdSchema,
+  roleId: SafeIdSchema,
   label: z.string(),
   status: AgentStatusSchema,
   color: z.string(),
@@ -106,47 +108,47 @@ export const GraphNodeSchema = z.object({
 });
 
 export const GraphEdgeSchema = z.object({
-  id: z.string(),
-  from: z.string(),
-  to: z.string(),
+  id: SafeIdSchema,
+  from: SafeIdSchema,
+  to: SafeIdSchema,
   kind: WorkflowEdgeKindSchema,
   active: z.boolean().default(false)
 });
 
 export const GraphStateSchema = z.object({
-  sessionId: z.string(),
-  workflowId: z.string(),
+  sessionId: SafeIdSchema,
+  workflowId: SafeIdSchema,
   nodes: z.array(GraphNodeSchema),
   edges: z.array(GraphEdgeSchema),
   activeToolCalls: z.array(z.object({
-    agentId: z.string(),
+    agentId: SafeIdSchema,
     toolName: z.string(),
     callId: z.string()
   })).default([])
 });
 
 export const SessionSnapshotSchema = z.object({
-  sessionId: z.string(),
+  sessionId: SafeIdSchema,
   title: z.string(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   workspaceRoot: z.string(),
-  workflowId: z.string(),
+  workflowId: SafeIdSchema,
   debugMode: z.boolean().default(false),
   graph: GraphStateSchema,
   transcript: z.array(SessionEventSchema)
 });
 
 export const DaemonRequestSchema = z.discriminatedUnion("method", [
-  z.object({ id: z.string(), method: z.literal("createSession"), params: z.object({ prompt: z.string(), workspaceRoot: z.string().optional(), workflowId: z.string().optional(), debugMode: z.boolean().default(false) }) }),
-  z.object({ id: z.string(), method: z.literal("sendMessage"), params: z.object({ sessionId: z.string(), targetAgentId: z.string().optional(), text: z.string() }) }),
-  z.object({ id: z.string(), method: z.literal("pauseAgent"), params: z.object({ sessionId: z.string(), agentId: z.string() }) }),
-  z.object({ id: z.string(), method: z.literal("resumeAgent"), params: z.object({ sessionId: z.string(), agentId: z.string() }) }),
-  z.object({ id: z.string(), method: z.literal("cancelAgent"), params: z.object({ sessionId: z.string(), agentId: z.string() }) }),
-  z.object({ id: z.string(), method: z.literal("getSnapshot"), params: z.object({ sessionId: z.string() }) }),
+  z.object({ id: z.string(), method: z.literal("createSession"), params: z.object({ prompt: z.string(), workspaceRoot: z.string().optional(), workflowId: SafeIdSchema.optional(), debugMode: z.boolean().default(false) }) }),
+  z.object({ id: z.string(), method: z.literal("sendMessage"), params: z.object({ sessionId: SafeIdSchema, targetAgentId: SafeIdSchema.optional(), text: z.string() }) }),
+  z.object({ id: z.string(), method: z.literal("pauseAgent"), params: z.object({ sessionId: SafeIdSchema, agentId: SafeIdSchema }) }),
+  z.object({ id: z.string(), method: z.literal("resumeAgent"), params: z.object({ sessionId: SafeIdSchema, agentId: SafeIdSchema }) }),
+  z.object({ id: z.string(), method: z.literal("cancelAgent"), params: z.object({ sessionId: SafeIdSchema, agentId: SafeIdSchema }) }),
+  z.object({ id: z.string(), method: z.literal("getSnapshot"), params: z.object({ sessionId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("listSessions"), params: z.object({}).default({}) }),
-  z.object({ id: z.string(), method: z.literal("subscribeEvents"), params: z.object({ sessionId: z.string() }) }),
-  z.object({ id: z.string(), method: z.literal("ackClientEvent"), params: z.object({ sessionId: z.string(), eventId: z.string() }) })
+  z.object({ id: z.string(), method: z.literal("subscribeEvents"), params: z.object({ sessionId: SafeIdSchema }) }),
+  z.object({ id: z.string(), method: z.literal("ackClientEvent"), params: z.object({ sessionId: SafeIdSchema, eventId: SafeIdSchema }) })
 ]);
 
 export const DaemonResponseSchema = z.object({

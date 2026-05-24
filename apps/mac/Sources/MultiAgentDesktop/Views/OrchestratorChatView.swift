@@ -17,13 +17,21 @@ struct OrchestratorChatView: View {
 
             Divider()
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(store.transcript) { item in
-                        TranscriptRow(item: item)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(store.transcript) { item in
+                            TranscriptRow(item: item)
+                                .id(item.id)
+                        }
+                    }
+                    .padding()
+                }
+                .onChange(of: store.transcript.count) { _, _ in
+                    if let last = store.transcript.last {
+                        proxy.scrollTo(last.id, anchor: .bottom)
                     }
                 }
-                .padding()
             }
         }
     }
@@ -35,16 +43,24 @@ struct TranscriptRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(item.agentId ?? "system")
+                Text(item.sender)
                     .font(.caption.weight(.semibold))
+                if let recipient = item.recipient {
+                    Text("-> \(recipient)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Text(item.type)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text(item.timestamp, style: .time)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
             Text(item.text)
                 .textSelection(.enabled)
         }
         .padding(10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .background(item.sender == "user" ? .thickMaterial : .regularMaterial, in: RoundedRectangle(cornerRadius: 8))
     }
 }
