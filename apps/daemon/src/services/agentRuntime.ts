@@ -1,5 +1,6 @@
-import { Agent, run, setDefaultOpenAIKey } from "@openai/agents";
+import { Agent, run, setDefaultOpenAIKey, tool } from "@openai/agents";
 import type { SessionEvent } from "@multiagent/shared";
+import { z } from "zod";
 import { makeEventId } from "./eventStore.js";
 
 export interface AgentTurnInput {
@@ -10,6 +11,10 @@ export interface AgentTurnInput {
   roleName?: string;
   instructions?: string;
   apiKey?: string;
+  workflowTools?: {
+    listWorkflows: () => unknown;
+    instantiateWorkflow: (workflowId: string) => Promise<string>;
+  };
   signal?: AbortSignal;
   causationId?: string;
 }
@@ -31,9 +36,24 @@ export class OpenAIAgentRuntime implements AgentRuntime {
     setDefaultOpenAIKey(apiKey);
 
     const startedAt = new Date().toISOString();
+    const tools = input.workflowTools ? [
+      tool({
+        name: "workflow_list",
+        description: "List predefined workflow specs available to instantiate into the current session graph.",
+        parameters: z.object({}),
+        execute: async () => JSON.stringify(input.workflowTools?.listWorkflows() ?? [])
+      }),
+      tool({
+        name: "workflow_instantiate",
+        description: "Instantiate a predefined workflow into the current session graph.",
+        parameters: z.object({ workflowId: z.string() }),
+        execute: async (args) => input.workflowTools?.instantiateWorkflow(args.workflowId) ?? "Workflow tools unavailable."
+      })
+    ] : [];
     const agent = new Agent({
       name: input.roleName ?? input.agentId,
-      instructions: input.instructions ?? "You are a role-specific coding agent in a local multiagent coding workflow. Be concise, operational, and report concrete progress."
+      instructions: input.instructions ?? "You are a role-specific coding agent in a local multiagent coding workflow. Be concise, operational, and report concrete progress.",
+      tools
     });
     const result = await run(agent, input.prompt, {
       signal: input.signal,

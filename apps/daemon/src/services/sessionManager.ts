@@ -176,6 +176,7 @@ export class SessionManager {
       roleName: role?.name,
       instructions: role?.promptTemplate,
       apiKey: await this.openAIApiKey(debugMode),
+      workflowTools: this.workflowTools(snapshot.sessionId, publish),
       causationId: promptEvent.eventId
     });
     for (const event of events) {
@@ -342,6 +343,7 @@ export class SessionManager {
       roleName: role?.name,
       instructions: role?.promptTemplate,
       apiKey: await this.openAIApiKey(snapshot.debugMode),
+      workflowTools: this.workflowTools(snapshot.sessionId, publish),
       causationId
     });
     for (const event of events) {
@@ -459,6 +461,22 @@ export class SessionManager {
       causationId: instantiated.eventId
     }, publish);
     return this.store.rebuildSnapshot(sessionId);
+  }
+
+  private workflowTools(sessionId: string, publish: (event: SessionEvent) => void) {
+    return {
+      listWorkflows: () => this.workflows.list().map((workflow) => ({
+        id: workflow.id,
+        name: workflow.name,
+        description: workflow.description,
+        nodes: workflow.nodes.map((node) => ({ id: node.id, roleId: node.roleId, label: node.label })),
+        edges: workflow.edges.map((edge) => ({ id: edge.id, from: edge.from, to: edge.to, kind: edge.kind, description: edge.description }))
+      })),
+      instantiateWorkflow: async (workflowId: string) => {
+        await this.instantiateWorkflow(sessionId, workflowId, "orchestrator", publish);
+        return `Instantiated workflow ${workflowId} into session ${sessionId}.`;
+      }
+    };
   }
 
   private async assertLiveCredentialAvailable() {
