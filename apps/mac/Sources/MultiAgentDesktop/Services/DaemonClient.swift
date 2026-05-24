@@ -9,6 +9,7 @@ final class DaemonClient {
     var isConnecting = false
     var onMessage: ((Data) -> Void)?
     var onDisconnect: ((String) -> Void)?
+    var onSendError: ((String) -> Void)?
 
     func connect(port: Int = 3767) {
         guard task == nil else { return }
@@ -31,6 +32,9 @@ final class DaemonClient {
         task?.send(.string(json)) { error in
             if let error {
                 print("WebSocket send failed: \(error)")
+                Task { @MainActor in
+                    self.onSendError?(error.localizedDescription)
+                }
             }
         }
     }

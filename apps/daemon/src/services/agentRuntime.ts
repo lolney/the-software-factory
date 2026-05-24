@@ -7,6 +7,9 @@ export interface AgentTurnInput {
   agentId: string;
   prompt: string;
   debugMode: boolean;
+  roleName?: string;
+  instructions?: string;
+  signal?: AbortSignal;
   causationId?: string;
 }
 
@@ -16,14 +19,15 @@ export interface AgentRuntime {
 
 export class OpenAIAgentRuntime implements AgentRuntime {
   async runTurn(input: AgentTurnInput): Promise<SessionEvent[]> {
+    if (input.signal?.aborted) return [statusEvent(input, "cancelled")];
     if (input.debugMode || !process.env.OPENAI_API_KEY) {
       return new DeterministicAgentRuntime().runTurn(input);
     }
 
     const startedAt = new Date().toISOString();
     const agent = new Agent({
-      name: "Orchestrator",
-      instructions: "You are the long-running orchestrator for a local multiagent coding workflow engine. Be concise, operational, and explicit about next agent actions."
+      name: input.roleName ?? input.agentId,
+      instructions: input.instructions ?? "You are a role-specific coding agent in a local multiagent coding workflow. Be concise, operational, and report concrete progress."
     });
     const result = await run(agent, input.prompt);
     const output = String(result.finalOutput ?? "");
@@ -46,7 +50,8 @@ export class OpenAIAgentRuntime implements AgentRuntime {
 
 export class DeterministicAgentRuntime implements AgentRuntime {
   async runTurn(input: AgentTurnInput): Promise<SessionEvent[]> {
-    const plan = deterministicPlan(input.prompt);
+    if (input.signal?.aborted) return [statusEvent(input, "cancelled")];
+    const plan = deterministicPlan(input.prompt, input.agentId, input.roleName);
     const callId = `call_${crypto.randomUUID()}`;
     return [
       statusEvent(input, "working"),
@@ -117,8 +122,32 @@ function statusEvent(input: AgentTurnInput, status: string, timestamp = new Date
   };
 }
 
-function deterministicPlan(prompt: string) {
-  const lower = prompt.toLowerCase();
+function deterministicPlan(prompt: string, agentId: string, roleName = agentId) {
+  const lower = `${prompt} ${agentId} ${roleName}`.toLowerCase();
+  if (lower.includes("planner")) {
+    return {
+      toolResult: "Planner selected a workflow and role graph for the user goal.",
+      message: "Debug planner: I selected the workflow graph, confirmed role responsibilities, and handed the plan back to the orchestrator."
+    };
+  }
+  if (lower.includes("implementor")) {
+    return {
+      toolResult: "Implementor inspected the assigned workspace and recorded a deterministic file touch.",
+      message: "Debug implementor: I applied the assigned implementation step and am ready for review or QA."
+    };
+  }
+  if (lower.includes("reviewer")) {
+    return {
+      toolResult: "Reviewer inspected transcript and touched files.",
+      message: "Debug reviewer: I found one deterministic follow-up and sent it to the implementor."
+    };
+  }
+  if (lower.includes("qa")) {
+    return {
+      toolResult: "QA ran deterministic acceptance checks.",
+      message: "Debug QA: acceptance checks completed; hand back only if a deterministic failure appears."
+    };
+  }
   if (lower.includes("test") || lower.includes("qa")) {
     return {
       toolResult: "Detected QA-oriented goal; next simulated step is to run checks and request reviewer feedback.",

@@ -8,6 +8,11 @@ struct OrchestratorChatView: View {
             HStack {
                 Text("Orchestrator")
                     .font(.headline)
+                if let selectedAgentId = store.selectedAgentId {
+                    Text("filtered: \(selectedAgentId)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Text(store.connectionStatus)
                     .font(.caption)
@@ -17,18 +22,24 @@ struct OrchestratorChatView: View {
 
             Divider()
 
+            if store.isLoadingSelection {
+                ProgressView("Loading session...")
+                    .controlSize(.small)
+                    .padding()
+            }
+
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(store.transcript) { item in
+                        ForEach(store.filteredTranscript) { item in
                             TranscriptRow(item: item)
                                 .id(item.id)
                         }
                     }
                     .padding()
                 }
-                .onChange(of: store.transcript.count) { _, _ in
-                    if let last = store.transcript.last {
+                .onChange(of: store.filteredTranscript.count) { _, _ in
+                    if let last = store.filteredTranscript.last {
                         proxy.scrollTo(last.id, anchor: .bottom)
                     }
                 }

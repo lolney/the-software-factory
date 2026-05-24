@@ -74,6 +74,12 @@ export class WorkflowEngine {
       activeToolCalls: []
     });
   }
+
+  roleForNode(spec: WorkflowSpec, nodeId: string) {
+    const node = spec.nodes.find((candidate) => candidate.id === nodeId);
+    if (!node) return undefined;
+    return spec.roles.find((role) => role.id === node.roleId);
+  }
 }
 
 function assertGraphReferences(spec: WorkflowSpec) {

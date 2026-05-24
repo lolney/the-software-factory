@@ -4,6 +4,7 @@ import { EventStore, makeEventId } from "./eventStore.js";
 import { OpenAIAgentRuntime, type AgentRuntime } from "./agentRuntime.js";
 import { WorkflowEngine } from "./workflowEngine.js";
 import { WorkspaceCoordinator } from "./workspaceCoordinator.js";
+import { AuthManager, CODEX_PUBLIC_CLIENT_ID } from "./authManager.js";
 
 export class SessionManager {
   private readonly subscribers = new Map<string, Set<(event: SessionEvent) => void>>();
@@ -11,6 +12,8 @@ export class SessionManager {
   private readonly runtime: AgentRuntime;
   private readonly workflows = new WorkflowEngine();
   private readonly workspace = new WorkspaceCoordinator();
+  private readonly activeRuns = new Map<string, AbortController>();
+  private readonly auth = new AuthManager();
 
   constructor(private readonly options: { sessionsRoot: string; runtime?: AgentRuntime }) {
     this.store = new EventStore(options.sessionsRoot);
@@ -25,7 +28,15 @@ export class SessionManager {
     await this.workflows.loadPredefined();
     switch (request.method) {
       case "listSessions":
-        return { sessionsRoot: this.options.sessionsRoot, workflows: this.workflows.list(), sessions: await this.store.listSessions() };
+        return {
+          sessionsRoot: this.options.sessionsRoot,
+          workflows: this.workflows.list(),
+          codexOAuth: {
+            clientId: CODEX_PUBLIC_CLIENT_ID,
+            hasTokens: Boolean(await this.auth.loadTokens())
+          },
+          sessions: await this.store.listSessions()
+        };
       case "createSession": {
         const sessionId = `sess_${crypto.randomUUID()}`;
         const title = firstLine(request.params.prompt) || "Untitled Session";
@@ -118,11 +129,15 @@ export class SessionManager {
       },
       causationId
     }, publish);
-    const events = await this.runtime.runTurn({
+    const spec = this.workflows.get(snapshot.workflowId);
+    const role = this.workflows.roleForNode(spec, agentId);
+    const events = await this.runControlledTurn(snapshot.sessionId, agentId, {
       sessionId: snapshot.sessionId,
       agentId,
       prompt: userText,
       debugMode,
+      roleName: role?.name,
+      instructions: role?.promptTemplate,
       causationId: promptEvent.eventId
     });
     for (const event of events) {
@@ -138,6 +153,9 @@ export class SessionManager {
     status: string,
     publish: (event: SessionEvent) => void
   ) {
+    if (type === "control.cancel") {
+      this.activeRuns.get(runKey(sessionId, agentId))?.abort();
+    }
     const control = await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId,
@@ -190,11 +208,15 @@ export class SessionManager {
         causationId: handoff.eventId
       }, publish);
       if (edge.to !== "orchestrator") {
-        const events = await this.runtime.runTurn({
+        const spec = this.workflows.get(snapshot.workflowId);
+        const role = this.workflows.roleForNode(spec, edge.to);
+        const events = await this.runControlledTurn(snapshot.sessionId, edge.to, {
           sessionId: snapshot.sessionId,
           agentId: edge.to,
           prompt: `Workflow handoff from ${edge.from}: ${edge.id}`,
           debugMode: snapshot.debugMode,
+          roleName: role?.name,
+          instructions: role?.promptTemplate,
           causationId: handoff.eventId
         });
         for (const event of events) {
@@ -275,6 +297,19 @@ export class SessionManager {
     this.subscribers.set(sessionId, subscribers);
   }
 
+  private async runControlledTurn(sessionId: string, agentId: string, input: Parameters<AgentRuntime["runTurn"]>[0]) {
+    const key = runKey(sessionId, agentId);
+    const controller = new AbortController();
+    this.activeRuns.set(key, controller);
+    try {
+      return await this.runtime.runTurn({ ...input, signal: controller.signal });
+    } finally {
+      if (this.activeRuns.get(key) === controller) {
+        this.activeRuns.delete(key);
+      }
+    }
+  }
+
   private publish(event: SessionEvent, exclude?: (event: SessionEvent) => void) {
     for (const publish of this.subscribers.get(event.sessionId) ?? []) {
       if (publish !== exclude) publish(event);
@@ -287,4 +322,8 @@ export class SessionManager {
 
 function firstLine(text: string) {
   return text.trim().split("\n").find(Boolean)?.slice(0, 80) ?? "";
+}
+
+function runKey(sessionId: string, agentId: string) {
+  return `${sessionId}:${agentId}`;
 }

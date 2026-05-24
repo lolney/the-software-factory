@@ -12,7 +12,7 @@ struct SessionDetailView: View {
                 ComposerView(store: store)
             }
 
-            GraphPanelView(graph: store.graph)
+            GraphPanelView(store: store)
                 .frame(minWidth: 360, idealWidth: 440)
         }
         .toolbar {
@@ -27,27 +27,27 @@ struct SessionDetailView: View {
                 Button {
                     store.pauseOrchestrator()
                 } label: {
-                    Label("Pause Orchestrator", systemImage: "pause.circle")
+                    Label("Pause Agent", systemImage: "pause.circle")
                 }
                 .disabled(!store.canPauseOrchestrator)
 
                 Button {
                     store.resumeOrchestrator()
                 } label: {
-                    Label("Resume Orchestrator", systemImage: "play.circle")
+                    Label("Resume Agent", systemImage: "play.circle")
                 }
                 .disabled(!store.canResumeOrchestrator)
 
                 Button(role: .destructive) {
                     confirmCancel = true
                 } label: {
-                    Label("Cancel Orchestrator", systemImage: "xmark.circle")
+                    Label("Cancel Agent", systemImage: "xmark.circle")
                 }
                 .disabled(!store.canCancelOrchestrator)
             }
         }
-        .confirmationDialog("Cancel the orchestrator for this session?", isPresented: $confirmCancel) {
-            Button("Cancel Orchestrator", role: .destructive) {
+        .confirmationDialog("Cancel the selected agent for this session?", isPresented: $confirmCancel) {
+            Button("Cancel Agent", role: .destructive) {
                 store.cancelOrchestrator()
             }
         }

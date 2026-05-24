@@ -32,9 +32,9 @@ struct NewSessionView: View {
             HStack {
                 Spacer()
                 Button("Cancel") {
+                    store.isCreatingSession = false
                     store.presentNewSession = false
                 }
-                .disabled(store.isCreatingSession)
                 Button("Create") {
                     store.createSession(prompt: prompt)
                 }

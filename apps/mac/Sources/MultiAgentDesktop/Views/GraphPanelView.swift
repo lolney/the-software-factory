@@ -1,7 +1,9 @@
 import SwiftUI
 
 struct GraphPanelView: View {
-    let graph: GraphState
+    @Bindable var store: SessionStore
+
+    private var graph: GraphState { store.graph }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -36,7 +38,7 @@ struct GraphPanelView: View {
                     let rect = CGRect(x: point.x - 72, y: point.y - 34, width: 144, height: 68)
                     context.fill(Path(roundedRect: rect, cornerRadius: 8), with: .color(Color(hex: node.colorHex).opacity(0.16)))
                     context.stroke(Path(roundedRect: rect, cornerRadius: 8), with: .color(Color(hex: node.colorHex)), lineWidth: 2)
-                    context.draw(Text(node.label).font(.caption.weight(.semibold)), at: CGPoint(x: rect.midX, y: rect.midY - 8), anchor: .center)
+                    context.draw(Text(shortLabel(node.label)).font(.caption.weight(.semibold)), at: CGPoint(x: rect.midX, y: rect.midY - 8), anchor: .center)
                     context.draw(Text(node.status.rawValue).font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: rect.midX, y: rect.midY + 12), anchor: .center)
                     if node.errorCount > 0 || node.unreadCount > 0 {
                         context.draw(Text(badgeText(for: node)).font(.caption2.weight(.bold)), at: CGPoint(x: rect.maxX - 10, y: rect.minY + 10), anchor: .center)
@@ -45,27 +47,35 @@ struct GraphPanelView: View {
             }
             .frame(minHeight: 320)
 
-            List(graph.nodes) { node in
-                HStack {
-                    Circle()
-                        .fill(Color(hex: node.colorHex))
-                        .frame(width: 9, height: 9)
-                    Text(node.label)
-                    Spacer()
-                    if node.unreadCount > 0 {
-                        Text("\(node.unreadCount)")
-                            .font(.caption2.weight(.bold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.blue.opacity(0.18), in: Capsule())
+            List(selection: $store.selectedAgentId) {
+                ForEach(graph.nodes) { node in
+                    Button {
+                        store.selectAgent(node.id)
+                    } label: {
+                        HStack {
+                            Circle()
+                                .fill(Color(hex: node.colorHex))
+                                .frame(width: 9, height: 9)
+                            Text(node.label)
+                            Spacer()
+                            if node.unreadCount > 0 {
+                                Text("\(node.unreadCount)")
+                                    .font(.caption2.weight(.bold))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(.blue.opacity(0.18), in: Capsule())
+                            }
+                            if node.errorCount > 0 {
+                                Text("!\(node.errorCount)")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(.red)
+                            }
+                            Text(node.status.rawValue)
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                    if node.errorCount > 0 {
-                        Text("!\(node.errorCount)")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.red)
-                    }
-                    Text(node.status.rawValue)
-                        .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
+                    .tag(node.id)
                 }
             }
         }
@@ -74,7 +84,7 @@ struct GraphPanelView: View {
     private func layout(size: CGSize) -> [String: CGPoint] {
         guard !graph.nodes.isEmpty else { return [:] }
         let center = CGPoint(x: size.width / 2, y: size.height / 2)
-        let radius = max(100, min(size.width, size.height) / 2.8)
+        let radius = max(80, min(size.width - 170, size.height - 100) / 2.2)
         return Dictionary(uniqueKeysWithValues: graph.nodes.enumerated().map { index, node in
             let angle = (Double(index) / Double(graph.nodes.count)) * Double.pi * 2 - Double.pi / 2
             return (node.id, CGPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius))
@@ -96,5 +106,9 @@ struct GraphPanelView: View {
     private func badgeText(for node: AgentNode) -> String {
         if node.errorCount > 0 { return "!\(node.errorCount)" }
         return "\(node.unreadCount)"
+    }
+
+    private func shortLabel(_ label: String) -> String {
+        label.count > 18 ? "\(label.prefix(17))..." : label
     }
 }

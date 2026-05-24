@@ -14,6 +14,8 @@ final class SessionStore {
     var debugMode = true
     var isCreatingSession = false
     var lastError: String?
+    var selectedAgentId: String?
+    var isLoadingSelection = false
     private var subscribedSessionIds = Set<String>()
 
     var daemonPort: Int {
@@ -37,7 +39,18 @@ final class SessionStore {
     }
 
     var orchestratorStatus: AgentStatus {
-        graph.nodes.first { $0.id == "orchestrator" }?.status ?? .idle
+        graph.nodes.first { $0.id == selectedControlAgentId }?.status ?? .idle
+    }
+
+    var selectedControlAgentId: String {
+        selectedAgentId ?? "orchestrator"
+    }
+
+    var filteredTranscript: [TranscriptItem] {
+        guard let selectedAgentId else { return transcript }
+        return transcript.filter { item in
+            item.agentId == selectedAgentId || item.sender == selectedAgentId || item.recipient == selectedAgentId
+        }
     }
 
     var canPauseOrchestrator: Bool {
@@ -57,6 +70,7 @@ final class SessionStore {
             SessionSummary(id: "local-preview", title: "Local Preview", detail: "Daemon not connected")
         ]
         selectedSessionId = sessions.first?.id
+        selectedAgentId = "orchestrator"
         graph = GraphState(
             sessionId: "local-preview",
             workflowId: "implementor-reviewer",
@@ -85,6 +99,12 @@ final class SessionStore {
                 self?.isCreatingSession = false
             }
         }
+        daemon.onSendError = { [weak self] reason in
+            Task { @MainActor in
+                self?.lastError = reason
+                self?.isCreatingSession = false
+            }
+        }
     }
 
     func connectAndRefresh() {
@@ -95,8 +115,11 @@ final class SessionStore {
     }
 
     func createSession(prompt: String) {
-        if !daemon.isConnected && !daemon.isConnecting {
+        guard daemon.isConnected else {
             connectAndRefresh()
+            lastError = "Connecting to daemon. Create the session after the connection is confirmed."
+            isCreatingSession = false
+            return
         }
         isCreatingSession = true
         lastError = nil
@@ -113,8 +136,21 @@ final class SessionStore {
         guard let sessionId else { return }
         selectedSessionId = sessionId
         guard sessionId != "local-preview" else { return }
+        isLoadingSelection = true
+        graph = GraphState(sessionId: sessionId, workflowId: "", nodes: [], edges: [])
+        transcript = []
         daemon.sendRequest(method: "getSnapshot", params: ["sessionId": sessionId])
         subscribe(to: sessionId)
+    }
+
+    func selectAgent(_ agentId: String?) {
+        selectedAgentId = agentId
+        guard let agentId,
+              let index = graph.nodes.firstIndex(where: { $0.id == agentId }) else { return }
+        graph.nodes[index].unreadCount = 0
+        if let last = transcript.last {
+            daemon.sendRequest(method: "ackClientEvent", params: ["sessionId": graph.sessionId, "eventId": last.id])
+        }
     }
 
     func sendComposerMessage() {
@@ -129,17 +165,17 @@ final class SessionStore {
 
     func pauseOrchestrator() {
         guard let selectedSessionId else { return }
-        daemon.sendRequest(method: "pauseAgent", params: ["sessionId": selectedSessionId, "agentId": "orchestrator"])
+        daemon.sendRequest(method: "pauseAgent", params: ["sessionId": selectedSessionId, "agentId": selectedControlAgentId])
     }
 
     func resumeOrchestrator() {
         guard let selectedSessionId else { return }
-        daemon.sendRequest(method: "resumeAgent", params: ["sessionId": selectedSessionId, "agentId": "orchestrator"])
+        daemon.sendRequest(method: "resumeAgent", params: ["sessionId": selectedSessionId, "agentId": selectedControlAgentId])
     }
 
     func cancelOrchestrator() {
         guard let selectedSessionId else { return }
-        daemon.sendRequest(method: "cancelAgent", params: ["sessionId": selectedSessionId, "agentId": "orchestrator"])
+        daemon.sendRequest(method: "cancelAgent", params: ["sessionId": selectedSessionId, "agentId": selectedControlAgentId])
     }
 
     private func handleDaemonMessage(_ data: Data) {
@@ -159,6 +195,7 @@ final class SessionStore {
                 lastError = message
             }
             isCreatingSession = false
+            isLoadingSelection = false
             return
         }
         guard object["ok"] as? Bool == true, let result = object["result"] else { return }
@@ -184,11 +221,15 @@ final class SessionStore {
         subscribe(to: snapshot.sessionId)
         graph = snapshot.graph
         transcript = snapshot.transcript.map(transcriptItem)
+        if selectedAgentId == nil || graph.nodes.allSatisfy({ $0.id != selectedAgentId }) {
+            selectedAgentId = "orchestrator"
+        }
         let summary = SessionSummary(id: snapshot.sessionId, title: snapshot.title, detail: snapshot.workflowId)
         sessions.removeAll { $0.id == snapshot.sessionId }
         sessions.insert(summary, at: 0)
         connectionStatus = "Connected"
         isCreatingSession = false
+        isLoadingSelection = false
         presentNewSession = false
     }
 
@@ -207,7 +248,9 @@ final class SessionStore {
             sessions.insert(SessionSummary(id: event.sessionId, title: title, detail: workflowId), at: 0)
             selectedSessionId = event.sessionId
             subscribe(to: event.sessionId)
+            selectedAgentId = "orchestrator"
             isCreatingSession = false
+            isLoadingSelection = false
             presentNewSession = false
         case "agent.status":
             guard let agentId = event.agentId,
@@ -239,12 +282,7 @@ final class SessionStore {
     private func transcriptItem(_ event: SessionEvent) -> TranscriptItem {
         let sender = event.payload["from"]?.stringValue ?? event.agentId ?? "system"
         let recipient = event.payload["to"]?.stringValue
-        let text = event.payload["text"]?.stringValue
-            ?? event.payload["summary"]?.stringValue
-            ?? event.payload["output"]?.stringValue
-            ?? event.payload["reason"]?.stringValue
-            ?? event.type
-        return TranscriptItem(id: event.eventId, agentId: event.agentId, sender: sender, recipient: recipient, type: event.type, text: text, timestamp: Date())
+        return TranscriptItem(id: event.eventId, agentId: event.agentId, sender: sender, recipient: recipient, type: event.type, text: displayText(for: event), timestamp: parseTimestamp(event.timestamp))
     }
 
     private func subscribe(to sessionId: String) {
@@ -260,5 +298,28 @@ final class SessionStore {
             return "implementor-qa-loop"
         }
         return "implementor-reviewer"
+    }
+
+    private func parseTimestamp(_ timestamp: String) -> Date {
+        ISO8601DateFormatter().date(from: timestamp) ?? Date()
+    }
+
+    private func displayText(for event: SessionEvent) -> String {
+        if let text = event.payload["text"]?.stringValue { return text }
+        if let summary = event.payload["summary"]?.stringValue { return summary }
+        if let output = event.payload["output"]?.stringValue { return output }
+        if let reason = event.payload["reason"]?.stringValue { return reason }
+        switch event.type {
+        case "agent.tool_call":
+            return "Tool call: \(event.payload["toolName"]?.stringValue ?? "unknown")"
+        case "agent.tool_result":
+            return "Tool result: \(event.payload["toolName"]?.stringValue ?? "unknown")"
+        case "workspace.file_claimed", "workspace.file_touched", "workspace.conflict_detected":
+            return event.payload["path"]?.stringValue ?? event.type
+        case "agent.status":
+            return "Status: \(event.payload["status"]?.stringValue ?? "unknown")"
+        default:
+            return event.type
+        }
     }
 }

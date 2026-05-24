@@ -19,6 +19,6 @@ describe("DeterministicAgentRuntime", () => {
       "agent.message",
       "agent.status"
     ]);
-    expect(events[4]?.payload.text).toContain("implementor/QA workflow");
+    expect(events[4]?.payload.text).toContain("Debug QA");
   });
 });
