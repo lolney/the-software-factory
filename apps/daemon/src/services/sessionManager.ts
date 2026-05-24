@@ -22,6 +22,7 @@ export class SessionManager {
   }
 
   async handle(request: DaemonRequest): Promise<unknown> {
+    await this.workflows.loadPredefined();
     switch (request.method) {
       case "listSessions":
         return { sessionsRoot: this.options.sessionsRoot, workflows: this.workflows.list(), sessions: await this.store.listSessions() };
@@ -35,9 +36,11 @@ export class SessionManager {
           title,
           workspaceRoot: request.params.workspaceRoot ?? process.cwd(),
           workflowId: spec.id,
+          debugMode: request.params.debugMode,
           graph
         });
         await this.recordOrchestratorTurn(snapshot, request.params.prompt, request.params.debugMode);
+        await this.activateWorkflowStart(snapshot);
         if (request.params.debugMode) {
           await this.seedDebugWorkspaceEvents(sessionId, request.params.workspaceRoot ?? process.cwd());
         }
@@ -56,7 +59,7 @@ export class SessionManager {
           type: "control.nudge",
           payload: { text: request.params.text }
         });
-        await this.recordOrchestratorTurn(snapshot, request.params.text, true, nudge.eventId);
+        await this.recordOrchestratorTurn(snapshot, request.params.text, snapshot.debugMode, nudge.eventId);
         return this.store.readSnapshot(request.params.sessionId);
       }
       case "subscribeEvents":
@@ -128,6 +131,34 @@ export class SessionManager {
     const appended = await this.store.append(event);
     this.publish(appended);
     return appended;
+  }
+
+  private async activateWorkflowStart(snapshot: SessionSnapshot) {
+    const graph = snapshot.graph;
+    for (const edge of graph.edges.filter((candidate) => candidate.from === "orchestrator" && candidate.kind === "handoff")) {
+      const handoff = await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: "orchestrator",
+        timestamp: new Date().toISOString(),
+        type: "handoff.created",
+        payload: {
+          from: edge.from,
+          to: edge.to,
+          reason: "workflow start"
+        }
+      });
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: edge.to,
+        timestamp: new Date().toISOString(),
+        type: "agent.status",
+        payload: { status: snapshot.debugMode ? "waiting" : "working" },
+        causationId: handoff.eventId
+      });
+    }
+    await this.store.rebuildSnapshot(snapshot.sessionId);
   }
 
   private async seedDebugWorkspaceEvents(sessionId: string, workspaceRoot: string) {

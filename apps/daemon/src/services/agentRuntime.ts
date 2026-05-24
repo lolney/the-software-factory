@@ -47,6 +47,7 @@ export class OpenAIAgentRuntime implements AgentRuntime {
 export class DeterministicAgentRuntime implements AgentRuntime {
   async runTurn(input: AgentTurnInput): Promise<SessionEvent[]> {
     const plan = deterministicPlan(input.prompt);
+    const callId = `call_${crypto.randomUUID()}`;
     return [
       statusEvent(input, "working"),
       {
@@ -68,7 +69,7 @@ export class DeterministicAgentRuntime implements AgentRuntime {
         timestamp: new Date().toISOString(),
         type: "agent.tool_call",
         payload: {
-          callId: `call_${makeEventId()}`,
+          callId,
           toolName: "debug.inspect_goal",
           input: { prompt: input.prompt }
         },
@@ -81,6 +82,7 @@ export class DeterministicAgentRuntime implements AgentRuntime {
         timestamp: new Date().toISOString(),
         type: "agent.tool_result",
         payload: {
+          callId,
           toolName: "debug.inspect_goal",
           output: plan.toolResult
         },

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SessionDetailView: View {
     @Bindable var store: SessionStore
+    @State private var confirmCancel = false
 
     var body: some View {
         HSplitView {
@@ -21,24 +22,33 @@ struct SessionDetailView: View {
                 } label: {
                     Label("Connect", systemImage: "bolt.horizontal.circle")
                 }
+                .disabled(store.daemon.isConnecting)
 
                 Button {
                     store.pauseOrchestrator()
                 } label: {
-                    Label("Pause", systemImage: "pause.circle")
+                    Label("Pause Orchestrator", systemImage: "pause.circle")
                 }
+                .disabled(!store.hasActiveSession || !store.daemon.isConnected)
 
                 Button {
                     store.resumeOrchestrator()
                 } label: {
-                    Label("Resume", systemImage: "play.circle")
+                    Label("Resume Orchestrator", systemImage: "play.circle")
                 }
+                .disabled(!store.hasActiveSession || !store.daemon.isConnected)
 
                 Button(role: .destructive) {
-                    store.cancelOrchestrator()
+                    confirmCancel = true
                 } label: {
-                    Label("Cancel", systemImage: "xmark.circle")
+                    Label("Cancel Orchestrator", systemImage: "xmark.circle")
                 }
+                .disabled(!store.hasActiveSession || !store.daemon.isConnected)
+            }
+        }
+        .confirmationDialog("Cancel the orchestrator for this session?", isPresented: $confirmCancel) {
+            Button("Cancel Orchestrator", role: .destructive) {
+                store.cancelOrchestrator()
             }
         }
     }

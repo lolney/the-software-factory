@@ -14,6 +14,7 @@ describe("EventStore", () => {
         title: "Test session",
         workspaceRoot: root,
         workflowId: "orchestrator-basic",
+        debugMode: true,
         graph: {
           sessionId: "sess_test",
           workflowId: "orchestrator-basic",
@@ -52,6 +53,7 @@ describe("EventStore", () => {
         title: "Repair session",
         workspaceRoot: root,
         workflowId: "orchestrator-basic",
+        debugMode: false,
         graph: {
           sessionId: "sess_repair",
           workflowId: "orchestrator-basic",

@@ -132,6 +132,7 @@ export const SessionSnapshotSchema = z.object({
   updatedAt: z.string().datetime(),
   workspaceRoot: z.string(),
   workflowId: z.string(),
+  debugMode: z.boolean().default(false),
   graph: GraphStateSchema,
   transcript: z.array(SessionEventSchema)
 });

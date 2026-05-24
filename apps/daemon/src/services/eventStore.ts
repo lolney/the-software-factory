@@ -14,6 +14,7 @@ export interface CreateSessionInput {
   title: string;
   workspaceRoot: string;
   workflowId: string;
+  debugMode: boolean;
   graph: GraphState;
 }
 
@@ -44,6 +45,7 @@ export class EventStore {
         title: input.title,
         workspaceRoot: input.workspaceRoot,
         workflowId: input.workflowId,
+        debugMode: input.debugMode,
         graph: input.graph
       }
     };
@@ -76,6 +78,7 @@ export class EventStore {
       updatedAt: now,
       workspaceRoot: input.workspaceRoot,
       workflowId: input.workflowId,
+      debugMode: input.debugMode,
       graph: input.graph,
       transcript
     };
@@ -162,6 +165,7 @@ export class EventStore {
     const title = String(created.payload.title ?? sessionId);
     const workspaceRoot = String(created.payload.workspaceRoot ?? process.cwd());
     const workflowId = String(created.payload.workflowId ?? "orchestrator-basic");
+    const debugMode = created.payload.debugMode === true;
     const updatedAt = events.at(-1)?.timestamp ?? created.timestamp;
     const parsedGraph = GraphStateSchema.safeParse(created.payload.graph);
     const graph: GraphState = parsedGraph.success ? parsedGraph.data : {
@@ -199,13 +203,31 @@ export class EventStore {
         return false;
       })
     }));
-    graph.activeToolCalls = events
-      .filter((event) => event.agentId && event.type === "agent.tool_call")
-      .map((event) => ({
-        agentId: event.agentId!,
-        toolName: String(event.payload.toolName ?? "unknown"),
-        callId: String(event.payload.callId ?? event.eventId)
-      }));
+    const activeToolCalls = new Map<string, { agentId: string; toolName: string; callId: string }>();
+    for (const event of events) {
+      if (!event.agentId) continue;
+      if (event.type === "agent.tool_call") {
+        const callId = String(event.payload.callId ?? event.eventId);
+        activeToolCalls.set(callId, {
+          agentId: event.agentId,
+          toolName: String(event.payload.toolName ?? "unknown"),
+          callId
+        });
+      }
+      if (event.type === "agent.tool_result") {
+        const callId = String(event.payload.callId ?? "");
+        if (callId) {
+          activeToolCalls.delete(callId);
+        } else {
+          for (const [key, call] of activeToolCalls) {
+            if (call.agentId === event.agentId && call.toolName === event.payload.toolName) {
+              activeToolCalls.delete(key);
+            }
+          }
+        }
+      }
+    }
+    graph.activeToolCalls = [...activeToolCalls.values()];
 
     const snapshot: SessionSnapshot = {
       sessionId,
@@ -214,6 +236,7 @@ export class EventStore {
       updatedAt,
       workspaceRoot,
       workflowId,
+      debugMode,
       graph,
       transcript: events
     };

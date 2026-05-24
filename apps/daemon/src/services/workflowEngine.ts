@@ -6,6 +6,7 @@ import { GraphStateSchema, WorkflowSpecSchema, type GraphState, type WorkflowSpe
 
 export class WorkflowEngine {
   private specs = new Map<string, WorkflowSpec>();
+  private loaded = false;
 
   constructor(private readonly workflowDir = path.join(process.cwd(), "apps/daemon/src/workflows")) {
     for (const spec of builtInWorkflows) {
@@ -14,6 +15,8 @@ export class WorkflowEngine {
   }
 
   async loadPredefined() {
+    if (this.loaded) return;
+    this.loaded = true;
     if (!existsSync(this.workflowDir)) return;
     const entries = await readdir(this.workflowDir, { withFileTypes: true });
     for (const entry of entries) {

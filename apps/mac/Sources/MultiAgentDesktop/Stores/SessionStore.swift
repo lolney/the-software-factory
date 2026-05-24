@@ -13,7 +13,25 @@ final class SessionStore {
     var connectionStatus = "Disconnected"
     var debugMode = true
 
+    var daemonPort: Int {
+        get {
+            let stored = UserDefaults.standard.integer(forKey: "daemonPort")
+            return stored == 0 ? 3767 : stored
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "daemonPort")
+        }
+    }
+
     let daemon = DaemonClient()
+
+    var hasActiveSession: Bool {
+        selectedSessionId != nil && selectedSessionId != "local-preview"
+    }
+
+    var canSendComposerMessage: Bool {
+        daemon.isConnected && hasActiveSession && !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     init() {
         sessions = [
@@ -44,13 +62,13 @@ final class SessionStore {
     }
 
     func connectAndRefresh() {
-        daemon.connect()
+        daemon.connect(port: daemonPort)
         connectionStatus = daemon.isConnected ? "Connected" : "Connecting"
         daemon.sendRequest(method: "listSessions", params: [:])
     }
 
     func createSession(prompt: String) {
-        if !daemon.isConnected {
+        if !daemon.isConnected && !daemon.isConnecting {
             connectAndRefresh()
         }
         daemon.sendRequest(method: "createSession", params: [
@@ -63,7 +81,7 @@ final class SessionStore {
 
     func sendComposerMessage() {
         let trimmed = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let selectedSessionId else { return }
+        guard !trimmed.isEmpty, let selectedSessionId, daemon.isConnected else { return }
         daemon.sendRequest(method: "sendMessage", params: [
             "sessionId": selectedSessionId,
             "text": trimmed
@@ -88,6 +106,7 @@ final class SessionStore {
 
     private func handleDaemonMessage(_ data: Data) {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        connectionStatus = "Connected"
         if object["method"] as? String == "event",
            let params = object["params"],
            let eventData = try? JSONSerialization.data(withJSONObject: params),

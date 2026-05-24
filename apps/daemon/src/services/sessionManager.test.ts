@@ -31,4 +31,51 @@ describe("SessionManager deterministic debug sessions", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("preserves non-debug runtime mode for follow-up messages", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            return [{
+              eventId: `evt_${crypto.randomUUID()}`,
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { debugMode: input.debugMode }
+            }];
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_create",
+        method: "createSession",
+        params: {
+          prompt: "real mode",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      await manager.handle({
+        id: "req_msg",
+        method: "sendMessage",
+        params: {
+          sessionId: snapshot.sessionId,
+          text: "continue"
+        }
+      });
+      const events = JSON.stringify(await manager.handle({
+        id: "req_sub",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }));
+      expect(events).toContain("\"debugMode\":false");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

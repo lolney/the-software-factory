@@ -6,6 +6,7 @@ import Observation
 final class DaemonClient {
     private var task: URLSessionWebSocketTask?
     var isConnected = false
+    var isConnecting = false
     var onMessage: ((Data) -> Void)?
 
     func connect(port: Int = 3767) {
@@ -13,8 +14,8 @@ final class DaemonClient {
         let url = URL(string: "ws://127.0.0.1:\(port)")!
         let task = URLSession.shared.webSocketTask(with: url)
         self.task = task
+        isConnecting = true
         task.resume()
-        isConnected = true
         receiveNext()
     }
 
@@ -22,6 +23,7 @@ final class DaemonClient {
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         isConnected = false
+        isConnecting = false
     }
 
     func send(_ json: String) {
@@ -49,15 +51,20 @@ final class DaemonClient {
                 guard let self else { return }
                 switch result {
                 case .success(.data(let data)):
+                    self.isConnected = true
+                    self.isConnecting = false
                     self.onMessage?(data)
                     self.receiveNext()
                 case .success(.string(let text)):
+                    self.isConnected = true
+                    self.isConnecting = false
                     self.onMessage?(Data(text.utf8))
                     self.receiveNext()
                 case .failure(let error):
                     print("WebSocket receive failed: \(error)")
                     self.task = nil
                     self.isConnected = false
+                    self.isConnecting = false
                 @unknown default:
                     self.receiveNext()
                 }

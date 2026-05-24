@@ -91,6 +91,7 @@ struct SessionSnapshot: Codable {
     var updatedAt: String
     var workspaceRoot: String
     var workflowId: String
+    var debugMode: Bool?
     var graph: GraphState
     var transcript: [SessionEvent]
 }
