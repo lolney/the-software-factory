@@ -27,7 +27,7 @@ struct NewSessionView: View {
                 .foregroundStyle(.secondary)
 
             if !store.debugMode && store.authStatus?.connected != true {
-                Label("Connect OpenAI in Settings before creating a live session.", systemImage: "person.badge.key")
+                Label("Live mode needs OpenAI OAuth in Settings or OPENAI_API_KEY on the daemon.", systemImage: "person.badge.key")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -53,7 +53,7 @@ struct NewSessionView: View {
                     store.createSession(prompt: prompt)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isCreatingSession || (!store.debugMode && store.authStatus?.connected != true))
+                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isCreatingSession)
             }
         }
         .padding()

@@ -58,7 +58,7 @@ private struct RoleEditor: View {
     var body: some View {
         Form {
             Section("Identity") {
-                TextField("ID", text: $role.id)
+                LabeledContent("ID", value: role.id)
                 TextField("Name", text: $role.name)
                 TextField("Model", text: $role.model)
                 TextField("Color", text: $role.color)

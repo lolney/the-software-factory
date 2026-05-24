@@ -42,6 +42,11 @@ struct SettingsView: View {
                     }
                     .disabled(store.authStatus?.connected != true)
                 }
+                if let error = store.lastError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             }
         }
         .padding()

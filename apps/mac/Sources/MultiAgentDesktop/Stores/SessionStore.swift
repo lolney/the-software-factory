@@ -241,6 +241,11 @@ final class SessionStore {
     }
 
     func beginOpenAIOAuth() {
+        guard daemon.isConnected else {
+            connectAndRefresh()
+            lastError = "Connecting to daemon. Try OpenAI setup again after the connection is confirmed."
+            return
+        }
         daemon.sendRequest(method: "beginOpenAIOAuth", params: ["port": daemonPort])
         Task { @MainActor in
             for _ in 0..<10 {
