@@ -108,6 +108,10 @@ export class WorkflowEngine {
     return spec.roles.find((role) => role.id === node.roleId);
   }
 
+  roleById(roleId: string) {
+    return this.listRoles().find((role) => role.id === roleId);
+  }
+
   private withRoleOverrides(spec: WorkflowSpec): WorkflowSpec {
     return {
       ...spec,

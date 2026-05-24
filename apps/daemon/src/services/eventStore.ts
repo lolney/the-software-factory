@@ -94,8 +94,10 @@ export class EventStore {
     return snapshot;
   }
 
-  async workspaceDir(sessionId: string) {
-    const workspaceDir = path.join(this.sessionDir(sessionId), "workspace");
+  async workspaceDir(sessionId: string, baseRoot?: string) {
+    const workspaceDir = baseRoot
+      ? path.join(path.resolve(baseRoot), sessionId, "workspace")
+      : path.join(this.sessionDir(sessionId), "workspace");
     await mkdir(workspaceDir, { recursive: true });
     return workspaceDir;
   }

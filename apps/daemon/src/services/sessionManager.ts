@@ -60,7 +60,7 @@ export class SessionManager {
         const title = firstLine(request.params.prompt) || "Untitled Session";
         const spec = this.workflows.get(request.params.workflowId ?? (request.params.debugMode ? "implementor-reviewer" : "planner-orchestrator"));
         const graph: GraphState = this.workflows.graphForSession(sessionId, spec);
-        const workspaceRoot = await this.store.workspaceDir(sessionId);
+        const workspaceRoot = await this.store.workspaceDir(sessionId, request.params.workspaceRoot);
         if (!request.params.debugMode) {
           await this.assertLiveCredentialAvailable();
         }
@@ -74,7 +74,7 @@ export class SessionManager {
         });
         await this.initializeWorkspace(workspaceRoot, title);
         await this.recordOrchestratorTurn(snapshot, request.params.prompt, request.params.debugMode, publish);
-        await this.activateWorkflowStart(snapshot, publish);
+        await this.activateWorkflowStart(await this.store.readSnapshot(sessionId), publish);
         if (request.params.debugMode) {
           await this.seedDebugWorkspaceEvents(sessionId, workspaceRoot, publish);
         }
@@ -166,8 +166,7 @@ export class SessionManager {
       },
       causationId
     }, publish);
-    const spec = this.workflows.get(snapshot.workflowId);
-    const role = this.workflows.roleForNode(spec, agentId);
+    const role = this.resolveRole(snapshot, agentId);
     const events = await this.runControlledTurn(snapshot.sessionId, agentId, {
       sessionId: snapshot.sessionId,
       agentId,
@@ -223,19 +222,22 @@ export class SessionManager {
   }
 
   private async activateWorkflowStart(snapshot: SessionSnapshot, publish: (event: SessionEvent) => void) {
-    const graph = snapshot.graph;
     const spec = this.workflows.get(snapshot.workflowId);
     const orchestratorId = spec.lifecycle.orchestratorNodeId;
     const runCounts = new Map<string, number>([[orchestratorId, 1]]);
     const processedHandoffs = new Set<string>();
     const maxConcurrent = Math.max(1, spec.concurrency.maxActiveAgents);
     const maxIterationsPerAgent = 2;
-    const maxSteps = Math.max(1, (graph.nodes.length + graph.edges.length + 1) * maxIterationsPerAgent);
+    const initialGraphSize = snapshot.graph.nodes.length + snapshot.graph.edges.length + 1;
+    const maxSteps = Math.max(1, initialGraphSize * maxIterationsPerAgent * 2);
 
     for (let step = 0; step < maxSteps; step += 1) {
+      snapshot = await this.store.readSnapshot(snapshot.sessionId);
+      const graph = snapshot.graph;
       const readyHandoffs = graph.edges
         .filter((edge) => edge.kind === "handoff")
-        .filter((edge) => (runCounts.get(edge.from) ?? 0) > 0 && !processedHandoffs.has(edge.id));
+        .filter((edge) => (runCounts.get(edge.from) ?? 0) > 0 && !processedHandoffs.has(edge.id))
+        .filter((edge) => this.canSchedule(snapshot, edge.from) && this.canSchedule(snapshot, edge.to));
       if (readyHandoffs.length > 0) {
         const batch = readyHandoffs.slice(0, maxConcurrent);
         await Promise.all(batch.map(async (edge) => {
@@ -271,7 +273,8 @@ export class SessionManager {
 
       const readyMessages = graph.edges
         .filter((edge) => edge.kind === "message")
-        .filter((edge) => (runCounts.get(edge.from) ?? 0) > 0 && (runCounts.get(edge.to) ?? 0) < maxIterationsPerAgent);
+        .filter((edge) => (runCounts.get(edge.from) ?? 0) > 0 && (runCounts.get(edge.to) ?? 0) < maxIterationsPerAgent)
+        .filter((edge) => this.canSchedule(snapshot, edge.from) && this.canSchedule(snapshot, edge.to));
       if (readyMessages.length === 0) break;
       const batch = readyMessages.slice(0, maxConcurrent);
       await Promise.all(batch.map(async (edge) => {
@@ -304,6 +307,11 @@ export class SessionManager {
     }
 
     const stopSummary = spec.stopCriteria.length > 0 ? spec.stopCriteria.join("; ") : "workflow graph reached quiescence";
+    snapshot = await this.store.readSnapshot(snapshot.sessionId);
+    if (!this.canSchedule(snapshot, orchestratorId)) {
+      await this.store.rebuildSnapshot(snapshot.sessionId);
+      return;
+    }
     await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId: snapshot.sessionId,
@@ -333,8 +341,7 @@ export class SessionManager {
     causationId: string,
     publish: (event: SessionEvent) => void
   ) {
-    const spec = this.workflows.get(snapshot.workflowId);
-    const role = this.workflows.roleForNode(spec, agentId);
+    const role = this.resolveRole(snapshot, agentId);
     const events = await this.runControlledTurn(snapshot.sessionId, agentId, {
       sessionId: snapshot.sessionId,
       agentId,
@@ -483,14 +490,29 @@ export class SessionManager {
     if (this.options.runtime) return;
     if (process.env.OPENAI_API_KEY) return;
     const tokens = await this.auth.loadTokens();
-    if (tokens?.accessToken) return;
+    if (tokens?.accessToken && !(await this.auth.needsRefresh())) return;
     throw new Error("OpenAI authentication is required for non-debug sessions. Connect OpenAI OAuth in Settings or set OPENAI_API_KEY.");
   }
 
   private async openAIApiKey(debugMode: boolean) {
     if (debugMode) return undefined;
     if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
+    if (await this.auth.needsRefresh()) {
+      throw new Error("OpenAI OAuth token needs refresh. Reconnect OpenAI in Settings before starting a live run.");
+    }
     return (await this.auth.loadTokens())?.accessToken;
+  }
+
+  private resolveRole(snapshot: SessionSnapshot, agentId: string) {
+    const node = snapshot.graph.nodes.find((candidate) => candidate.id === agentId);
+    if (node) return this.workflows.roleById(node.roleId);
+    const spec = this.workflows.get(snapshot.workflowId);
+    return this.workflows.roleForNode(spec, agentId);
+  }
+
+  private canSchedule(snapshot: SessionSnapshot, agentId: string) {
+    const status = snapshot.graph.nodes.find((node) => node.id === agentId)?.status ?? "idle";
+    return !["paused", "cancelled", "failed", "completed"].includes(status);
   }
 
   private async initializeWorkspace(workspaceRoot: string, title: string) {
@@ -525,12 +547,34 @@ export class SessionManager {
     this.subscribers.set(sessionId, subscribers);
   }
 
-  private async runControlledTurn(sessionId: string, agentId: string, input: Parameters<AgentRuntime["runTurn"]>[0]) {
+  private async runControlledTurn(sessionId: string, agentId: string, input: Parameters<AgentRuntime["runTurn"]>[0]): Promise<SessionEvent[]> {
     const key = runKey(sessionId, agentId);
     const controller = new AbortController();
     this.activeRuns.set(key, controller);
     try {
       return await this.runtime.runTurn({ ...input, signal: controller.signal });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return [
+        {
+          eventId: makeEventId(),
+          sessionId,
+          agentId,
+          timestamp: new Date().toISOString(),
+          type: "error",
+          payload: { message },
+          causationId: input.causationId
+        },
+        {
+          eventId: makeEventId(),
+          sessionId,
+          agentId,
+          timestamp: new Date().toISOString(),
+          type: "agent.status",
+          payload: { status: "failed" },
+          causationId: input.causationId
+        }
+      ];
     } finally {
       if (this.activeRuns.get(key) === controller) {
         this.activeRuns.delete(key);

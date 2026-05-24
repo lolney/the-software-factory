@@ -25,6 +25,7 @@ describe("SessionManager deterministic debug sessions", () => {
       });
 
       expect(JSON.stringify(snapshot)).toContain("implementor-reviewer");
+      expect((snapshot as { workspaceRoot: string }).workspaceRoot).toBe(path.join(root, (snapshot as { sessionId: string }).sessionId, "workspace"));
       expect((snapshot as { workspaceRoot: string }).workspaceRoot.endsWith(`${path.sep}workspace`)).toBe(true);
       expect(existsSync((snapshot as { workspaceRoot: string }).workspaceRoot)).toBe(true);
       expect(events).toContain("agent.tool_call");
@@ -87,6 +88,40 @@ describe("SessionManager deterministic debug sessions", () => {
         params: { sessionId: snapshot.sessionId }
       }));
       expect(events).toContain("\"debugMode\":false");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("records runtime failures durably instead of leaving silent partial sessions", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn() {
+            throw new Error("model unavailable");
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_create_failure",
+        method: "createSession",
+        params: {
+          prompt: "live failure",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      const replay = await manager.handle({
+        id: "req_sub_failure",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
+
+      expect(replay.events.some((event) => event.type === "error" && event.payload.message === "model unavailable")).toBe(true);
+      expect(replay.events.some((event) => event.type === "agent.status" && event.agentId === "orchestrator" && event.payload.status === "failed")).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
