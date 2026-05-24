@@ -356,6 +356,7 @@ export class SessionManager {
     for (const event of events) {
       await this.appendAndPublish(event, publish);
     }
+    await this.store.rebuildSnapshot(snapshot.sessionId);
   }
 
   private assertAgentCanReceive(snapshot: SessionSnapshot, agentId: string) {

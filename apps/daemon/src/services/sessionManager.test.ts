@@ -236,4 +236,49 @@ describe("SessionManager deterministic debug sessions", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("does not schedule downstream workflow work from a failed agent", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            if (input.agentId === "implementor") {
+              throw new Error("implementation failed");
+            }
+            return [{
+              eventId: `evt_${crypto.randomUUID()}`,
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { text: "ok" }
+            }];
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_failed_workflow",
+        method: "createSession",
+        params: {
+          prompt: "Implement and run QA acceptance",
+          workspaceRoot: root,
+          workflowId: "implementor-qa-loop",
+          debugMode: true
+        }
+      }) as { sessionId: string };
+      const replay = await manager.handle({
+        id: "req_sub_failed_workflow",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
+
+      expect(replay.events.some((event) => event.type === "error" && event.agentId === "implementor")).toBe(true);
+      expect(replay.events.some((event) => event.type === "handoff.created" && event.payload.from === "implementor" && event.payload.to === "qa")).toBe(false);
+      expect(replay.events.some((event) => event.type === "agent.message" && event.agentId === "qa")).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
