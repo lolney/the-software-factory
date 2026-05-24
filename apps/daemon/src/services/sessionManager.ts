@@ -43,7 +43,7 @@ export class SessionManager {
       case "getAuthStatus":
         return this.auth.status();
       case "beginOpenAIOAuth":
-        return this.auth.beginOAuth();
+        return this.auth.beginOAuth(request.params.port);
       case "disconnectOpenAIOAuth":
         await this.auth.deleteTokens();
         return this.auth.status();
@@ -226,19 +226,20 @@ export class SessionManager {
     const graph = snapshot.graph;
     const spec = this.workflows.get(snapshot.workflowId);
     const orchestratorId = spec.lifecycle.orchestratorNodeId;
-    const completedAgents = new Set<string>([orchestratorId]);
-    const processedEdges = new Set<string>();
+    const runCounts = new Map<string, number>([[orchestratorId, 1]]);
+    const processedHandoffs = new Set<string>();
     const maxConcurrent = Math.max(1, spec.concurrency.maxActiveAgents);
-    const maxSteps = Math.max(1, graph.nodes.length + graph.edges.length + 1);
+    const maxIterationsPerAgent = 2;
+    const maxSteps = Math.max(1, (graph.nodes.length + graph.edges.length + 1) * maxIterationsPerAgent);
 
     for (let step = 0; step < maxSteps; step += 1) {
       const readyHandoffs = graph.edges
         .filter((edge) => edge.kind === "handoff")
-        .filter((edge) => completedAgents.has(edge.from) && !processedEdges.has(edge.id));
+        .filter((edge) => (runCounts.get(edge.from) ?? 0) > 0 && !processedHandoffs.has(edge.id));
       if (readyHandoffs.length > 0) {
         const batch = readyHandoffs.slice(0, maxConcurrent);
         await Promise.all(batch.map(async (edge) => {
-          processedEdges.add(edge.id);
+          processedHandoffs.add(edge.id);
           const handoff = await this.appendAndPublish({
             eventId: makeEventId(),
             sessionId: snapshot.sessionId,
@@ -262,7 +263,7 @@ export class SessionManager {
           }, publish);
           if (edge.to !== orchestratorId) {
             await this.runWorkflowAgent(snapshot, edge.to, `Workflow handoff from ${edge.from}: ${edge.id}`, handoff.eventId, publish);
-            completedAgents.add(edge.to);
+            runCounts.set(edge.to, (runCounts.get(edge.to) ?? 0) + 1);
           }
         }));
         continue;
@@ -270,11 +271,10 @@ export class SessionManager {
 
       const readyMessages = graph.edges
         .filter((edge) => edge.kind === "message")
-        .filter((edge) => completedAgents.has(edge.from) && !processedEdges.has(edge.id));
+        .filter((edge) => (runCounts.get(edge.from) ?? 0) > 0 && (runCounts.get(edge.to) ?? 0) < maxIterationsPerAgent);
       if (readyMessages.length === 0) break;
       const batch = readyMessages.slice(0, maxConcurrent);
       await Promise.all(batch.map(async (edge) => {
-        processedEdges.add(edge.id);
         const message = await this.appendAndPublish({
           eventId: makeEventId(),
           sessionId: snapshot.sessionId,
@@ -287,7 +287,7 @@ export class SessionManager {
             text: `Workflow message from ${edge.from} to ${edge.to}: ${edge.id}`
           }
         }, publish);
-        if (!completedAgents.has(edge.to) && edge.to !== orchestratorId) {
+        if (edge.to !== orchestratorId) {
           await this.appendAndPublish({
             eventId: makeEventId(),
             sessionId: snapshot.sessionId,
@@ -298,7 +298,7 @@ export class SessionManager {
             causationId: message.eventId
           }, publish);
           await this.runWorkflowAgent(snapshot, edge.to, `Workflow message from ${edge.from}: ${edge.id}`, message.eventId, publish);
-          completedAgents.add(edge.to);
+          runCounts.set(edge.to, (runCounts.get(edge.to) ?? 0) + 1);
         }
       }));
     }

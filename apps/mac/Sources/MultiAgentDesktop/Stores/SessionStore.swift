@@ -14,6 +14,7 @@ final class SessionStore {
     var workflows: [WorkflowSpec] = []
     var authStatus: AuthStatus?
     var currentWorkspaceRoot: String?
+    var currentSessionDebugMode: Bool?
     var presentNewSession = false
     var composerText = ""
     var connectionStatus = "Disconnected"
@@ -165,6 +166,8 @@ final class SessionStore {
             return
         }
         isLoadingSelection = true
+        currentWorkspaceRoot = sessions.first { $0.id == sessionId }?.workspaceRoot
+        currentSessionDebugMode = nil
         graph = GraphState(sessionId: sessionId, workflowId: "", nodes: [], edges: [])
         transcript = []
         daemon.sendRequest(method: "getSnapshot", params: ["sessionId": sessionId])
@@ -238,7 +241,7 @@ final class SessionStore {
     }
 
     func beginOpenAIOAuth() {
-        daemon.sendRequest(method: "beginOpenAIOAuth", params: [:])
+        daemon.sendRequest(method: "beginOpenAIOAuth", params: ["port": daemonPort])
     }
 
     func refreshAuthStatus() {
@@ -358,6 +361,7 @@ final class SessionStore {
             self.selectedAgentId = nil
         }
         currentWorkspaceRoot = snapshot.workspaceRoot
+        currentSessionDebugMode = snapshot.debugMode ?? false
         let summary = SessionSummary(id: snapshot.sessionId, title: snapshot.title, detail: snapshot.workflowId, createdAt: snapshot.createdAt, workspaceRoot: snapshot.workspaceRoot)
         upsertSessionSummary(summary)
         connectionStatus = "Connected"
@@ -387,6 +391,7 @@ final class SessionStore {
             let title = event.payload["title"]?.stringValue ?? event.sessionId
             let workflowId = event.payload["workflowId"]?.stringValue ?? graph.workflowId
             currentWorkspaceRoot = event.payload["workspaceRoot"]?.stringValue
+            currentSessionDebugMode = event.payload["debugMode"]?.boolValue
             upsertSessionSummary(SessionSummary(id: event.sessionId, title: title, detail: workflowId, createdAt: event.timestamp, workspaceRoot: currentWorkspaceRoot))
             selectedSessionId = event.sessionId
             selectedSidebarItem = event.sessionId
@@ -445,6 +450,7 @@ final class SessionStore {
     private func resetPreview() {
         selectedAgentId = nil
         currentWorkspaceRoot = nil
+        currentSessionDebugMode = nil
         isLoadingSelection = false
         graph = GraphState(
             sessionId: "local-preview",

@@ -15,8 +15,22 @@ struct NewSessionView: View {
                 .scrollContentBackground(.hidden)
                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
 
-            Toggle("Deterministic Debug Session", isOn: $store.debugMode)
-                .disabled(store.isCreatingSession)
+            Picker("Mode", selection: $store.debugMode) {
+                Text("Live").tag(false)
+                Text("Debug").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .disabled(store.isCreatingSession)
+
+            Text(store.debugMode ? "Debug uses deterministic pre-programmed agent I/O." : "Live uses OpenAI authentication from Settings or OPENAI_API_KEY.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if !store.debugMode && store.authStatus?.connected != true {
+                Label("Connect OpenAI in Settings before creating a live session.", systemImage: "person.badge.key")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
 
             if store.isCreatingSession {
                 ProgressView("Creating session...")
@@ -39,9 +53,13 @@ struct NewSessionView: View {
                     store.createSession(prompt: prompt)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isCreatingSession)
+                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isCreatingSession || (!store.debugMode && store.authStatus?.connected != true))
             }
         }
         .padding()
+        .task {
+            store.connectAndRefresh()
+            store.refreshAuthStatus()
+        }
     }
 }

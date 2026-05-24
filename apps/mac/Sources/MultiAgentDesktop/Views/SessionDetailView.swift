@@ -36,7 +36,7 @@ struct SessionDetailView: View {
                 } label: {
                     Label("Open", systemImage: "chevron.left.forwardslash.chevron.right")
                 }
-                .disabled(store.currentWorkspaceRoot == nil)
+                .disabled(store.currentWorkspaceRoot == nil || store.isLoadingSelection)
 
                 Button {
                     store.connectAndRefresh()
@@ -65,6 +65,13 @@ struct SessionDetailView: View {
                     Label("Cancel Agent", systemImage: "xmark.circle")
                 }
                 .disabled(!store.canCancelOrchestrator)
+            }
+
+            ToolbarItem(placement: .status) {
+                if let mode = store.currentSessionDebugMode {
+                    Label(mode ? "Debug" : "Live", systemImage: mode ? "ladybug" : "bolt.circle")
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .confirmationDialog("Cancel the selected agent for this session?", isPresented: $confirmCancel) {

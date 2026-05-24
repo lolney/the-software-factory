@@ -200,6 +200,11 @@ enum JSONValue: Codable, Hashable {
         if case .string(let value) = self { return value }
         return nil
     }
+
+    var boolValue: Bool? {
+        if case .bool(let value) = self { return value }
+        return nil
+    }
 }
 
 extension Color {

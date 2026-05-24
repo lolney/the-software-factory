@@ -149,7 +149,7 @@ export class AuthManager {
     const tokens = await this.loadTokens();
     return {
       clientId: CODEX_PUBLIC_CLIENT_ID,
-      connected: Boolean(tokens),
+      connected: Boolean(tokens) && !(await this.needsRefresh()),
       hasTokens: Boolean(tokens),
       email: tokens?.email,
       expiresAt: tokens?.expiresAt,

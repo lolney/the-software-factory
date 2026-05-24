@@ -33,7 +33,7 @@ struct WorkflowsView: View {
             .frame(minWidth: 280, idealWidth: 340)
 
             if let workflow = selectedWorkflow {
-                WorkflowDetail(workflow: workflow) {
+                WorkflowDetail(workflow: workflow, targetSessionTitle: store.sessions.first(where: { $0.id == store.selectedSessionId })?.title, canInstantiate: store.hasActiveSession) {
                     store.instantiateWorkflow(workflow.id)
                 }
                 .frame(minWidth: 560)
@@ -51,6 +51,8 @@ struct WorkflowsView: View {
 
 private struct WorkflowDetail: View {
     let workflow: WorkflowSpec
+    let targetSessionTitle: String?
+    let canInstantiate: Bool
     let instantiate: () -> Void
 
     var body: some View {
@@ -64,12 +66,18 @@ private struct WorkflowDetail: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button {
-                        instantiate()
-                    } label: {
-                        Label("Instantiate", systemImage: "plus.square.on.square")
+                    VStack(alignment: .trailing, spacing: 6) {
+                        Button {
+                            instantiate()
+                        } label: {
+                            Label("Instantiate", systemImage: "plus.square.on.square")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!canInstantiate)
+                        Text(targetSessionTitle.map { "Target: \($0)" } ?? "Select a session target")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.borderedProminent)
                 }
 
                 LabeledContent("Nodes", value: "\(workflow.nodes.count)")

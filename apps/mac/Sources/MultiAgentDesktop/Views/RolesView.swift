@@ -58,6 +58,7 @@ private struct RoleEditor: View {
     var body: some View {
         Form {
             Section("Identity") {
+                TextField("ID", text: $role.id)
                 TextField("Name", text: $role.name)
                 TextField("Model", text: $role.model)
                 TextField("Color", text: $role.color)
@@ -73,6 +74,29 @@ private struct RoleEditor: View {
                 Toggle("Can read files", isOn: $role.toolPolicy.canRead)
                 Toggle("Can write files", isOn: $role.toolPolicy.canWrite)
                 Toggle("Can run commands", isOn: $role.toolPolicy.canRunCommands)
+            }
+
+            Section("Workspace") {
+                TextField("Allowed roots", text: Binding(
+                    get: { role.workspace.allowedRoots.joined(separator: ", ") },
+                    set: { role.workspace.allowedRoots = $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+                ))
+            }
+
+            Section("Expected Outputs") {
+                TextEditor(text: Binding(
+                    get: { role.expectedOutputs.joined(separator: "\n") },
+                    set: { role.expectedOutputs = $0.split(separator: "\n").map(String.init).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty } }
+                ))
+                .frame(minHeight: 80)
+            }
+
+            Section("Review Responsibilities") {
+                TextEditor(text: Binding(
+                    get: { role.reviewResponsibilities.joined(separator: "\n") },
+                    set: { role.reviewResponsibilities = $0.split(separator: "\n").map(String.init).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty } }
+                ))
+                .frame(minHeight: 80)
             }
 
             Section {
