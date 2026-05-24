@@ -29,7 +29,11 @@ final class DaemonClient {
     }
 
     func send(_ json: String) {
-        task?.send(.string(json)) { error in
+        guard let task else {
+            onSendError?("Daemon is not connected.")
+            return
+        }
+        task.send(.string(json)) { error in
             if let error {
                 print("WebSocket send failed: \(error)")
                 Task { @MainActor in

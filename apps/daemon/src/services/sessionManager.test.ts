@@ -46,6 +46,32 @@ describe("SessionManager deterministic debug sessions", () => {
     }
   });
 
+  it("lists predefined roles and workflows through the daemon protocol", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      const result = await manager.handle({
+        id: "req_list",
+        method: "listSessions",
+        params: {}
+      }) as { roles: Array<{ name: string }>; workflows: Array<{ id: string }> };
+
+      expect(result.roles.map((role) => role.name)).toEqual(expect.arrayContaining([
+        "QAer",
+        "Adversarial Reviewer",
+        "Implementor",
+        "Planner",
+        "Researcher"
+      ]));
+      expect(result.workflows.map((workflow) => workflow.id)).toEqual(expect.arrayContaining([
+        "implementor-qa-loop",
+        "implementor-reviewer"
+      ]));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("preserves non-debug runtime mode for follow-up messages", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
     try {

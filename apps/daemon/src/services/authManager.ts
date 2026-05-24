@@ -1,5 +1,8 @@
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
+import { readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -24,13 +27,15 @@ export class AuthManager {
   private readonly keychainAccount = "codex-public-client";
   private readonly pending = new Map<string, PendingOAuth>();
 
-  authorizationUrl(state: string, redirectUri = "http://127.0.0.1:3767/oauth/callback", codeChallenge?: string) {
+  authorizationUrl(state: string, redirectUri = "http://localhost:3767/auth/callback", codeChallenge?: string) {
     const url = new URL("https://auth.openai.com/oauth/authorize");
     url.searchParams.set("client_id", CODEX_PUBLIC_CLIENT_ID);
     url.searchParams.set("response_type", "code");
     url.searchParams.set("redirect_uri", redirectUri);
-    url.searchParams.set("scope", "openid profile email offline_access");
+    url.searchParams.set("scope", "openid profile email offline_access api.connectors.read api.connectors.invoke");
     url.searchParams.set("state", state);
+    url.searchParams.set("id_token_add_organizations", "true");
+    url.searchParams.set("codex_cli_simplified_flow", "true");
     if (codeChallenge) {
       url.searchParams.set("code_challenge", codeChallenge);
       url.searchParams.set("code_challenge_method", "S256");
@@ -38,10 +43,16 @@ export class AuthManager {
     return url.toString();
   }
 
-  beginOAuth(port = 3767) {
+  async beginOAuth(port = 3767) {
+    const codexTokens = await this.loadCodexTokens();
+    if (codexTokens) {
+      await this.saveTokens(codexTokens);
+      return this.status();
+    }
+
     const state = safeToken();
     const verifier = safeToken(48);
-    const redirectUri = `http://127.0.0.1:${port}/oauth/callback`;
+    const redirectUri = `http://localhost:${port}/auth/callback`;
     const codeChallenge = base64Url(crypto.createHash("sha256").update(verifier).digest());
     this.pending.set(state, { state, verifier, redirectUri });
     return {
@@ -126,6 +137,29 @@ export class AuthManager {
         "-w"
       ]);
       return JSON.parse(stdout.trim()) as OAuthTokenSet;
+    } catch {
+      return null;
+    }
+  }
+
+  async loadCodexTokens(): Promise<OAuthTokenSet | null> {
+    try {
+      const raw = await readFile(path.join(os.homedir(), ".codex", "auth.json"), "utf8");
+      const parsed = JSON.parse(raw) as {
+        tokens?: {
+          access_token?: string;
+          refresh_token?: string;
+          id_token?: string;
+        };
+      };
+      if (!parsed.tokens?.access_token) {
+        return null;
+      }
+      return {
+        accessToken: parsed.tokens.access_token,
+        refreshToken: parsed.tokens.refresh_token,
+        email: emailFromIdToken(parsed.tokens.id_token)
+      };
     } catch {
       return null;
     }

@@ -23,4 +23,21 @@ describe("WorkflowEngine", () => {
       "Researcher"
     ]));
   });
+
+  it("defines the requested built-in workflow templates", () => {
+    const engine = new WorkflowEngine();
+    const workflows = engine.list();
+    expect(workflows.map((workflow) => workflow.id)).toEqual(expect.arrayContaining([
+      "implementor-qa-loop",
+      "implementor-reviewer"
+    ]));
+    expect(workflows.find((workflow) => workflow.id === "implementor-qa-loop")?.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: "implementor", to: "qa", kind: "handoff" }),
+      expect.objectContaining({ from: "qa", to: "implementor", kind: "message" })
+    ]));
+    expect(workflows.find((workflow) => workflow.id === "implementor-reviewer")?.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: "implementor", to: "reviewer", kind: "message" }),
+      expect.objectContaining({ from: "reviewer", to: "implementor", kind: "message" })
+    ]));
+  });
 });

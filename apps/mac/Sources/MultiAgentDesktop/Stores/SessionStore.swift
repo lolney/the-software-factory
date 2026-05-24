@@ -25,6 +25,8 @@ final class SessionStore {
     var isLoadingSelection = false
     private var subscribedSessionIds = Set<String>()
     private var pendingCreatePrompt: String?
+    private var pendingOpenAIOAuth = false
+    private let localDaemonLauncher = LocalDaemonLauncher()
 
     var daemonPort: Int {
         get {
@@ -101,6 +103,7 @@ final class SessionStore {
                 self?.lastError = reason
                 self?.isCreatingSession = false
                 self?.pendingCreatePrompt = nil
+                self?.pendingOpenAIOAuth = false
             }
         }
         daemon.onSendError = { [weak self] reason in
@@ -108,14 +111,28 @@ final class SessionStore {
                 self?.lastError = reason
                 self?.isCreatingSession = false
                 self?.pendingCreatePrompt = nil
+                self?.pendingOpenAIOAuth = false
             }
         }
     }
 
     func connectAndRefresh() {
-        daemon.connect(port: daemonPort)
+        Task { @MainActor in
+            await connectAndRefreshAsync()
+        }
+    }
+
+    private func connectAndRefreshAsync() async {
         connectionStatus = daemon.isConnected ? "Connected" : "Connecting"
         lastError = nil
+        let daemonStarted = await localDaemonLauncher.ensureStarted(port: daemonPort)
+        guard daemonStarted else {
+            connectionStatus = "Disconnected"
+            lastError = "Could not start the local daemon. Check dist/app-daemon.log for details."
+            return
+        }
+        daemon.connect(port: daemonPort)
+        try? await Task.sleep(for: .milliseconds(250))
         daemon.sendRequest(method: "listSessions", params: [:])
         refreshCatalogs()
     }
@@ -248,10 +265,16 @@ final class SessionStore {
 
     func beginOpenAIOAuth() {
         guard daemon.isConnected else {
+            pendingOpenAIOAuth = true
             connectAndRefresh()
-            lastError = "Connecting to daemon. Try OpenAI setup again after the connection is confirmed."
+            lastError = "Connecting to daemon. OpenAI setup will continue automatically."
             return
         }
+        sendBeginOpenAIOAuth()
+    }
+
+    private func sendBeginOpenAIOAuth() {
+        lastError = nil
         daemon.sendRequest(method: "beginOpenAIOAuth", params: ["port": daemonPort])
         Task { @MainActor in
             for _ in 0..<10 {
@@ -279,9 +302,13 @@ final class SessionStore {
         case .finder:
             NSWorkspace.shared.open(url)
         case .vsCode:
-            openApplication("Visual Studio Code", path: currentWorkspaceRoot)
+            if !openVSCode(path: currentWorkspaceRoot) {
+                lastError = "Could not open VS Code. Install Visual Studio Code or the 'code' command-line tool."
+            }
         case .iTerm:
-            openApplication("iTerm", path: currentWorkspaceRoot)
+            if !openBundleIdentifier("com.googlecode.iterm2", path: currentWorkspaceRoot) && !openApplication("iTerm", path: currentWorkspaceRoot) {
+                lastError = "Could not open iTerm."
+            }
         }
     }
 
@@ -291,6 +318,10 @@ final class SessionStore {
         if let prompt = pendingCreatePrompt, object["method"] == nil {
             pendingCreatePrompt = nil
             sendCreateSession(prompt: prompt)
+        }
+        if pendingOpenAIOAuth, object["method"] == nil {
+            pendingOpenAIOAuth = false
+            sendBeginOpenAIOAuth()
         }
         if object["method"] as? String == "event",
            let params = object["params"],
@@ -557,9 +588,53 @@ private func jsonObject<T: Encodable>(_ value: T) -> Any? {
     return try? JSONSerialization.jsonObject(with: data)
 }
 
-private func openApplication(_ appName: String, path: String) {
+@discardableResult
+private func openApplication(_ appName: String, path: String) -> Bool {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
     process.arguments = ["-a", appName, path]
-    try? process.run()
+    do {
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    } catch {
+        return false
+    }
+}
+
+@discardableResult
+private func openBundleIdentifier(_ bundleIdentifier: String, path: String) -> Bool {
+    runProcess("/usr/bin/open", ["-b", bundleIdentifier, path])
+}
+
+@discardableResult
+private func openVSCode(path: String) -> Bool {
+    if openBundleIdentifier("com.microsoft.VSCode", path: path) {
+        return true
+    }
+    let candidates = [
+        "/usr/local/bin/code",
+        "/opt/homebrew/bin/code",
+        "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+    ]
+    for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate) {
+        if runProcess(candidate, ["-n", path]) {
+            return true
+        }
+    }
+    return openApplication("Visual Studio Code", path: path)
+}
+
+@discardableResult
+private func runProcess(_ executable: String, _ arguments: [String]) -> Bool {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    do {
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    } catch {
+        return false
+    }
 }
