@@ -6,12 +6,19 @@ struct OrchestratorChatView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Orchestrator")
+                Text(store.transcriptFilterLabel)
                     .font(.headline)
-                if let selectedAgentId = store.selectedAgentId {
-                    Text("filtered: \(selectedAgentId)")
+                if store.isTranscriptFiltered {
+                    Text("filtered transcript")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Button {
+                        store.selectAgent(nil)
+                    } label: {
+                        Label("All Agents", systemImage: "line.3.horizontal.decrease.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
                 }
                 Spacer()
                 Text(store.connectionStatus)
@@ -31,9 +38,17 @@ struct OrchestratorChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(store.filteredTranscript) { item in
-                            TranscriptRow(item: item)
-                                .id(item.id)
+                        if store.filteredTranscript.isEmpty {
+                            Text(store.isTranscriptFiltered ? "No transcript events for this agent yet." : "No transcript events yet.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 24)
+                        } else {
+                            ForEach(store.filteredTranscript) { item in
+                                TranscriptRow(item: item)
+                                    .id(item.id)
+                            }
                         }
                     }
                     .padding()

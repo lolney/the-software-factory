@@ -201,12 +201,22 @@ export class EventStore {
       edges: [],
       activeToolCalls: []
     };
-    graph.nodes = graph.nodes.map((node) => ({
-      ...node,
-      status: deriveStatus(events, node.id),
-      unreadCount: events.filter((event) => event.agentId === node.id && event.type === "agent.message").length,
-      errorCount: events.filter((event) => event.agentId === node.id && event.type === "error").length
-    }));
+    const ackedEventIds = new Set(
+      events
+        .filter((event) => event.type === "client.ack")
+        .map((event) => String(event.payload.ackedEventId ?? ""))
+        .filter(Boolean)
+    );
+    graph.nodes = graph.nodes.map((node) => {
+      const ackedMessages = events.filter((event) => ackedEventIds.has(event.eventId) && event.agentId === node.id);
+      const latestAck = ackedMessages.at(-1)?.timestamp ?? "";
+      return {
+        ...node,
+        status: deriveStatus(events, node.id),
+        unreadCount: events.filter((event) => event.agentId === node.id && event.type === "agent.message" && event.timestamp > latestAck).length,
+        errorCount: events.filter((event) => event.agentId === node.id && event.type === "error").length
+      };
+    });
     graph.edges = graph.edges.map((edge) => ({
       ...edge,
       active: events.some((event) => {

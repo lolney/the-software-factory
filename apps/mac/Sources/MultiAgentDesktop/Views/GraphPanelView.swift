@@ -20,28 +20,51 @@ struct GraphPanelView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal)
 
-            Canvas { context, size in
-                let positions = layout(size: size)
+            GeometryReader { proxy in
+                let positions = layout(size: proxy.size)
+                ZStack {
+                    Canvas { context, size in
+                        let positions = layout(size: size)
 
-                for edge in graph.edges {
-                    guard let start = positions[edge.from], let end = positions[edge.to] else { continue }
-                    var path = Path()
-                    path.move(to: start)
-                    path.addLine(to: end)
-                    let style = StrokeStyle(lineWidth: edge.active ? 2.5 : 1.5, dash: edge.kind == .message ? [5, 5] : [])
-                    context.stroke(path, with: .color(edge.active ? .accentColor : .secondary), style: style)
-                    drawArrowhead(context: context, from: start, to: end, active: edge.active)
-                }
+                        for edge in graph.edges {
+                            guard let start = positions[edge.from], let end = positions[edge.to] else { continue }
+                            var path = Path()
+                            path.move(to: start)
+                            path.addLine(to: end)
+                            let style = StrokeStyle(lineWidth: edge.active ? 2.5 : 1.5, dash: edge.kind == .message ? [5, 5] : [])
+                            context.stroke(path, with: .color(edge.active ? .accentColor : .secondary), style: style)
+                            drawArrowhead(context: context, from: start, to: end, active: edge.active)
+                        }
 
-                for node in graph.nodes {
-                    guard let point = positions[node.id] else { continue }
-                    let rect = CGRect(x: point.x - 72, y: point.y - 34, width: 144, height: 68)
-                    context.fill(Path(roundedRect: rect, cornerRadius: 8), with: .color(Color(hex: node.colorHex).opacity(0.16)))
-                    context.stroke(Path(roundedRect: rect, cornerRadius: 8), with: .color(Color(hex: node.colorHex)), lineWidth: 2)
-                    context.draw(Text(shortLabel(node.label)).font(.caption.weight(.semibold)), at: CGPoint(x: rect.midX, y: rect.midY - 8), anchor: .center)
-                    context.draw(Text(node.status.rawValue).font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: rect.midX, y: rect.midY + 12), anchor: .center)
-                    if node.errorCount > 0 || node.unreadCount > 0 {
-                        context.draw(Text(badgeText(for: node)).font(.caption2.weight(.bold)), at: CGPoint(x: rect.maxX - 10, y: rect.minY + 10), anchor: .center)
+                        for node in graph.nodes {
+                            guard let point = positions[node.id] else { continue }
+                            let rect = CGRect(x: point.x - 72, y: point.y - 34, width: 144, height: 68)
+                            context.fill(Path(roundedRect: rect, cornerRadius: 8), with: .color(Color(hex: node.colorHex).opacity(0.16)))
+                            context.stroke(Path(roundedRect: rect, cornerRadius: 8), with: .color(Color(hex: node.colorHex)), lineWidth: 2)
+                            if node.id == store.selectedAgentId {
+                                context.stroke(Path(roundedRect: rect.insetBy(dx: -4, dy: -4), cornerRadius: 10), with: .color(.accentColor), lineWidth: 2.5)
+                            }
+                            context.draw(Text(shortLabel(node.label)).font(.caption.weight(.semibold)), at: CGPoint(x: rect.midX, y: rect.midY - 8), anchor: .center)
+                            context.draw(Text(node.status.rawValue).font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: rect.midX, y: rect.midY + 12), anchor: .center)
+                            if node.errorCount > 0 || node.unreadCount > 0 {
+                                context.draw(Text(badgeText(for: node)).font(.caption2.weight(.bold)), at: CGPoint(x: rect.maxX - 10, y: rect.minY + 10), anchor: .center)
+                            }
+                        }
+                    }
+                    ForEach(graph.nodes) { node in
+                        if let point = positions[node.id] {
+                            Button {
+                                store.selectAgent(node.id)
+                            } label: {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.clear)
+                                    .contentShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Select \(node.label)")
+                            .frame(width: 144, height: 68)
+                            .position(point)
+                        }
                     }
                 }
             }

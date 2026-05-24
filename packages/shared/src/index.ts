@@ -83,6 +83,7 @@ export const SessionEventTypeSchema = z.enum([
   "control.resume",
   "control.cancel",
   "control.nudge",
+  "client.ack",
   "error"
 ]);
 

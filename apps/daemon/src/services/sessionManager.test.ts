@@ -137,4 +137,32 @@ describe("SessionManager deterministic debug sessions", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("continues handoff workflows into downstream QA agents", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      const snapshot = await manager.handle({
+        id: "req_create_qa",
+        method: "createSession",
+        params: {
+          prompt: "Implement and run QA acceptance",
+          workspaceRoot: root,
+          workflowId: "implementor-qa-loop",
+          debugMode: true
+        }
+      }) as { sessionId: string };
+      const replay = await manager.handle({
+        id: "req_sub_qa",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
+
+      expect(replay.events.some((event) => event.type === "handoff.created" && event.payload.from === "implementor" && event.payload.to === "qa")).toBe(true);
+      expect(replay.events.some((event) => event.type === "agent.message" && event.agentId === "qa")).toBe(true);
+      expect(replay.events.some((event) => event.type === "message.sent" && event.payload.from === "qa" && event.payload.to === "implementor")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

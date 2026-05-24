@@ -116,4 +116,56 @@ describe("EventStore", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("rebuilds unread counts from client acknowledgements", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-events-"));
+    try {
+      const store = new EventStore(root);
+      await store.createSession({
+        sessionId: "sess_ack",
+        title: "Ack session",
+        workspaceRoot: root,
+        workflowId: "orchestrator-basic",
+        debugMode: true,
+        graph: {
+          sessionId: "sess_ack",
+          workflowId: "orchestrator-basic",
+          nodes: [
+            { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", status: "idle", color: "#4f7cff", unreadCount: 0, errorCount: 0 }
+          ],
+          edges: [],
+          activeToolCalls: []
+        }
+      });
+      const firstMessageId = makeEventId();
+      await store.append({
+        eventId: firstMessageId,
+        sessionId: "sess_ack",
+        agentId: "orchestrator",
+        timestamp: "2026-01-01T00:00:01.000Z",
+        type: "agent.message",
+        payload: { text: "first" }
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: "sess_ack",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        type: "client.ack",
+        payload: { ackedEventId: firstMessageId }
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: "sess_ack",
+        agentId: "orchestrator",
+        timestamp: "2026-01-01T00:00:03.000Z",
+        type: "agent.message",
+        payload: { text: "second" }
+      });
+
+      const rebuilt = await store.rebuildSnapshot("sess_ack");
+      expect(rebuilt.graph.nodes[0]?.unreadCount).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

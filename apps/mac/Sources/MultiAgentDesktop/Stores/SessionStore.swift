@@ -17,6 +17,7 @@ final class SessionStore {
     var selectedAgentId: String?
     var isLoadingSelection = false
     private var subscribedSessionIds = Set<String>()
+    private var pendingCreatePrompt: String?
 
     var daemonPort: Int {
         get {
@@ -35,7 +36,7 @@ final class SessionStore {
     }
 
     var canSendComposerMessage: Bool {
-        daemon.isConnected && hasActiveSession && ![.cancelled, .failed, .completed].contains(orchestratorStatus) && !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        daemon.isConnected && hasActiveSession && ![.paused, .cancelled, .failed, .completed].contains(orchestratorStatus) && !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var orchestratorStatus: AgentStatus {
@@ -51,6 +52,15 @@ final class SessionStore {
         return transcript.filter { item in
             item.agentId == selectedAgentId || item.sender == selectedAgentId || item.recipient == selectedAgentId
         }
+    }
+
+    var transcriptFilterLabel: String {
+        guard let selectedAgentId else { return "All Agents" }
+        return graph.nodes.first { $0.id == selectedAgentId }?.label ?? selectedAgentId
+    }
+
+    var isTranscriptFiltered: Bool {
+        selectedAgentId != nil
     }
 
     var canPauseOrchestrator: Bool {
@@ -71,22 +81,7 @@ final class SessionStore {
         ]
         selectedSessionId = sessions.first?.id
         selectedAgentId = "orchestrator"
-        graph = GraphState(
-            sessionId: "local-preview",
-            workflowId: "implementor-reviewer",
-            nodes: [
-                AgentNode(id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", status: .idle, colorHex: "#4f7cff", unreadCount: 0, errorCount: 0),
-                AgentNode(id: "implementor", roleId: "implementor", label: "Implementor", status: .waiting, colorHex: "#27ae60", unreadCount: 0, errorCount: 0),
-                AgentNode(id: "reviewer", roleId: "reviewer", label: "Reviewer", status: .waiting, colorHex: "#f2994a", unreadCount: 1, errorCount: 0)
-            ],
-            edges: [
-                AgentEdge(id: "handoff-orchestrator-implementor", from: "orchestrator", to: "implementor", kind: .handoff, active: false),
-                AgentEdge(id: "message-reviewer-implementor", from: "reviewer", to: "implementor", kind: .message, active: true)
-            ]
-        )
-        transcript = [
-            TranscriptItem(id: UUID().uuidString, agentId: "orchestrator", sender: "orchestrator", recipient: nil, type: "message", text: "Create a new session to connect to the daemon and launch a workflow.", timestamp: Date())
-        ]
+        resetPreview()
         daemon.onMessage = { [weak self] data in
             Task { @MainActor in
                 self?.handleDaemonMessage(data)
@@ -97,12 +92,14 @@ final class SessionStore {
                 self?.connectionStatus = "Disconnected"
                 self?.lastError = reason
                 self?.isCreatingSession = false
+                self?.pendingCreatePrompt = nil
             }
         }
         daemon.onSendError = { [weak self] reason in
             Task { @MainActor in
                 self?.lastError = reason
                 self?.isCreatingSession = false
+                self?.pendingCreatePrompt = nil
             }
         }
     }
@@ -116,11 +113,16 @@ final class SessionStore {
 
     func createSession(prompt: String) {
         guard daemon.isConnected else {
+            pendingCreatePrompt = prompt
+            isCreatingSession = true
             connectAndRefresh()
-            lastError = "Connecting to daemon. Create the session after the connection is confirmed."
-            isCreatingSession = false
+            lastError = "Connecting to daemon. The session will be created automatically."
             return
         }
+        sendCreateSession(prompt: prompt)
+    }
+
+    private func sendCreateSession(prompt: String) {
         isCreatingSession = true
         lastError = nil
         let workflowId = selectedWorkflowId(for: prompt)
@@ -135,7 +137,10 @@ final class SessionStore {
     func selectSession(_ sessionId: String?) {
         guard let sessionId else { return }
         selectedSessionId = sessionId
-        guard sessionId != "local-preview" else { return }
+        guard sessionId != "local-preview" else {
+            resetPreview()
+            return
+        }
         isLoadingSelection = true
         graph = GraphState(sessionId: sessionId, workflowId: "", nodes: [], edges: [])
         transcript = []
@@ -148,7 +153,9 @@ final class SessionStore {
         guard let agentId,
               let index = graph.nodes.firstIndex(where: { $0.id == agentId }) else { return }
         graph.nodes[index].unreadCount = 0
-        if let last = transcript.last {
+        if let last = transcript.reversed().first(where: { item in
+            item.agentId == agentId || item.sender == agentId || item.recipient == agentId
+        }) {
             daemon.sendRequest(method: "ackClientEvent", params: ["sessionId": graph.sessionId, "eventId": last.id])
         }
     }
@@ -181,6 +188,10 @@ final class SessionStore {
     private func handleDaemonMessage(_ data: Data) {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         connectionStatus = "Connected"
+        if let prompt = pendingCreatePrompt, object["method"] == nil {
+            pendingCreatePrompt = nil
+            sendCreateSession(prompt: prompt)
+        }
         if object["method"] as? String == "event",
            let params = object["params"],
            let eventData = try? JSONSerialization.data(withJSONObject: params),
@@ -234,6 +245,15 @@ final class SessionStore {
     }
 
     private func apply(event: SessionEvent) {
+        guard event.sessionId == selectedSessionId else {
+            if event.type == "session.created" {
+                let title = event.payload["title"]?.stringValue ?? event.sessionId
+                let workflowId = event.payload["workflowId"]?.stringValue ?? ""
+                sessions.removeAll { $0.id == event.sessionId }
+                sessions.insert(SessionSummary(id: event.sessionId, title: title, detail: workflowId), at: 0)
+            }
+            return
+        }
         transcript.append(transcriptItem(event))
         switch event.type {
         case "session.created":
@@ -267,7 +287,9 @@ final class SessionStore {
         case "agent.message":
             if let agentId = event.agentId,
                let index = graph.nodes.firstIndex(where: { $0.id == agentId }) {
-                graph.nodes[index].unreadCount += 1
+                if selectedAgentId != agentId {
+                    graph.nodes[index].unreadCount += 1
+                }
             }
         case "error":
             if let agentId = event.agentId,
@@ -289,6 +311,27 @@ final class SessionStore {
         guard !subscribedSessionIds.contains(sessionId) else { return }
         subscribedSessionIds.insert(sessionId)
         daemon.sendRequest(method: "subscribeEvents", params: ["sessionId": sessionId])
+    }
+
+    private func resetPreview() {
+        selectedAgentId = "orchestrator"
+        isLoadingSelection = false
+        graph = GraphState(
+            sessionId: "local-preview",
+            workflowId: "implementor-reviewer",
+            nodes: [
+                AgentNode(id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", status: .idle, colorHex: "#4f7cff", unreadCount: 0, errorCount: 0),
+                AgentNode(id: "implementor", roleId: "implementor", label: "Implementor", status: .waiting, colorHex: "#27ae60", unreadCount: 0, errorCount: 0),
+                AgentNode(id: "reviewer", roleId: "reviewer", label: "Reviewer", status: .waiting, colorHex: "#f2994a", unreadCount: 1, errorCount: 0)
+            ],
+            edges: [
+                AgentEdge(id: "handoff-orchestrator-implementor", from: "orchestrator", to: "implementor", kind: .handoff, active: false),
+                AgentEdge(id: "message-reviewer-implementor", from: "reviewer", to: "implementor", kind: .message, active: true)
+            ]
+        )
+        transcript = [
+            TranscriptItem(id: UUID().uuidString, agentId: "orchestrator", sender: "orchestrator", recipient: nil, type: "message", text: "Create a new session to connect to the daemon and launch a workflow.", timestamp: Date())
+        ]
     }
 
     private func selectedWorkflowId(for prompt: String) -> String {

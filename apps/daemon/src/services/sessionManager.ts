@@ -90,7 +90,15 @@ export class SessionManager {
         await this.store.assertSessionExists(request.params.sessionId);
         return this.controlEvent(request.params.sessionId, request.params.agentId, "control.cancel", "cancelled", publish);
       case "ackClientEvent":
-        return { accepted: true };
+        await this.store.assertSessionExists(request.params.sessionId);
+        await this.appendAndPublish({
+          eventId: makeEventId(),
+          sessionId: request.params.sessionId,
+          timestamp: new Date().toISOString(),
+          type: "client.ack",
+          payload: { ackedEventId: request.params.eventId }
+        }, publish);
+        return this.store.rebuildSnapshot(request.params.sessionId);
     }
   }
 
@@ -185,73 +193,129 @@ export class SessionManager {
 
   private async activateWorkflowStart(snapshot: SessionSnapshot, publish: (event: SessionEvent) => void) {
     const graph = snapshot.graph;
-    for (const edge of graph.edges.filter((candidate) => candidate.from === "orchestrator" && candidate.kind === "handoff")) {
-      const handoff = await this.appendAndPublish({
-        eventId: makeEventId(),
-        sessionId: snapshot.sessionId,
-        agentId: "orchestrator",
-        timestamp: new Date().toISOString(),
-        type: "handoff.created",
-        payload: {
-          from: edge.from,
-          to: edge.to,
-          reason: "workflow start"
-        }
-      }, publish);
-      await this.appendAndPublish({
-        eventId: makeEventId(),
-        sessionId: snapshot.sessionId,
-        agentId: edge.to,
-        timestamp: new Date().toISOString(),
-        type: "agent.status",
-        payload: { status: snapshot.debugMode ? "waiting" : "working" },
-        causationId: handoff.eventId
-      }, publish);
-      if (edge.to !== "orchestrator") {
-        const spec = this.workflows.get(snapshot.workflowId);
-        const role = this.workflows.roleForNode(spec, edge.to);
-        const events = await this.runControlledTurn(snapshot.sessionId, edge.to, {
-          sessionId: snapshot.sessionId,
-          agentId: edge.to,
-          prompt: `Workflow handoff from ${edge.from}: ${edge.id}`,
-          debugMode: snapshot.debugMode,
-          roleName: role?.name,
-          instructions: role?.promptTemplate,
-          causationId: handoff.eventId
-        });
-        for (const event of events) {
-          await this.appendAndPublish(event, publish);
-        }
-      }
-    }
-    for (const edge of graph.edges.filter((candidate) => candidate.kind === "message")) {
-      await this.appendAndPublish({
-        eventId: makeEventId(),
-        sessionId: snapshot.sessionId,
-        agentId: edge.from,
-        timestamp: new Date().toISOString(),
-        type: "message.sent",
-        payload: {
-          from: edge.from,
-          to: edge.to,
-          text: "Workflow message link armed."
-        }
-      }, publish);
-      for (const agentId of [edge.from, edge.to]) {
-        const current = graph.nodes.find((node) => node.id === agentId)?.status;
-        if (current === "idle") {
+    const spec = this.workflows.get(snapshot.workflowId);
+    const orchestratorId = spec.lifecycle.orchestratorNodeId;
+    const completedAgents = new Set<string>([orchestratorId]);
+    const processedEdges = new Set<string>();
+    const maxConcurrent = Math.max(1, spec.concurrency.maxActiveAgents);
+    const maxSteps = Math.max(1, graph.nodes.length + graph.edges.length + 1);
+
+    for (let step = 0; step < maxSteps; step += 1) {
+      const readyHandoffs = graph.edges
+        .filter((edge) => edge.kind === "handoff")
+        .filter((edge) => completedAgents.has(edge.from) && !processedEdges.has(edge.id));
+      if (readyHandoffs.length > 0) {
+        const batch = readyHandoffs.slice(0, maxConcurrent);
+        await Promise.all(batch.map(async (edge) => {
+          processedEdges.add(edge.id);
+          const handoff = await this.appendAndPublish({
+            eventId: makeEventId(),
+            sessionId: snapshot.sessionId,
+            agentId: edge.from,
+            timestamp: new Date().toISOString(),
+            type: "handoff.created",
+            payload: {
+              from: edge.from,
+              to: edge.to,
+              reason: step === 0 ? "workflow start" : "workflow graph continuation"
+            }
+          }, publish);
           await this.appendAndPublish({
             eventId: makeEventId(),
             sessionId: snapshot.sessionId,
-            agentId,
+            agentId: edge.to,
             timestamp: new Date().toISOString(),
             type: "agent.status",
-            payload: { status: "waiting" }
+            payload: { status: snapshot.debugMode ? "waiting" : "working" },
+            causationId: handoff.eventId
           }, publish);
-        }
+          if (edge.to !== orchestratorId) {
+            await this.runWorkflowAgent(snapshot, edge.to, `Workflow handoff from ${edge.from}: ${edge.id}`, handoff.eventId, publish);
+            completedAgents.add(edge.to);
+          }
+        }));
+        continue;
       }
+
+      const readyMessages = graph.edges
+        .filter((edge) => edge.kind === "message")
+        .filter((edge) => completedAgents.has(edge.from) && !processedEdges.has(edge.id));
+      if (readyMessages.length === 0) break;
+      const batch = readyMessages.slice(0, maxConcurrent);
+      await Promise.all(batch.map(async (edge) => {
+        processedEdges.add(edge.id);
+        const message = await this.appendAndPublish({
+          eventId: makeEventId(),
+          sessionId: snapshot.sessionId,
+          agentId: edge.from,
+          timestamp: new Date().toISOString(),
+          type: "message.sent",
+          payload: {
+            from: edge.from,
+            to: edge.to,
+            text: `Workflow message from ${edge.from} to ${edge.to}: ${edge.id}`
+          }
+        }, publish);
+        if (!completedAgents.has(edge.to) && edge.to !== orchestratorId) {
+          await this.appendAndPublish({
+            eventId: makeEventId(),
+            sessionId: snapshot.sessionId,
+            agentId: edge.to,
+            timestamp: new Date().toISOString(),
+            type: "agent.status",
+            payload: { status: snapshot.debugMode ? "waiting" : "working" },
+            causationId: message.eventId
+          }, publish);
+          await this.runWorkflowAgent(snapshot, edge.to, `Workflow message from ${edge.from}: ${edge.id}`, message.eventId, publish);
+          completedAgents.add(edge.to);
+        }
+      }));
     }
+
+    const stopSummary = spec.stopCriteria.length > 0 ? spec.stopCriteria.join("; ") : "workflow graph reached quiescence";
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId: orchestratorId,
+      timestamp: new Date().toISOString(),
+      type: "agent.message",
+      payload: {
+        text: `Orchestrator evaluated stop criteria: ${stopSummary}. Current alpha run is quiescent.`,
+        runtime: "workflow-engine"
+      }
+    }, publish);
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId: orchestratorId,
+      timestamp: new Date().toISOString(),
+      type: "agent.status",
+      payload: { status: "idle" }
+    }, publish);
     await this.store.rebuildSnapshot(snapshot.sessionId);
+  }
+
+  private async runWorkflowAgent(
+    snapshot: SessionSnapshot,
+    agentId: string,
+    prompt: string,
+    causationId: string,
+    publish: (event: SessionEvent) => void
+  ) {
+    const spec = this.workflows.get(snapshot.workflowId);
+    const role = this.workflows.roleForNode(spec, agentId);
+    const events = await this.runControlledTurn(snapshot.sessionId, agentId, {
+      sessionId: snapshot.sessionId,
+      agentId,
+      prompt,
+      debugMode: snapshot.debugMode,
+      roleName: role?.name,
+      instructions: role?.promptTemplate,
+      causationId
+    });
+    for (const event of events) {
+      await this.appendAndPublish(event, publish);
+    }
   }
 
   private assertAgentCanReceive(snapshot: SessionSnapshot, agentId: string) {
@@ -259,7 +323,7 @@ export class SessionManager {
     if (!node) {
       throw new Error(`Unknown agent ${agentId} in session ${snapshot.sessionId}`);
     }
-    if (["cancelled", "failed", "completed"].includes(node.status)) {
+    if (["paused", "cancelled", "failed", "completed"].includes(node.status)) {
       throw new Error(`Agent ${agentId} cannot receive messages while ${node.status}.`);
     }
   }
