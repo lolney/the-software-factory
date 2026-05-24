@@ -29,7 +29,11 @@ export class OpenAIAgentRuntime implements AgentRuntime {
       name: input.roleName ?? input.agentId,
       instructions: input.instructions ?? "You are a role-specific coding agent in a local multiagent coding workflow. Be concise, operational, and report concrete progress."
     });
-    const result = await run(agent, input.prompt);
+    const result = await run(agent, input.prompt, {
+      signal: input.signal,
+      maxTurns: 6,
+      toolNotFoundBehavior: "return_error_to_model"
+    });
     const output = String(result.finalOutput ?? "");
 
     return [
