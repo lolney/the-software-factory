@@ -15,16 +15,15 @@ struct NewSessionView: View {
                 .scrollContentBackground(.hidden)
                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
 
+            Toggle("Deterministic Debug Session", isOn: $store.debugMode)
+
             HStack {
                 Spacer()
                 Button("Cancel") {
                     store.presentNewSession = false
                 }
                 Button("Create") {
-                    let title = prompt.split(separator: "\n").first.map(String.init) ?? "Untitled Session"
-                    let id = "sess-\(UUID().uuidString.prefix(8))"
-                    store.sessions.insert(SessionSummary(id: id, title: title, detail: "Local session"), at: 0)
-                    store.selectedSessionId = id
+                    store.createSession(prompt: prompt)
                     store.presentNewSession = false
                 }
                 .buttonStyle(.borderedProminent)

@@ -17,20 +17,25 @@ struct SessionDetailView: View {
         .toolbar {
             ToolbarItemGroup {
                 Button {
-                    store.daemon.connect()
-                    store.connectionStatus = "Connected"
+                    store.connectAndRefresh()
                 } label: {
                     Label("Connect", systemImage: "bolt.horizontal.circle")
                 }
 
                 Button {
-                    store.connectionStatus = "Paused"
+                    store.pauseOrchestrator()
                 } label: {
                     Label("Pause", systemImage: "pause.circle")
                 }
 
+                Button {
+                    store.resumeOrchestrator()
+                } label: {
+                    Label("Resume", systemImage: "play.circle")
+                }
+
                 Button(role: .destructive) {
-                    store.connectionStatus = "Cancelled"
+                    store.cancelOrchestrator()
                 } label: {
                     Label("Cancel", systemImage: "xmark.circle")
                 }

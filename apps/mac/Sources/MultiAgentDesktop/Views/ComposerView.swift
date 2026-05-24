@@ -14,10 +14,7 @@ struct ComposerView: View {
                     .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
 
                 Button {
-                    let trimmed = store.composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !trimmed.isEmpty else { return }
-                    store.transcript.append(TranscriptItem(id: UUID().uuidString, agentId: "user", type: "nudge", text: trimmed, timestamp: Date()))
-                    store.composerText = ""
+                    store.sendComposerMessage()
                 } label: {
                     Label("Send", systemImage: "paperplane.fill")
                 }
