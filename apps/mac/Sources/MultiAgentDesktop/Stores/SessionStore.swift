@@ -137,6 +137,12 @@ final class SessionStore {
         sendCreateSession(prompt: prompt)
     }
 
+    func cancelNewSession() {
+        pendingCreatePrompt = nil
+        isCreatingSession = false
+        presentNewSession = false
+    }
+
     private func sendCreateSession(prompt: String) {
         isCreatingSession = true
         lastError = nil
@@ -388,6 +394,21 @@ final class SessionStore {
                 let workflowId = event.payload["workflowId"]?.stringValue ?? ""
                 let workspaceRoot = event.payload["workspaceRoot"]?.stringValue
                 upsertSessionSummary(SessionSummary(id: event.sessionId, title: title, detail: workflowId, createdAt: event.timestamp, workspaceRoot: workspaceRoot))
+                if isCreatingSession {
+                    selectedSessionId = event.sessionId
+                    selectedSidebarItem = event.sessionId
+                    currentWorkspaceRoot = workspaceRoot
+                    currentSessionDebugMode = event.payload["debugMode"]?.boolValue
+                    transcript = []
+                    if let graphValue = event.payload["graph"],
+                       let data = try? JSONEncoder().encode(graphValue),
+                       let decoded = try? JSONDecoder().decode(GraphState.self, from: data) {
+                        graph = decoded
+                    }
+                    subscribe(to: event.sessionId)
+                    isCreatingSession = false
+                    presentNewSession = false
+                }
             }
             return
         }
