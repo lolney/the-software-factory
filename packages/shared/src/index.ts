@@ -137,7 +137,7 @@ export const SessionSnapshotSchema = z.object({
 });
 
 export const DaemonRequestSchema = z.discriminatedUnion("method", [
-  z.object({ id: z.string(), method: z.literal("createSession"), params: z.object({ prompt: z.string(), workspaceRoot: z.string().optional(), workflowId: z.string().optional() }) }),
+  z.object({ id: z.string(), method: z.literal("createSession"), params: z.object({ prompt: z.string(), workspaceRoot: z.string().optional(), workflowId: z.string().optional(), debugMode: z.boolean().default(false) }) }),
   z.object({ id: z.string(), method: z.literal("sendMessage"), params: z.object({ sessionId: z.string(), targetAgentId: z.string().optional(), text: z.string() }) }),
   z.object({ id: z.string(), method: z.literal("pauseAgent"), params: z.object({ sessionId: z.string(), agentId: z.string() }) }),
   z.object({ id: z.string(), method: z.literal("resumeAgent"), params: z.object({ sessionId: z.string(), agentId: z.string() }) }),

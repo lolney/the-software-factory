@@ -1,13 +1,16 @@
 import type { DaemonRequest, SessionEvent } from "@multiagent/shared";
 import { type GraphState, type SessionSnapshot } from "@multiagent/shared";
 import { EventStore, makeEventId } from "./eventStore.js";
+import { OpenAIAgentRuntime, type AgentRuntime } from "./agentRuntime.js";
 
 export class SessionManager {
   private publish: (event: SessionEvent) => void = () => {};
   private readonly store: EventStore;
+  private readonly runtime: AgentRuntime;
 
-  constructor(private readonly options: { sessionsRoot: string }) {
+  constructor(private readonly options: { sessionsRoot: string; runtime?: AgentRuntime }) {
     this.store = new EventStore(options.sessionsRoot);
+    this.runtime = options.runtime ?? new OpenAIAgentRuntime();
   }
 
   setPublisher(publish: (event: SessionEvent) => void) {
@@ -45,7 +48,7 @@ export class SessionManager {
           workflowId: "orchestrator-basic",
           graph
         });
-        await this.recordOrchestratorTurn(snapshot, request.params.prompt, "Initial prompt received. The orchestrator is ready to plan the coding workflow.");
+        await this.recordOrchestratorTurn(snapshot, request.params.prompt, request.params.debugMode);
         return this.store.readSnapshot(sessionId);
       }
       case "getSnapshot":
@@ -61,7 +64,7 @@ export class SessionManager {
           type: "control.nudge",
           payload: { text: request.params.text }
         });
-        await this.recordOrchestratorTurn(snapshot, request.params.text, "Nudge received. The orchestrator will fold this into the active workflow.", nudge.eventId);
+        await this.recordOrchestratorTurn(snapshot, request.params.text, true, nudge.eventId);
         return this.store.readSnapshot(request.params.sessionId);
       }
       case "subscribeEvents":
@@ -81,38 +84,30 @@ export class SessionManager {
     this.publish(event);
   }
 
-  private async recordOrchestratorTurn(snapshot: SessionSnapshot, userText: string, responseText: string, causationId?: string) {
-    const now = new Date().toISOString();
-    await this.appendAndPublish({
-      eventId: makeEventId(),
-      sessionId: snapshot.sessionId,
-      agentId: "orchestrator",
-      timestamp: now,
-      type: "agent.status",
-      payload: { status: "working" },
-      causationId
-    });
-    await this.appendAndPublish({
+  private async recordOrchestratorTurn(snapshot: SessionSnapshot, userText: string, debugMode: boolean, causationId?: string) {
+    const promptEvent = await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId: snapshot.sessionId,
       agentId: "orchestrator",
       timestamp: new Date().toISOString(),
-      type: "agent.message",
+      type: "message.sent",
       payload: {
-        text: responseText,
-        userText
+        from: "user",
+        to: "orchestrator",
+        text: userText
       },
       causationId
     });
-    await this.appendAndPublish({
-      eventId: makeEventId(),
+    const events = await this.runtime.runTurn({
       sessionId: snapshot.sessionId,
       agentId: "orchestrator",
-      timestamp: new Date().toISOString(),
-      type: "agent.status",
-      payload: { status: "idle" },
-      causationId
+      prompt: userText,
+      debugMode,
+      causationId: promptEvent.eventId
     });
+    for (const event of events) {
+      await this.appendAndPublish(event);
+    }
     await this.store.rebuildSnapshot(snapshot.sessionId);
   }
 
