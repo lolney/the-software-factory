@@ -1,4 +1,4 @@
-import { Agent, RunContext, run, setDefaultOpenAIClient, tool } from "@openai/agents";
+import { Agent, OpenAIProvider, RunContext, run, tool } from "@openai/agents";
 import type { MCPServer } from "@openai/agents";
 import type { SessionEvent, SkillCatalogItem } from "@multiagent/shared";
 import OpenAI from "openai";
@@ -45,7 +45,18 @@ export interface AgentRuntime {
   runTurn(input: AgentTurnInput): Promise<SessionEvent[]>;
 }
 
+type RuntimeTool = any;
+
+interface RuntimeAdapter {
+  readonly runtimeName: string;
+  runTurn(input: AgentTurnInput, connection: NonNullable<AgentTurnInput["openAI"]>, tools: RuntimeTool[]): Promise<SessionEvent[]>;
+}
+
+const defaultInstructions = "You are a role-specific coding agent in a local multiagent coding workflow. Be concise, operational, and report concrete progress.";
+
 export class OpenAIAgentRuntime implements AgentRuntime {
+  constructor(private readonly options: { fetch?: typeof fetch; timeoutMs?: number } = {}) {}
+
   async runTurn(input: AgentTurnInput): Promise<SessionEvent[]> {
     if (input.signal?.aborted) return [statusEvent(input, "cancelled")];
     if (input.debugMode) {
@@ -55,15 +66,8 @@ export class OpenAIAgentRuntime implements AgentRuntime {
     if (!connection?.apiKey) {
       throw new Error("OpenAI authentication is required for non-debug sessions. Connect OpenAI OAuth in Settings or add an API key.");
     }
-    const client = new OpenAI({
-      apiKey: connection.apiKey,
-      baseURL: connection.baseURL,
-      defaultHeaders: connection.defaultHeaders
-    }) as unknown as Parameters<typeof setDefaultOpenAIClient>[0];
-    setDefaultOpenAIClient(client);
 
-    const startedAt = new Date().toISOString();
-    const tools = [];
+    const tools: RuntimeTool[] = [];
     if (input.workflowTools?.listWorkflows) {
       const listWorkflows = input.workflowTools.listWorkflows;
       tools.push(tool({
@@ -161,9 +165,6 @@ export class OpenAIAgentRuntime implements AgentRuntime {
         execute: async (args) => input.workflowTools?.sendAgentMessage?.(args.agentId, args.text) ?? "Messaging tool unavailable."
       }));
     }
-    if (connection.baseURL?.includes("/wham")) {
-      return runWhamTurn(input, connection, tools);
-    }
     if (input.skills?.length) {
       const skills = input.skills;
       tools.push(tool({
@@ -183,9 +184,31 @@ export class OpenAIAgentRuntime implements AgentRuntime {
         }
       }));
     }
+    const adapter: RuntimeAdapter = connection.baseURL?.includes("/wham")
+      ? new WhamCompatibilityAdapter(this.options)
+      : new AgentsSdkRuntimeAdapter(this.options);
+    return adapter.runTurn(input, connection, tools);
+  }
+}
+
+class AgentsSdkRuntimeAdapter implements RuntimeAdapter {
+  readonly runtimeName = "openai-agents";
+
+  constructor(private readonly options: { timeoutMs?: number } = {}) {}
+
+  async runTurn(input: AgentTurnInput, connection: NonNullable<AgentTurnInput["openAI"]>, tools: RuntimeTool[]): Promise<SessionEvent[]> {
+    const startedAt = new Date().toISOString();
+    const startedMs = Date.now();
+    const client = new OpenAI({
+      apiKey: connection.apiKey,
+      baseURL: connection.baseURL,
+      defaultHeaders: connection.defaultHeaders
+    });
+    const provider = new OpenAIProvider({ openAIClient: client as never, cacheResponsesWebSocketModels: false });
+
     const agent = new Agent({
       name: input.roleName ?? input.agentId,
-      instructions: input.instructions ?? "You are a role-specific coding agent in a local multiagent coding workflow. Be concise, operational, and report concrete progress.",
+      instructions: input.instructions ?? defaultInstructions,
       model: input.model,
       modelSettings: { store: false, reasoning: input.reasoningEffort ? { effort: input.reasoningEffort } : undefined },
       toolUseBehavior: input.agentId === "orchestrator" ? "stop_on_first_tool" : "run_llm_again",
@@ -196,34 +219,59 @@ export class OpenAIAgentRuntime implements AgentRuntime {
         convertSchemasToStrict: true
       }
     });
-    const runOptions: Parameters<typeof run>[2] = {
-      signal: input.signal,
+    const signal = combinedSignal(input.signal, this.options.timeoutMs ?? 120_000);
+    const runOptions: any = {
+      signal,
+      modelProvider: provider,
       toolNotFoundBehavior: "return_error_to_model",
       stream: true
     };
     if (input.agentId !== "orchestrator") {
       runOptions.maxTurns = 24;
     }
-    const result = await run(agent, input.prompt, runOptions);
-    await result.completed;
-    if (result.error) {
-      throw result.error;
+    try {
+      const { result, attempts } = await retryOpenAIRun(async () => {
+        const result: any = await run(agent, input.prompt, runOptions);
+        await result.completed;
+        if (result.error) {
+          throw result.error;
+        }
+        return result;
+      }, signal);
+      const output = String(result.finalOutput ?? "");
+      return [
+        statusEvent(input, "working", startedAt),
+        {
+          eventId: makeEventId(),
+          sessionId: input.sessionId,
+          agentId: input.agentId,
+          timestamp: new Date().toISOString(),
+          type: "agent.message",
+          payload: {
+            text: output,
+            runtime: this.runtimeName,
+            model: input.model,
+            reasoningEffort: input.reasoningEffort,
+            attempts,
+            durationMs: Date.now() - startedMs
+          },
+          causationId: input.causationId
+        },
+        statusEvent(input, "idle")
+      ];
+    } finally {
+      await provider.close();
     }
-    const output = String(result.finalOutput ?? "");
+  }
+}
 
-    return [
-      statusEvent(input, "working", startedAt),
-      {
-        eventId: makeEventId(),
-        sessionId: input.sessionId,
-        agentId: input.agentId,
-        timestamp: new Date().toISOString(),
-        type: "agent.message",
-        payload: { text: output, runtime: "openai-agents" },
-        causationId: input.causationId
-      },
-      statusEvent(input, "idle")
-    ];
+class WhamCompatibilityAdapter implements RuntimeAdapter {
+  readonly runtimeName = "openai-wham";
+
+  constructor(private readonly options: { fetch?: typeof fetch; timeoutMs?: number } = {}) {}
+
+  runTurn(input: AgentTurnInput, connection: NonNullable<AgentTurnInput["openAI"]>, tools: RuntimeTool[]) {
+    return runWhamTurn(input, connection, tools, this.options);
   }
 }
 
@@ -304,9 +352,11 @@ function statusEvent(input: AgentTurnInput, status: string, timestamp = new Date
 async function runWhamTurn(
   input: AgentTurnInput,
   connection: NonNullable<AgentTurnInput["openAI"]>,
-  tools: Array<Record<string, any>>
+  tools: RuntimeTool[],
+  options: { fetch?: typeof fetch; timeoutMs?: number } = {}
 ): Promise<SessionEvent[]> {
   const events: SessionEvent[] = [statusEvent(input, "working")];
+  const startedMs = Date.now();
   const callableTools = tools.filter((candidate) => candidate.type === "function" && typeof candidate.invoke === "function");
   const toolByName = new Map(callableTools.map((candidate) => [candidate.name, candidate]));
   const responseTools = callableTools.map((candidate) => ({
@@ -320,23 +370,31 @@ async function runWhamTurn(
     role: "user",
     content: [{ type: "input_text", text: input.prompt }]
   }];
+  const usageSamples: unknown[] = [];
+  let totalAttempts = 0;
+  let totalRequestDurationMs = 0;
   const maxTurns = input.agentId === "orchestrator" ? Number.POSITIVE_INFINITY : 24;
   for (let turn = 0; turn < maxTurns; turn += 1) {
     if (input.signal?.aborted) {
       events.push(statusEvent(input, "cancelled"));
       return events;
     }
-    const { outputText, functionCalls } = await whamResponsesRequest(connection, {
+    const { outputText, functionCalls, usage, attempts, durationMs } = await whamResponsesRequest(connection, {
       model: input.model ?? process.env.MULTIAGENT_WHAM_MODEL ?? "gpt-5.4",
       ...(input.reasoningEffort ? { reasoning: { effort: input.reasoningEffort } } : {}),
-      instructions: input.instructions ?? "You are a role-specific coding agent in a local multiagent coding workflow. Be concise, operational, and report concrete progress.",
+      instructions: input.instructions ?? defaultInstructions,
       input: conversation,
       tools: responseTools,
       tool_choice: responseTools.length ? "auto" : "none",
       parallel_tool_calls: true,
       store: false,
       stream: true
-    });
+    }, { fetch: options.fetch, signal: input.signal, timeoutMs: options.timeoutMs });
+    totalAttempts += attempts;
+    totalRequestDurationMs += durationMs;
+    if (usage !== undefined) {
+      usageSamples.push(usage);
+    }
     if (!functionCalls.length) {
       events.push({
         eventId: makeEventId(),
@@ -344,7 +402,17 @@ async function runWhamTurn(
         agentId: input.agentId,
         timestamp: new Date().toISOString(),
         type: "agent.message",
-        payload: { text: outputText || "Completed.", runtime: "openai-wham" },
+        payload: {
+          text: outputText || "Completed.",
+          runtime: "openai-wham",
+          model: input.model ?? process.env.MULTIAGENT_WHAM_MODEL ?? "gpt-5.4",
+          reasoningEffort: input.reasoningEffort,
+          usage,
+          usageSamples,
+          attempts: totalAttempts,
+          requestDurationMs: totalRequestDurationMs,
+          durationMs: Date.now() - startedMs
+        },
         causationId: input.causationId
       });
       events.push(statusEvent(input, "idle"));
@@ -383,14 +451,24 @@ async function runWhamTurn(
   throw new Error(`WHAM run exceeded ${maxTurns} turns.`);
 }
 
-async function whamResponsesRequest(connection: NonNullable<AgentTurnInput["openAI"]>, body: Record<string, unknown>) {
+async function whamResponsesRequest(
+  connection: NonNullable<AgentTurnInput["openAI"]>,
+  body: Record<string, unknown>,
+  options: { fetch?: typeof fetch; signal?: AbortSignal; timeoutMs?: number } = {}
+) {
   const requestBody = JSON.stringify(body);
   let response: Response | undefined;
   let lastError: unknown;
   const maxAttempts = 5;
+  const fetchImpl = options.fetch ?? fetch;
+  const startedMs = Date.now();
+  let attempts = 0;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    attempts = attempt + 1;
+    const timeout = AbortSignal.timeout(options.timeoutMs ?? 120_000);
+    const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
     try {
-      response = await fetch(`${connection.baseURL}/responses`, {
+      response = await fetchImpl(`${connection.baseURL}/responses`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${connection.apiKey}`,
@@ -398,11 +476,15 @@ async function whamResponsesRequest(connection: NonNullable<AgentTurnInput["open
           ...(connection.defaultHeaders ?? {}),
           session_id: crypto.randomUUID()
         },
-        body: requestBody
+        body: requestBody,
+        signal
       });
       if (response.ok || !isRetryableStatus(response.status)) break;
       lastError = `HTTP ${response.status}: ${await response.text()}`;
     } catch (error) {
+      if (options.signal?.aborted || isAbortError(error)) {
+        throw error;
+      }
       lastError = error;
     }
     if (attempt < maxAttempts - 1) {
@@ -420,6 +502,7 @@ async function whamResponsesRequest(connection: NonNullable<AgentTurnInput["open
   }
   const output: string[] = [];
   const functionCalls: Array<Record<string, unknown>> = [];
+  let usage: unknown;
   let buffer = "";
   const decoder = new TextDecoder();
   for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
@@ -438,16 +521,54 @@ async function whamResponsesRequest(connection: NonNullable<AgentTurnInput["open
           if (event.type === "response.output_item.done" && isRecord(event.item) && event.item.type === "function_call") {
             functionCalls.push(event.item);
           }
+          if (event.type === "response.completed" && isRecord(event.response) && "usage" in event.response) {
+            usage = event.response.usage;
+          }
         }
       }
       boundary = buffer.indexOf("\n\n");
     }
   }
-  return { outputText: output.join(""), functionCalls };
+  return { outputText: output.join(""), functionCalls, usage, attempts, durationMs: Date.now() - startedMs };
 }
 
 function isRetryableStatus(status: number) {
   return status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+async function retryOpenAIRun<T>(runOnce: () => Promise<T>, signal?: AbortSignal) {
+  let lastError: unknown;
+  const maxAttempts = 3;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (signal?.aborted) throw signal.reason ?? new Error("OpenAI run aborted.");
+    try {
+      return { result: await runOnce(), attempts: attempt + 1 };
+    } catch (error) {
+      if (signal?.aborted || isAbortError(error) || !isRetryableError(error) || attempt === maxAttempts - 1) {
+        throw error;
+      }
+      lastError = error;
+      await sleep(500 * 2 ** attempt);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function combinedSignal(signal: AbortSignal | undefined, timeoutMs: number) {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+function isRetryableError(error: unknown) {
+  const value = error as { status?: unknown; code?: unknown; message?: unknown };
+  if (typeof value.status === "number" && isRetryableStatus(value.status)) return true;
+  const text = `${String(value.code ?? "")} ${String(value.message ?? "")}`;
+  return /\b(429|502|503|504|ECONNRESET|ETIMEDOUT|timeout|temporar|rate limit)\b/i.test(text);
+}
+
+function isAbortError(error: unknown) {
+  const value = error as { name?: unknown; code?: unknown };
+  return value?.name === "AbortError" || value?.code === "ABORT_ERR";
 }
 
 function sleep(ms: number) {
