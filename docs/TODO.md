@@ -18,7 +18,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 Computer Use could inspect this app, but direct Computer Use access to `com.openai.codex` was blocked by the environment. These follow-ups are based on Codex-style coding-agent features visible from the current desktop context and prior screenshots in this project thread.
 
-- **P1: Add a changed-files and diff review surface.** Summarize touched files in a dedicated panel, open inline diffs from `workspace.file_touched` events, show additions/deletions, and allow copying file paths or diff hunks.
 - **P1: Add command/tool execution details.** For tool calls, show duration, status, working directory, exit code when applicable, raw input/result, and a compact/expanded Codex-style rendering.
 - **P2: Add copy/share/export actions for session artifacts.** Export transcript, event log, debug log, workspace path, and selected diffs from the session UI.
 
@@ -72,6 +71,7 @@ Continuous improvement workflow:
 - **2026-05-25: De-duplicate WHAM workspace tool transcript rows.** Marked workspace write/command tools as engine-logged and suppressed WHAM wrapper `agent.tool_call`/`agent.tool_result` rows for those tools, preserving canonical diff/command transcript events from the engine while keeping normal workflow tools visible.
 - **2026-05-25: Harden transcript timeline rendering.** Moved timeline grouping into SwiftUI state, bounded rendered rows to the latest 500 filtered events, throttled auto-scroll, and deferred large transition/plan/tool payload rendering until rows are expanded.
 - **2026-05-25: Add a Plan inspector panel.** Added a right-side Plan pane with current goal, workflow status, completion-criteria checklist state, owner-agent links, agent prompts/done criteria, and transcript event filtering by event id.
+- **2026-05-25: Add changed-files and diff review surface.** Upgraded the Workspace inspector with changed-file totals, expandable per-file diff events, inline colored diffs, and copy actions for absolute file paths and recorded diffs.
 
 
 

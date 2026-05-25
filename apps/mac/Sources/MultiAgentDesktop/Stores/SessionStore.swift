@@ -555,6 +555,35 @@ final class SessionStore {
         copyPath(currentWorkspaceRoot, fallback: "This session does not have a workspace yet.")
     }
 
+    func copyWorkspaceFilePath(_ relativePath: String) {
+        guard !relativePath.isEmpty else {
+            lastError = "No file path was recorded for this workspace event."
+            return
+        }
+        let path: String
+        if relativePath.hasPrefix("/") {
+            path = relativePath
+        } else if let currentWorkspaceRoot {
+            path = URL(fileURLWithPath: currentWorkspaceRoot).appendingPathComponent(relativePath).path
+        } else {
+            lastError = "This session does not have a workspace yet."
+            return
+        }
+        copyText(path)
+    }
+
+    func copyWorkspaceDiff(for relativePath: String) {
+        let diffs = transcript
+            .filter { $0.type == "workspace.file_touched" && $0.payload["path"]?.stringValue == relativePath }
+            .compactMap { $0.payload["diff"]?.stringValue }
+            .filter { !$0.isEmpty }
+        guard !diffs.isEmpty else {
+            lastError = "No recorded diff for \(relativePath)."
+            return
+        }
+        copyText(diffs.joined(separator: "\n\n"))
+    }
+
     func instantiateWorkflow(_ workflowId: String) {
         guard let selectedSessionId else {
             lastError = "Select a session before instantiating a workflow."
@@ -1011,8 +1040,12 @@ final class SessionStore {
             }
             return
         }
+        copyText(path)
+    }
+
+    private func copyText(_ text: String) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(path, forType: .string)
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     private func apply(debugLog entry: DebugLogItem) {

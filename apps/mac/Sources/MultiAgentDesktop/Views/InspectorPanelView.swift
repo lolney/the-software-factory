@@ -481,6 +481,14 @@ private struct PlanWorkflowPromptView: View {
 struct WorkspacePanelView: View {
     @Bindable var store: SessionStore
 
+    private var diffEventsByPath: [String: [TranscriptItem]] {
+        Dictionary(grouping: store.transcript.filter { item in
+            item.type == "workspace.file_touched"
+                && item.payload["diff"]?.stringValue?.isEmpty == false
+                && item.payload["path"]?.stringValue != nil
+        }, by: { $0.payload["path"]?.stringValue ?? "" })
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
@@ -525,8 +533,23 @@ struct WorkspacePanelView: View {
                         )
                         Spacer(minLength: 0)
                     } else {
+                        HStack(spacing: 12) {
+                            Label("\(store.touchedWorkspaceFiles.count) changed file\(store.touchedWorkspaceFiles.count == 1 ? "" : "s")", systemImage: "doc.text.magnifyingglass")
+                            Spacer()
+                            Text(totalDiffText)
+                                .foregroundStyle(diffTotalColor)
+                        }
+                        .font(.caption)
+                        .padding(.horizontal)
+                        .padding(.vertical, 8)
+
                         List(store.touchedWorkspaceFiles) { file in
-                            WorkspaceFileRow(file: file)
+                            WorkspaceFileReviewRow(
+                                file: file,
+                                events: diffEventsByPath[file.path] ?? [],
+                                copyPath: { store.copyWorkspaceFilePath(file.path) },
+                                copyDiff: { store.copyWorkspaceDiff(for: file.path) }
+                            )
                         }
                         .listStyle(.inset)
                     }
@@ -540,6 +563,18 @@ struct WorkspacePanelView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var totalDiffText: String {
+        let additions = store.touchedWorkspaceFiles.reduce(0) { $0 + $1.additions }
+        let deletions = store.touchedWorkspaceFiles.reduce(0) { $0 + $1.deletions }
+        return "+\(additions) -\(deletions)"
+    }
+
+    private var diffTotalColor: Color {
+        let additions = store.touchedWorkspaceFiles.reduce(0) { $0 + $1.additions }
+        let deletions = store.touchedWorkspaceFiles.reduce(0) { $0 + $1.deletions }
+        return deletions > additions ? .orange : .green
     }
 
     private func emptyState(title: String, detail: String) -> some View {
@@ -563,42 +598,149 @@ struct WorkspacePanelView: View {
     }
 }
 
-private struct WorkspaceFileRow: View {
+private struct WorkspaceFileReviewRow: View {
     let file: WorkspaceFileSummary
+    let events: [TranscriptItem]
+    let copyPath: () -> Void
+    let copyDiff: () -> Void
+    @State private var expanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text(file.path)
-                    .font(.callout.monospaced())
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 8)
-                if file.conflictCount > 0 {
-                    Text("!\(file.conflictCount)")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.red)
+        DisclosureGroup(isExpanded: $expanded) {
+            if expanded {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        Button {
+                            copyPath()
+                        } label: {
+                            Label("Copy Path", systemImage: "doc.on.doc")
+                        }
+                        Button {
+                            copyDiff()
+                        } label: {
+                            Label("Copy Diff", systemImage: "square.on.square")
+                        }
+                        .disabled(events.isEmpty)
+                    }
+                    .font(.caption)
+
+                    if events.isEmpty {
+                        Text(file.lastEventType == "workspace.conflict_detected" ? "No diff recorded for this conflict event." : "No diff recorded for this file.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(events) { event in
+                            WorkspaceDiffEventView(event: event)
+                        }
+                    }
                 }
+                .padding(.top, 6)
             }
-            HStack(spacing: 10) {
-                Text(file.lastAgentId ?? "system")
-                Text(file.lastEventType.replacingOccurrences(of: "workspace.", with: ""))
-                if file.additions > 0 || file.deletions > 0 {
-                    Text("+\(file.additions) -\(file.deletions)")
-                        .foregroundStyle(diffColor)
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text(file.path)
+                        .font(.callout.monospaced())
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    if file.conflictCount > 0 {
+                        Text("!\(file.conflictCount)")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.red)
+                    }
                 }
-                Spacer()
-                Text(file.lastTimestamp, style: .time)
-                    .monospacedDigit()
+                HStack(spacing: 10) {
+                    Text(file.lastAgentId ?? "system")
+                    Text(file.lastEventType.replacingOccurrences(of: "workspace.", with: ""))
+                    if file.additions > 0 || file.deletions > 0 {
+                        Text("+\(file.additions) -\(file.deletions)")
+                            .foregroundStyle(diffColor)
+                    }
+                    Spacer()
+                    Text(file.lastTimestamp, style: .time)
+                        .monospacedDigit()
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
     }
 
     private var diffColor: Color {
         file.deletions > file.additions ? .orange : .green
+    }
+}
+
+private struct WorkspaceDiffEventView: View {
+    let event: TranscriptItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(event.agentId ?? "system")
+                    .font(.caption.weight(.semibold))
+                if let stats = event.payload["diffStats"]?.objectValue {
+                    Text("+\(Int(stats["additions"]?.numberValue ?? 0)) -\(Int(stats["deletions"]?.numberValue ?? 0))")
+                        .foregroundStyle(diffColor(stats: stats))
+                }
+                Spacer()
+                Text(event.timestamp, style: .time)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            WorkspaceDiffBlock(diff: event.payload["diff"]?.stringValue ?? "")
+        }
+    }
+
+    private func diffColor(stats: [String: JSONValue]) -> Color {
+        let additions = Int(stats["additions"]?.numberValue ?? 0)
+        let deletions = Int(stats["deletions"]?.numberValue ?? 0)
+        return deletions > additions ? .orange : .green
+    }
+}
+
+private struct WorkspaceDiffBlock: View {
+    let diff: String
+    private let previewLineLimit = 300
+
+    private var lines: [Substring] {
+        diff.split(separator: "\n", omittingEmptySubsequences: false)
+    }
+
+    private var previewLines: ArraySlice<Substring> {
+        lines.prefix(previewLineLimit)
+    }
+
+    private var omittedLineCount: Int {
+        max(0, lines.count - previewLineLimit)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(previewLines.enumerated()), id: \.offset) { _, line in
+                Text(String(line))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(color(for: String(line)))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if omittedLineCount > 0 {
+                Text("Diff preview truncated. Copy Diff includes \(omittedLineCount) more line\(omittedLineCount == 1 ? "" : "s").")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 6)
+            }
+        }
+        .textSelection(.enabled)
+        .padding(8)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func color(for line: String) -> Color {
+        if line.starts(with: "+") && !line.starts(with: "+++") { return .green }
+        if line.starts(with: "-") && !line.starts(with: "---") { return .red }
+        return .primary
     }
 }
 
