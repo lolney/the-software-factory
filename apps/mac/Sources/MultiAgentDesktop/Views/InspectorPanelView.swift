@@ -84,7 +84,7 @@ struct WorkspacePanelView: View {
             } else {
                 emptyState(
                     title: "No workspace selected",
-                    detail: "Create or select a real session to inspect workspace activity."
+                    detail: "Create or select a session to inspect workspace activity."
                 )
                 Spacer(minLength: 0)
             }

@@ -54,7 +54,7 @@ final class SessionStore {
     let daemon = DaemonClient()
 
     var hasActiveSession: Bool {
-        selectedSessionId != nil && selectedSessionId != "local-preview"
+        selectedSessionId != nil
     }
 
     var canSendComposerMessage: Bool {
@@ -168,11 +168,9 @@ final class SessionStore {
     }
 
     init() {
-        sessions = [
-            SessionSummary(id: "local-preview", title: "Local Preview", detail: "Daemon not connected")
-        ]
-        selectedSessionId = sessions.first?.id
-        selectedSidebarItem = sessions.first?.id
+        sessions = []
+        selectedSessionId = nil
+        selectedSidebarItem = nil
         selectedAgentId = nil
         resetPreview()
         daemon.onMessage = { [weak self] data in
@@ -285,8 +283,8 @@ final class SessionStore {
             } else if let first = sessions.first {
                 selectSession(first.id)
             } else {
-                selectedSessionId = "local-preview"
-                selectedSidebarItem = "local-preview"
+                selectedSessionId = nil
+                selectedSidebarItem = nil
                 resetPreview()
             }
         }
@@ -321,10 +319,6 @@ final class SessionStore {
         isComposingNewSession = false
         selectedSessionId = sessionId
         selectedSidebarItem = sessionId
-        guard sessionId != "local-preview" else {
-            resetPreview()
-            return
-        }
         isLoadingSelection = true
         currentWorkspaceRoot = sessions.first { $0.id == sessionId }?.workspaceRoot
         currentSessionDebugMode = nil
@@ -428,8 +422,8 @@ final class SessionStore {
     }
 
     func instantiateWorkflow(_ workflowId: String) {
-        guard let selectedSessionId, selectedSessionId != "local-preview" else {
-            lastError = "Select a real session before instantiating a workflow."
+        guard let selectedSessionId else {
+            lastError = "Select a session before instantiating a workflow."
             return
         }
         daemon.sendRequest(method: "instantiateWorkflow", params: ["sessionId": selectedSessionId, "workflowId": workflowId])
@@ -883,19 +877,7 @@ final class SessionStore {
         currentWorkspaceRoot = nil
         currentSessionDebugMode = nil
         isLoadingSelection = false
-        graph = GraphState(
-            sessionId: "local-preview",
-            workflowId: "implementor-reviewer",
-            nodes: [
-                AgentNode(id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", status: .idle, colorHex: "#4f7cff", unreadCount: 0, errorCount: 0),
-                AgentNode(id: "implementor", roleId: "implementor", label: "Implementor", status: .waiting, colorHex: "#27ae60", unreadCount: 0, errorCount: 0),
-                AgentNode(id: "reviewer", roleId: "reviewer", label: "Reviewer", status: .waiting, colorHex: "#f2994a", unreadCount: 1, errorCount: 0)
-            ],
-            edges: [
-                AgentEdge(id: "handoff-orchestrator-implementor", from: "orchestrator", to: "implementor", kind: .handoff, active: false),
-                AgentEdge(id: "message-reviewer-implementor", from: "reviewer", to: "implementor", kind: .message, active: true)
-            ]
-        )
+        graph = GraphState(sessionId: "", workflowId: "", nodes: [], edges: [])
         transcript = [
             TranscriptItem(id: UUID().uuidString, agentId: "orchestrator", sender: "orchestrator", recipient: nil, type: "message", text: "Create a new session to connect to the daemon and launch a workflow.", timestamp: Date(), payload: [:])
         ]
