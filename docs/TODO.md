@@ -4,12 +4,15 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 ## Architecture And Code Review Follow-Ups
 
+- **P1: Keep durable workflow jobs alive while workflows are open.** A workflow-execution scheduler job can be marked completed even when `maybeCompleteWorkflow` leaves agents or criteria pending, which removes the restart-recovery handle for unfinished workflows; add explicit waiting/blocked workflow state or reschedule until the workflow reaches completed/stopped.
+- **P1: Track workflow turn budgets by scheduled turns instead of transcript artifact counts.** Current workflow run counts can treat multiple file/tool events from one agent run as multiple turns, suppressing legitimate review or QA feedback edges; add regression coverage for multi-event turns followed by message edges.
 - **P2: Avoid noisy completed-agent messaging failures.** The orchestrator can still attempt `agent_message_send` to agents that are already completed, producing repeated tool errors in successful transcripts; expose completed state more explicitly to the model or convert these to structured no-op guidance.
 - **P2: Expand UI control and observability for autonomous workflows.** Add a first-class workflow/run inspector, criteria checklist, diff/artifact browser, per-agent control panel, reconnect/resume UI.
 - **P2: Add retry/resume UI for recovered scheduler jobs.** Recovery currently marks interrupted jobs failed; persist enough job input and expose a retry action so users can resume work after daemon restarts.
 
 ## UX And Product Review Follow-Ups
 
+- **P3: Preserve tool call/result pairing across transcript truncation.** The timeline currently takes the latest event slice before grouping, so a result can render unpaired if its call is just outside the window; group first or extend the slice backward for matching tool calls.
 - **P2: Improve dense workflow graph layout.** Reduce edge overlap and node crowding for multi-agent workflows, add pan/zoom or fit controls, and consider grouped workflow lanes for instantiated subgraphs.
 - **P2: Disambiguate repeated session rows.** Sidebar rows with similar prompts are difficult to distinguish; add stable creation/last-run time, completion/error status, and optional user-editable titles without changing creation-time ordering.
 
@@ -41,6 +44,9 @@ Continuous improvement workflow:
     - The implementor implements and hands off to the todo-generator again, once the reviwer (which reviews asynchronously) is satisfied
     - Todo-generator can inspect the graph state. It can sleep for x minutes if there haven't been enough changes to the project
 - There should be proper concurrency controls here so that the implementor doesn't interfere with ongoing implementation. These should already be in place to some extent, but do an audit of these.
+
+Bugs
+- sessions in the dashboard are listed as "active" even if they are completed. If this is because agents are still active, we should ensure that orchestrator shuts down all agents before it can mark itself as completed.
 
 ## Completed Non-Controversial Items
 
