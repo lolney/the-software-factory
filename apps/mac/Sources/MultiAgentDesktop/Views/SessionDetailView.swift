@@ -8,13 +8,15 @@ struct SessionDetailView: View {
         HSplitView {
             VStack(spacing: 0) {
                 OrchestratorChatView(store: store)
-                    .frame(minWidth: 480)
+                    .frame(minWidth: 480, maxHeight: .infinity)
                 ComposerView(store: store)
             }
+            .frame(maxHeight: .infinity)
 
             InspectorPanelView(store: store)
-                .frame(minWidth: 360, idealWidth: 440)
+                .frame(minWidth: 360, idealWidth: 440, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .toolbar {
             ToolbarItemGroup {
                 Menu {

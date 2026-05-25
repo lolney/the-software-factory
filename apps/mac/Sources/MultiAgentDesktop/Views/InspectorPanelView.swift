@@ -22,6 +22,7 @@ struct InspectorPanelView: View {
                 DebugLogPanelView(store: store)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -41,7 +42,24 @@ struct DebugLogPanelView: View {
             .padding()
 
             if store.debugLogs.isEmpty {
-                ContentUnavailableView("No Debug Logs", systemImage: "text.badge.magnifyingglass", description: Text("Logs stream here after the session emits events or errors."))
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("No debug logs yet", systemImage: "text.badge.magnifyingglass")
+                        .font(.callout.weight(.semibold))
+                    Text("Logs stream here after the session emits events or errors.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(.quaternary)
+                }
+                .padding(.horizontal)
+                .padding(.top, 4)
+                Spacer(minLength: 0)
             } else {
                 List(store.debugLogs) { entry in
                     VStack(alignment: .leading, spacing: 6) {
@@ -77,6 +95,7 @@ struct DebugLogPanelView: View {
                 .listStyle(.inset)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func color(for level: DebugLogLevel) -> Color {
