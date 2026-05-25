@@ -2,13 +2,25 @@ import SwiftUI
 
 struct OrchestratorChatView: View {
     @Bindable var store: SessionStore
+    @State private var timelineItems: [TimelineItem] = []
+    @State private var scrollWorkItem: DispatchWorkItem?
 
-    private var timelineItems: [TimelineItem] {
-        makeTimelineItems(from: store.filteredTranscript)
+    private let timelineRenderLimit = 500
+
+    private var filteredTranscript: [TranscriptItem] {
+        store.filteredTranscript
     }
 
-    private var lastTranscriptEventId: String? {
-        store.filteredTranscript.last?.id
+    private var renderedTranscript: [TranscriptItem] {
+        Array(filteredTranscript.suffix(timelineRenderLimit))
+    }
+
+    private var isTimelineTruncated: Bool {
+        filteredTranscript.count > renderedTranscript.count
+    }
+
+    private var timelineInputVersion: String {
+        "\(filteredTranscript.count)|\(filteredTranscript.first?.id ?? "")|\(filteredTranscript.last?.id ?? "")|\(store.transcriptSearchText)|\(store.selectedAgentId ?? "")"
     }
 
     var body: some View {
@@ -92,6 +104,12 @@ struct OrchestratorChatView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.vertical, 24)
                         } else {
+                            if isTimelineTruncated {
+                                Text("Showing latest \(timelineItems.count) of \(filteredTranscript.count) matching events")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 4)
+                            }
                             ForEach(timelineItems) { item in
                                 TimelineRow(item: item, color: color(for: item.primaryAgentId))
                                     .id(item.id)
@@ -100,14 +118,19 @@ struct OrchestratorChatView: View {
                     }
                     .padding()
                 }
-                .onChange(of: timelineItems.count) { _, _ in
+                .onAppear {
+                    updateTimelineItems()
                     if let last = timelineItems.last {
-                        proxy.scrollTo(last.id, anchor: .bottom)
+                        scheduleScroll(to: last.id, proxy: proxy)
                     }
                 }
-                .onChange(of: lastTranscriptEventId) { _, _ in
+                .onDisappear {
+                    scrollWorkItem?.cancel()
+                }
+                .onChange(of: timelineInputVersion) { _, _ in
+                    updateTimelineItems()
                     if let last = timelineItems.last {
-                        proxy.scrollTo(last.id, anchor: .bottom)
+                        scheduleScroll(to: last.id, proxy: proxy)
                     }
                 }
             }
@@ -124,6 +147,21 @@ struct OrchestratorChatView: View {
         }
         if agentId == "user" { return .accentColor }
         return .secondary
+    }
+
+    private func updateTimelineItems() {
+        timelineItems = makeTimelineItems(from: renderedTranscript)
+    }
+
+    private func scheduleScroll(to id: String, proxy: ScrollViewProxy) {
+        scrollWorkItem?.cancel()
+        let workItem = DispatchWorkItem {
+            withAnimation(.easeOut(duration: 0.15)) {
+                proxy.scrollTo(id, anchor: .bottom)
+            }
+        }
+        scrollWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
     }
 }
 
@@ -256,30 +294,32 @@ private struct TransitionEventRow: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
-            VStack(alignment: .leading, spacing: 8) {
-                if let prompt = item.payload["prompt"]?.stringValue {
-                    if let originalGoal = item.payload["originalGoal"]?.stringValue {
-                        ToolPayloadBlock(title: "Original Goal", value: .string(originalGoal))
+            if expanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let prompt = item.payload["prompt"]?.stringValue {
+                        if let originalGoal = item.payload["originalGoal"]?.stringValue {
+                            ToolPayloadBlock(title: "Original Goal", value: .string(originalGoal))
+                        }
+                        if let edgeId = item.payload["edgeId"]?.stringValue {
+                            ToolPayloadBlock(title: "Edge", value: .string(edgeId))
+                        }
+                        if let workflowInstanceId = item.payload["workflowInstanceId"]?.stringValue {
+                            ToolPayloadBlock(title: "Workflow Instance", value: .string(workflowInstanceId))
+                        }
+                        ToolPayloadBlock(title: "Prompt sent to \(item.recipient ?? "agent")", value: .string(prompt))
+                    } else if let text = item.payload["text"]?.stringValue {
+                        if let workflowInstanceId = item.payload["workflowInstanceId"]?.stringValue {
+                            ToolPayloadBlock(title: "Workflow Instance", value: .string(workflowInstanceId))
+                        }
+                        ToolPayloadBlock(title: "Message", value: .string(text))
                     }
-                    if let edgeId = item.payload["edgeId"]?.stringValue {
-                        ToolPayloadBlock(title: "Edge", value: .string(edgeId))
+                    if let reason = item.payload["reason"]?.stringValue {
+                        ToolPayloadBlock(title: "Reason", value: .string(reason))
                     }
-                    if let workflowInstanceId = item.payload["workflowInstanceId"]?.stringValue {
-                        ToolPayloadBlock(title: "Workflow Instance", value: .string(workflowInstanceId))
-                    }
-                    ToolPayloadBlock(title: "Prompt sent to \(item.recipient ?? "agent")", value: .string(prompt))
-                } else if let text = item.payload["text"]?.stringValue {
-                    if let workflowInstanceId = item.payload["workflowInstanceId"]?.stringValue {
-                        ToolPayloadBlock(title: "Workflow Instance", value: .string(workflowInstanceId))
-                    }
-                    ToolPayloadBlock(title: "Message", value: .string(text))
                 }
-                if let reason = item.payload["reason"]?.stringValue {
-                    ToolPayloadBlock(title: "Reason", value: .string(reason))
-                }
+                .padding(.top, 6)
+                .padding(.leading, 20)
             }
-            .padding(.top, 6)
-            .padding(.leading, 20)
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: item.type == "handoff.created" ? "arrow.right.circle" : "ellipsis.message")
@@ -309,16 +349,18 @@ private struct PlanEventRow: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
-            VStack(alignment: .leading, spacing: 8) {
-                if let plan = item.payload["plan"]?.objectValue {
-                    PlanPayloadView(plan: plan, workflowSpecs: arrayValue(item.payload["workflowSpecs"]) ?? [])
+            if expanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let plan = item.payload["plan"]?.objectValue {
+                        PlanPayloadView(plan: plan, workflowSpecs: arrayValue(item.payload["workflowSpecs"]) ?? [])
+                    }
+                    if let planId = item.payload["planId"] {
+                        ToolPayloadBlock(title: "Plan ID", value: planId)
+                    }
                 }
-                if let planId = item.payload["planId"] {
-                    ToolPayloadBlock(title: "Plan ID", value: planId)
-                }
+                .padding(.top, 6)
+                .padding(.leading, 20)
             }
-            .padding(.top, 6)
-            .padding(.leading, 20)
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: item.type == "plan.created" ? "checklist" : "point.3.connected.trianglepath.dotted")
@@ -468,19 +510,21 @@ private struct ToolEventRow: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
-            VStack(alignment: .leading, spacing: 8) {
-                if let input = call.payload["input"] {
-                    ToolPayloadBlock(title: "Input", value: input)
+            if expanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let input = call.payload["input"] {
+                        ToolPayloadBlock(title: "Input", value: input)
+                    }
+                    if let output = result?.payload["output"] {
+                        ToolPayloadBlock(title: "Result", value: output)
+                    }
+                    if let diff = result?.payload["diff"] {
+                        DiffPayloadBlock(diff: diff.stringValue ?? "")
+                    }
                 }
-                if let output = result?.payload["output"] {
-                    ToolPayloadBlock(title: "Result", value: output)
-                }
-                if let diff = result?.payload["diff"] {
-                    DiffPayloadBlock(diff: diff.stringValue ?? "")
-                }
+                .padding(.top, 6)
+                .padding(.leading, 20)
             }
-            .padding(.top, 6)
-            .padding(.leading, 20)
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: result == nil ? "hammer" : "checkmark.circle")
