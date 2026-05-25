@@ -79,6 +79,93 @@ describe("SessionManager deterministic debug sessions", () => {
     }
   });
 
+  it("archives and restores sessions without deleting their durable logs", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      const snapshot = await manager.handle({
+        id: "req_create_archivable",
+        method: "createSession",
+        params: {
+          prompt: "archive me",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: true
+        }
+      }) as { sessionId: string };
+
+      await manager.handle({
+        id: "req_archive",
+        method: "archiveSessions",
+        params: { sessionIds: [snapshot.sessionId], archived: true }
+      });
+
+      const visible = await manager.handle({
+        id: "req_list_visible",
+        method: "listSessions",
+        params: {}
+      }) as { sessions: Array<{ id: string; archived?: boolean }> };
+      expect(visible.sessions.some((session) => session.id === snapshot.sessionId)).toBe(false);
+
+      const all = await manager.handle({
+        id: "req_list_all",
+        method: "listSessions",
+        params: { includeArchived: true }
+      }) as { sessions: Array<{ id: string; archived?: boolean }> };
+      expect(all.sessions.find((session) => session.id === snapshot.sessionId)?.archived).toBe(true);
+      expect(existsSync(path.join(root, snapshot.sessionId, "events.jsonl"))).toBe(true);
+
+      await manager.handle({
+        id: "req_restore",
+        method: "archiveSessions",
+        params: { sessionIds: [snapshot.sessionId], archived: false }
+      });
+      const restored = await manager.handle({
+        id: "req_list_restored",
+        method: "listSessions",
+        params: {}
+      }) as { sessions: Array<{ id: string; archived?: boolean }> };
+      expect(restored.sessions.find((session) => session.id === snapshot.sessionId)?.archived).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks mutable operations on archived sessions", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      const snapshot = await manager.handle({
+        id: "req_create_archived_readonly",
+        method: "createSession",
+        params: {
+          prompt: "archive readonly",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: true
+        }
+      }) as { sessionId: string };
+      await manager.handle({
+        id: "req_archive_readonly",
+        method: "archiveSessions",
+        params: { sessionIds: [snapshot.sessionId], archived: true }
+      });
+
+      await expect(manager.handle({
+        id: "req_archived_message",
+        method: "sendMessage",
+        params: { sessionId: snapshot.sessionId, text: "should be blocked" }
+      })).rejects.toThrow(/archived/i);
+      await expect(manager.handle({
+        id: "req_archived_workflow",
+        method: "instantiateWorkflow",
+        params: { sessionId: snapshot.sessionId, workflowId: "implementor-reviewer" }
+      })).rejects.toThrow(/archived/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("creates personal role and workflow JSON files through the daemon protocol", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
     try {

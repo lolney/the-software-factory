@@ -95,6 +95,8 @@ export const PlanSpecSchema = z.object({
 
 export const SessionEventTypeSchema = z.enum([
   "session.created",
+  "session.archived",
+  "session.restored",
   "session.snapshot",
   "plan.created",
   "plan.instantiated",
@@ -210,6 +212,7 @@ export const SessionSnapshotSchema = z.object({
   workspaceRoot: z.string(),
   workflowId: SafeIdSchema,
   debugMode: z.boolean().default(false),
+  archived: z.boolean().default(false),
   graph: GraphStateSchema,
   transcript: z.array(SessionEventSchema)
 });
@@ -221,7 +224,8 @@ export const DaemonRequestSchema = z.discriminatedUnion("method", [
   z.object({ id: z.string(), method: z.literal("resumeAgent"), params: z.object({ sessionId: SafeIdSchema, agentId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("cancelAgent"), params: z.object({ sessionId: SafeIdSchema, agentId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("getSnapshot"), params: z.object({ sessionId: SafeIdSchema }) }),
-  z.object({ id: z.string(), method: z.literal("listSessions"), params: z.object({}).default({}) }),
+  z.object({ id: z.string(), method: z.literal("listSessions"), params: z.object({ includeArchived: z.boolean().optional() }).default({}) }),
+  z.object({ id: z.string(), method: z.literal("archiveSessions"), params: z.object({ sessionIds: z.array(SafeIdSchema).min(1), archived: z.boolean().default(true) }) }),
   z.object({ id: z.string(), method: z.literal("subscribeEvents"), params: z.object({ sessionId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("subscribeDebugLogs"), params: z.object({ sessionId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("ackClientEvent"), params: z.object({ sessionId: SafeIdSchema, eventId: SafeIdSchema }) }),

@@ -19,6 +19,7 @@ export interface CreateSessionInput {
   workspaceRoot: string;
   workflowId: string;
   debugMode: boolean;
+  archived?: boolean;
   graph: GraphState;
 }
 
@@ -58,6 +59,7 @@ export class EventStore {
         workspaceRoot: input.workspaceRoot,
         workflowId: input.workflowId,
         debugMode: input.debugMode,
+        archived: input.archived ?? false,
         graph: input.graph
       }
     };
@@ -91,6 +93,7 @@ export class EventStore {
       workspaceRoot: input.workspaceRoot,
       workflowId: input.workflowId,
       debugMode: input.debugMode,
+      archived: input.archived ?? false,
       graph: input.graph,
       transcript
     };
@@ -129,7 +132,7 @@ export class EventStore {
     return parsed;
   }
 
-  async listSessions() {
+  async listSessions(options: { includeArchived?: boolean } = {}) {
     await this.ensureRoot();
     const entries = await readdir(this.sessionsRoot, { withFileTypes: true });
     const sessions = [];
@@ -138,16 +141,26 @@ export class EventStore {
       const snapshotPath = path.join(this.sessionsRoot, entry.name, "snapshot.json");
       if (!existsSync(snapshotPath)) continue;
       const snapshot = JSON.parse(await readFile(snapshotPath, "utf8")) as SessionSnapshot;
+      const events = await this.readEvents(snapshot.sessionId);
+      const updatedAt = events.at(-1)?.timestamp ?? snapshot.updatedAt;
+      const activeAgents = snapshot.graph.nodes.filter((node) => ["working", "waiting", "paused"].includes(node.status)).length;
+      const failureCount = snapshot.graph.nodes.reduce((total, node) => total + node.errorCount + (node.status === "failed" ? 1 : 0), 0);
       sessions.push({
         id: snapshot.sessionId,
         title: snapshot.title,
         createdAt: snapshot.createdAt,
-        updatedAt: snapshot.updatedAt,
+        updatedAt,
         workflowId: snapshot.workflowId,
-        workspaceRoot: snapshot.workspaceRoot
+        workspaceRoot: snapshot.workspaceRoot,
+        archived: snapshot.archived === true,
+        debugMode: snapshot.debugMode === true,
+        activeAgents,
+        failureCount
       });
     }
-    return sessions.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return sessions
+      .filter((session) => options.includeArchived || !session.archived)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   async readEvents(sessionId: string): Promise<SessionEvent[]> {
@@ -223,6 +236,7 @@ export class EventStore {
     const workspaceRoot = String(created.payload.workspaceRoot ?? process.cwd());
     const workflowId = String(created.payload.workflowId ?? "orchestrator-basic");
     const debugMode = created.payload.debugMode === true;
+    let archived = created.payload.archived === true;
     const updatedAt = events.at(-1)?.timestamp ?? created.timestamp;
     const parsedGraph = GraphStateSchema.safeParse(created.payload.graph);
     let graph: GraphState = parsedGraph.success ? parsedGraph.data : {
@@ -247,6 +261,13 @@ export class EventStore {
       const parsed = GraphStateSchema.safeParse(event.payload.graph);
       if (parsed.success) {
         graph = parsed.data;
+      }
+    }
+    for (const event of events) {
+      if (event.type === "session.archived") {
+        archived = true;
+      } else if (event.type === "session.restored") {
+        archived = false;
       }
     }
     const ackedEventIds = new Set(
@@ -311,6 +332,7 @@ export class EventStore {
       workspaceRoot,
       workflowId,
       debugMode,
+      archived,
       graph,
       transcript: events
     };
@@ -346,9 +368,10 @@ function containedPath(root: string, child: string) {
 }
 
 function normalizeSnapshot(snapshot: SessionSnapshot, hasExplicitDebugMode: boolean): SessionSnapshot {
-  if (hasExplicitDebugMode) return snapshot;
+  if (hasExplicitDebugMode && typeof snapshot.archived === "boolean") return snapshot;
   return {
     ...snapshot,
-    debugMode: snapshot.transcript.some((event) => event.payload.runtime === "deterministic")
+    debugMode: hasExplicitDebugMode ? snapshot.debugMode : snapshot.transcript.some((event) => event.payload.runtime === "deterministic"),
+    archived: snapshot.archived ?? false
   };
 }

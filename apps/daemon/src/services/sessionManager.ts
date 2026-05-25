@@ -72,8 +72,41 @@ export class SessionManager {
           roles: this.workflows.listRoles(),
           codexOAuth: await this.auth.status(),
           integrations: await this.integrations.listCatalog(),
-          sessions: await this.store.listSessions()
+          sessions: await this.store.listSessions({ includeArchived: request.params.includeArchived ?? false })
         };
+      case "archiveSessions": {
+        for (const sessionId of request.params.sessionIds) {
+          await this.store.assertSessionExists(sessionId);
+          if (request.params.archived) {
+            const snapshot = await this.store.readSnapshot(sessionId);
+            const activeAgents = snapshot.graph.nodes.filter((node) => ["working", "waiting", "paused"].includes(node.status));
+            if (activeAgents.length > 0) {
+              throw new Error(`Cannot archive session ${sessionId} while agents are active: ${activeAgents.map((node) => node.id).join(", ")}`);
+            }
+          }
+          const event = await this.appendAndPublish({
+            eventId: makeEventId(),
+            sessionId,
+            timestamp: new Date().toISOString(),
+            type: request.params.archived ? "session.archived" : "session.restored",
+            payload: { archived: request.params.archived }
+          }, publish);
+          await this.appendDebugLog(
+            sessionId,
+            "info",
+            "session",
+            request.params.archived ? "Session archived." : "Session restored.",
+            { eventId: event.eventId },
+            publishLog,
+            undefined,
+            event.eventId
+          );
+          await this.store.rebuildSnapshot(sessionId);
+        }
+        return {
+          sessions: await this.store.listSessions({ includeArchived: true })
+        };
+      }
       case "getAuthStatus":
         return this.auth.status();
       case "beginOpenAIOAuth":
@@ -150,6 +183,7 @@ export class SessionManager {
       case "sendMessage": {
         await this.store.assertSessionExists(request.params.sessionId);
         const snapshot = await this.store.readSnapshot(request.params.sessionId);
+        this.assertSessionMutable(snapshot);
         const targetAgentId = request.params.targetAgentId ?? "orchestrator";
         this.assertAgentCanReceive(snapshot, targetAgentId);
         const nudge = await this.appendAndPublish({
@@ -173,12 +207,15 @@ export class SessionManager {
         return { logs: await this.store.readDebugLogs(request.params.sessionId) };
       case "pauseAgent":
         await this.store.assertSessionExists(request.params.sessionId);
+        this.assertSessionMutable(await this.store.readSnapshot(request.params.sessionId));
         return this.controlEvent(request.params.sessionId, request.params.agentId, "control.pause", "paused", publish);
       case "resumeAgent":
         await this.store.assertSessionExists(request.params.sessionId);
+        this.assertSessionMutable(await this.store.readSnapshot(request.params.sessionId));
         return this.controlEvent(request.params.sessionId, request.params.agentId, "control.resume", "idle", publish);
       case "cancelAgent":
         await this.store.assertSessionExists(request.params.sessionId);
+        this.assertSessionMutable(await this.store.readSnapshot(request.params.sessionId));
         return this.controlEvent(request.params.sessionId, request.params.agentId, "control.cancel", "cancelled", publish);
       case "ackClientEvent":
         await this.store.assertSessionExists(request.params.sessionId);
@@ -191,7 +228,14 @@ export class SessionManager {
         }, publish);
         return this.store.rebuildSnapshot(request.params.sessionId);
       case "instantiateWorkflow":
+        this.assertSessionMutable(await this.store.readSnapshot(request.params.sessionId));
         return this.instantiateWorkflow(request.params.sessionId, request.params.workflowId, request.params.anchorNodeId, publish);
+    }
+  }
+
+  private assertSessionMutable(snapshot: SessionSnapshot) {
+    if (snapshot.archived) {
+      throw new Error(`Session ${snapshot.sessionId} is archived. Restore it before sending messages or changing workflow state.`);
     }
   }
 

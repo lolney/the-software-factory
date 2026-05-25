@@ -21,14 +21,24 @@ struct SessionSummary: Identifiable, Hashable, Codable {
     var title: String
     var detail: String
     var createdAt: String? = nil
+    var updatedAt: String? = nil
     var workspaceRoot: String? = nil
+    var archived: Bool? = nil
+    var debugMode: Bool? = nil
+    var activeAgents: Int? = nil
+    var failureCount: Int? = nil
 
     enum CodingKeys: String, CodingKey {
         case id
         case title
         case detail = "workflowId"
         case createdAt
+        case updatedAt
         case workspaceRoot
+        case archived
+        case debugMode
+        case activeAgents
+        case failureCount
     }
 }
 
@@ -259,6 +269,7 @@ struct SessionSnapshot: Codable {
     var workspaceRoot: String
     var workflowId: String
     var debugMode: Bool?
+    var archived: Bool?
     var graph: GraphState
     var transcript: [SessionEvent]
 }

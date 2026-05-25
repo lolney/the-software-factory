@@ -22,7 +22,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 - **P0: Add real new-session setup.** Include a repo/worktree picker (with option to clone the repo as a worktree), auth preflight. This should include a "quick setup" option that simply creates a blank workspace.
 - **P0: Fix New Session prompt editor accessibility/input reliability.** The prompt editor accepts focus but did not accept Accessibility paste/keystrokes during the execution pass; make it reliable for paste, keyboard entry, and automation.
-- **P1: Improve session information architecture.** Add a session dashboard/table with status, last activity, live/debug mode, workspace path, active agents, failure count, and quick actions.
 - **P2: Move auth setup into the moment it is needed.** Add inline "Set up OpenAI" from new-session preflight, show OAuth progress, confirm account/source, and block Live creation with an actionable fix.
 
 ## Codex App Comparison Follow-Ups
@@ -37,6 +36,8 @@ Computer Use could inspect this app, but direct Computer Use access to `com.open
 
 ## Completed Non-Controversial Items
 
+- **2026-05-25: Add archived sessions.** Added durable `session.archived`/`session.restored` events, an Archived Sessions destination, restore actions, read-only archived sessions, and daemon tests proving logs are preserved.
+- **2026-05-25: Add multi-session dashboard and actions.** Added sidebar multi-selection, confirmed batch archive, "View Selected Sessions", and a session dashboard/table with status, last activity, mode, workspace path, active/paused agents, failure count, and quick actions.
 - **2026-05-25: Surface failures prominently.** Added a session-level status banner with a Debug shortcut and dismissible transient errors.
 - **2026-05-25: Clarify agent controls.** Split transcript viewing from the control target, added a `Control` toolbar menu, exposed `Controlling: <agent>` in the graph panel, and renamed pause to "Pause Scheduling."
 - **2026-05-25: Add a Workspace inspector.** Added a Workspace inspector tab with root path, copy/open actions, touched files, diff stats, conflict counts, and empty states.

@@ -6,10 +6,14 @@ import Observation
 @Observable
 final class SessionStore {
     static let newSessionDraftId = "new-session-draft"
+    static let sessionDashboardId = "session-dashboard"
 
     var sessions: [SessionSummary] = []
+    var archivedSessions: [SessionSummary] = []
     var selectedSessionId: String?
     var selectedSidebarItem: String?
+    var selectedSidebarItems: Set<String> = []
+    var dashboardSessionFilterIds: Set<String> = []
     var graph = GraphState(sessionId: "", workflowId: "", nodes: [], edges: [])
     var transcript: [TranscriptItem] = []
     var debugLogs: [DebugLogItem] = []
@@ -57,12 +61,35 @@ final class SessionStore {
         selectedSessionId != nil
     }
 
+    var visibleSessions: [SessionSummary] {
+        sessions.filter { $0.archived != true }
+    }
+
+    var selectedSessionArchived: Bool {
+        guard let selectedSessionId else { return false }
+        return archivedSessions.contains { $0.id == selectedSessionId }
+    }
+
+    var selectedArchivedSession: SessionSummary? {
+        guard let selectedSessionId else { return nil }
+        return archivedSessions.first { $0.id == selectedSessionId }
+    }
+
+    var selectedSessionIdsForActions: [String] {
+        let sessionIds = Set((sessions + archivedSessions).map(\.id))
+        let selected = selectedSidebarItems.filter { sessionIds.contains($0) }
+        if !selected.isEmpty {
+            return Array(selected)
+        }
+        return selectedSessionId.map { [$0] } ?? []
+    }
+
     var canSendComposerMessage: Bool {
         let hasText = !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if isComposingNewSession {
             return hasText && !isCreatingSession
         }
-        return daemon.isConnected && hasActiveSession && ![.paused, .cancelled, .failed, .completed].contains(orchestratorStatus) && hasText
+        return daemon.isConnected && hasActiveSession && !selectedSessionArchived && ![.paused, .cancelled, .failed, .completed].contains(orchestratorStatus) && hasText
     }
 
     var orchestratorStatus: AgentStatus {
@@ -156,15 +183,15 @@ final class SessionStore {
     }
 
     var canPauseOrchestrator: Bool {
-        daemon.isConnected && hasActiveSession && [.idle, .working, .waiting].contains(orchestratorStatus)
+        daemon.isConnected && hasActiveSession && !selectedSessionArchived && [.idle, .working, .waiting].contains(orchestratorStatus)
     }
 
     var canResumeOrchestrator: Bool {
-        daemon.isConnected && hasActiveSession && orchestratorStatus == .paused
+        daemon.isConnected && hasActiveSession && !selectedSessionArchived && orchestratorStatus == .paused
     }
 
     var canCancelOrchestrator: Bool {
-        daemon.isConnected && hasActiveSession && ![.cancelled, .completed].contains(orchestratorStatus)
+        daemon.isConnected && hasActiveSession && !selectedSessionArchived && ![.cancelled, .completed].contains(orchestratorStatus)
     }
 
     init() {
@@ -211,7 +238,7 @@ final class SessionStore {
     }
 
     func refreshSessions() {
-        daemon.sendRequest(method: "listSessions", params: [:])
+        daemon.sendRequest(method: "listSessions", params: ["includeArchived": true])
     }
 
     func refreshForAppActivation() {
@@ -303,8 +330,9 @@ final class SessionStore {
 
     func selectSidebarItem(_ item: String?) {
         selectedSidebarItem = item
+        selectedSidebarItems = item.map { [$0] } ?? []
         guard let item else { return }
-        if item == "roles" || item == "workflows" {
+        if item == "roles" || item == "workflows" || item == "archived" || item == Self.sessionDashboardId {
             return
         }
         if item == Self.newSessionDraftId {
@@ -314,11 +342,55 @@ final class SessionStore {
         selectSession(item)
     }
 
+    func selectSidebarItems(_ items: Set<String>) {
+        selectedSidebarItems = items
+        guard !items.isEmpty else {
+            selectedSidebarItem = nil
+            return
+        }
+        if items.contains("roles") {
+            selectSidebarItem("roles")
+            return
+        }
+        if items.contains("workflows") {
+            selectSidebarItem("workflows")
+            return
+        }
+        if items.contains("archived") {
+            selectSidebarItem("archived")
+            return
+        }
+        if items.contains(Self.sessionDashboardId) {
+            selectSidebarItem(Self.sessionDashboardId)
+            return
+        }
+        if items.contains(Self.newSessionDraftId) {
+            selectSidebarItem(Self.newSessionDraftId)
+            return
+        }
+        let sessionIds = Set((sessions + archivedSessions).map(\.id))
+        let selectedSessionRows = items.filter { sessionIds.contains($0) }
+        if selectedSessionRows.count > 1 {
+            dashboardSessionFilterIds = selectedSessionRows
+            selectedSidebarItem = Self.sessionDashboardId
+            return
+        }
+        if let current = selectedSessionId, items.contains(current) {
+            selectedSidebarItem = current
+            return
+        }
+        let orderedSessions = (sessions + archivedSessions).map(\.id)
+        if let sessionId = orderedSessions.first(where: { items.contains($0) }) {
+            selectSession(sessionId)
+        }
+    }
+
     func selectSession(_ sessionId: String?) {
         guard let sessionId else { return }
         isComposingNewSession = false
         selectedSessionId = sessionId
         selectedSidebarItem = sessionId
+        selectedSidebarItems = [sessionId]
         isLoadingSelection = true
         currentWorkspaceRoot = sessions.first { $0.id == sessionId }?.workspaceRoot
         currentSessionDebugMode = nil
@@ -379,6 +451,33 @@ final class SessionStore {
     func cancelOrchestrator() {
         guard let selectedSessionId else { return }
         daemon.sendRequest(method: "cancelAgent", params: ["sessionId": selectedSessionId, "agentId": selectedControlAgentId])
+    }
+
+    func archiveSessions(_ sessionIds: [String], archived: Bool = true) {
+        let ids = Array(Set(sessionIds)).filter { !$0.isEmpty }
+        guard !ids.isEmpty else { return }
+        daemon.sendRequest(method: "archiveSessions", params: ["sessionIds": ids, "archived": archived])
+    }
+
+    func archiveSelectedSessions() {
+        archiveSessions(selectedSessionIdsForActions, archived: true)
+    }
+
+    func restoreSessions(_ sessionIds: [String]) {
+        archiveSessions(sessionIds, archived: false)
+    }
+
+    func viewSelectedSessions() {
+        let ids = selectedSessionIdsForActions
+        dashboardSessionFilterIds = Set(ids)
+        selectedSidebarItem = Self.sessionDashboardId
+        selectedSidebarItems = [Self.sessionDashboardId]
+    }
+
+    func viewAllSessions() {
+        dashboardSessionFilterIds = []
+        selectedSidebarItem = Self.sessionDashboardId
+        selectedSidebarItems = [Self.sessionDashboardId]
     }
 
     func saveRole(_ role: RoleSpec) {
@@ -533,6 +632,7 @@ final class SessionStore {
         composerText = ""
         selectedSessionId = nil
         selectedSidebarItem = Self.newSessionDraftId
+        selectedSidebarItems = [Self.newSessionDraftId]
         selectedAgentId = nil
         controlAgentId = nil
         currentWorkspaceRoot = nil
@@ -617,10 +717,11 @@ final class SessionStore {
            let sessionsValue = resultDict["sessions"],
            let sessionsData = try? JSONSerialization.data(withJSONObject: sessionsValue),
            let summaries = try? JSONDecoder().decode([SessionSummary].self, from: sessionsData) {
-            sessions = summaries
+            sessions = summaries.filter { $0.archived != true }
+            archivedSessions = summaries.filter { $0.archived == true }
             if !isComposingNewSession,
                let first = sessions.first,
-               selectedSessionId == nil || sessions.allSatisfy({ $0.id != selectedSessionId }) {
+               selectedSessionId == nil || (sessions + archivedSessions).allSatisfy({ $0.id != selectedSessionId }) {
                 selectSession(first.id)
             }
             if let workflowsValue = resultDict["workflows"],
@@ -710,6 +811,7 @@ final class SessionStore {
     private func apply(snapshot: SessionSnapshot) {
         selectedSessionId = snapshot.sessionId
         selectedSidebarItem = snapshot.sessionId
+        selectedSidebarItems = [snapshot.sessionId]
         subscribe(to: snapshot.sessionId)
         graph = snapshot.graph
         transcript = snapshot.transcript.map(transcriptItem)
@@ -722,7 +824,7 @@ final class SessionStore {
         }
         currentWorkspaceRoot = snapshot.workspaceRoot
         currentSessionDebugMode = snapshot.debugMode ?? false
-        let summary = SessionSummary(id: snapshot.sessionId, title: snapshot.title, detail: snapshot.workflowId, createdAt: snapshot.createdAt, workspaceRoot: snapshot.workspaceRoot)
+        let summary = SessionSummary(id: snapshot.sessionId, title: snapshot.title, detail: snapshot.workflowId, createdAt: snapshot.createdAt, updatedAt: snapshot.updatedAt, workspaceRoot: snapshot.workspaceRoot, archived: snapshot.archived)
         upsertSessionSummary(summary)
         connectionStatus = "Connected"
         isCreatingSession = false
@@ -736,10 +838,11 @@ final class SessionStore {
                 let title = event.payload["title"]?.stringValue ?? event.sessionId
                 let workflowId = event.payload["workflowId"]?.stringValue ?? ""
                 let workspaceRoot = event.payload["workspaceRoot"]?.stringValue
-                upsertSessionSummary(SessionSummary(id: event.sessionId, title: title, detail: workflowId, createdAt: event.timestamp, workspaceRoot: workspaceRoot))
+                upsertSessionSummary(SessionSummary(id: event.sessionId, title: title, detail: workflowId, createdAt: event.timestamp, updatedAt: event.timestamp, workspaceRoot: workspaceRoot))
                 if isCreatingSession {
                     selectedSessionId = event.sessionId
                     selectedSidebarItem = event.sessionId
+                    selectedSidebarItems = [event.sessionId]
                     currentWorkspaceRoot = workspaceRoot
                     currentSessionDebugMode = event.payload["debugMode"]?.boolValue
                     transcript = []
@@ -771,9 +874,10 @@ final class SessionStore {
             let workflowId = event.payload["workflowId"]?.stringValue ?? graph.workflowId
             currentWorkspaceRoot = event.payload["workspaceRoot"]?.stringValue
             currentSessionDebugMode = event.payload["debugMode"]?.boolValue
-            upsertSessionSummary(SessionSummary(id: event.sessionId, title: title, detail: workflowId, createdAt: event.timestamp, workspaceRoot: currentWorkspaceRoot))
+            upsertSessionSummary(SessionSummary(id: event.sessionId, title: title, detail: workflowId, createdAt: event.timestamp, updatedAt: event.timestamp, workspaceRoot: currentWorkspaceRoot))
             selectedSessionId = event.sessionId
             selectedSidebarItem = event.sessionId
+            selectedSidebarItems = [event.sessionId]
             subscribe(to: event.sessionId)
             subscribeDebugLogs(to: event.sessionId)
             selectedAgentId = nil
@@ -781,6 +885,10 @@ final class SessionStore {
             isCreatingSession = false
             isLoadingSelection = false
             isComposingNewSession = false
+        case "session.archived":
+            updateSessionArchiveState(sessionId: event.sessionId, archived: true)
+        case "session.restored":
+            updateSessionArchiveState(sessionId: event.sessionId, archived: false)
         case "graph.updated":
             if let graphValue = event.payload["graph"],
                let data = try? JSONEncoder().encode(graphValue),
@@ -885,13 +993,29 @@ final class SessionStore {
     }
 
     private func upsertSessionSummary(_ summary: SessionSummary) {
-        if let index = sessions.firstIndex(where: { $0.id == summary.id }) {
-            sessions[index] = summary
+        sessions.removeAll { $0.id == summary.id }
+        archivedSessions.removeAll { $0.id == summary.id }
+        if summary.archived == true {
+            archivedSessions.append(summary)
         } else {
             sessions.append(summary)
         }
         sessions.sort { left, right in
             (left.createdAt ?? "") > (right.createdAt ?? "")
+        }
+        archivedSessions.sort { left, right in
+            (left.createdAt ?? "") > (right.createdAt ?? "")
+        }
+    }
+
+    private func updateSessionArchiveState(sessionId: String, archived: Bool) {
+        let allSessions = sessions + archivedSessions
+        guard var summary = allSessions.first(where: { $0.id == sessionId }) else { return }
+        summary.archived = archived
+        upsertSessionSummary(summary)
+        if archived, selectedSessionId == sessionId {
+            selectedSidebarItem = sessionId
+            selectedSidebarItems = [sessionId]
         }
     }
 

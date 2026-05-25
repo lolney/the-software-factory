@@ -48,7 +48,7 @@ struct WorkflowsView: View {
             .frame(minWidth: 280, idealWidth: 340)
 
             if let workflow = selectedWorkflow {
-                WorkflowDetail(workflow: workflow, targetSessionTitle: store.sessions.first(where: { $0.id == store.selectedSessionId })?.title, canInstantiate: store.hasActiveSession && workflow.isInstantiable) {
+                WorkflowDetail(workflow: workflow, targetSessionTitle: (store.sessions + store.archivedSessions).first(where: { $0.id == store.selectedSessionId })?.title, canInstantiate: store.hasActiveSession && !store.selectedSessionArchived && workflow.isInstantiable) {
                     store.instantiateWorkflow(workflow.id)
                 }
                 .frame(minWidth: 560)

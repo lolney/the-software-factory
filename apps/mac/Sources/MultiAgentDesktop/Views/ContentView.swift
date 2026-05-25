@@ -13,6 +13,10 @@ struct ContentView: View {
                 RolesView(store: store)
             case "workflows":
                 WorkflowsView(store: store)
+            case "archived":
+                ArchivedSessionsView(store: store)
+            case SessionStore.sessionDashboardId:
+                SessionDashboardView(store: store)
             default:
                 SessionDetailView(store: store)
             }
