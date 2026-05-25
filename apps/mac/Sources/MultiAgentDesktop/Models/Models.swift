@@ -25,6 +25,8 @@ struct SessionSummary: Identifiable, Hashable, Codable {
     var workspaceRoot: String? = nil
     var archived: Bool? = nil
     var debugMode: Bool? = nil
+    var model: String? = nil
+    var reasoningEffort: String? = nil
     var activeAgents: Int? = nil
     var failureCount: Int? = nil
 
@@ -37,6 +39,8 @@ struct SessionSummary: Identifiable, Hashable, Codable {
         case workspaceRoot
         case archived
         case debugMode
+        case model
+        case reasoningEffort
         case activeAgents
         case failureCount
     }
@@ -270,6 +274,8 @@ struct SessionSnapshot: Codable {
     var workflowId: String
     var debugMode: Bool?
     var archived: Bool?
+    var model: String?
+    var reasoningEffort: String?
     var graph: GraphState
     var transcript: [SessionEvent]
 }

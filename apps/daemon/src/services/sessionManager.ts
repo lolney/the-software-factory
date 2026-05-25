@@ -166,6 +166,8 @@ export class SessionManager {
           workspaceRoot,
           workflowId: spec.id,
           debugMode: request.params.debugMode,
+          model: request.params.model,
+          reasoningEffort: request.params.reasoningEffort,
           graph
         });
         for (const event of snapshot.transcript) {
@@ -292,6 +294,8 @@ export class SessionManager {
       debugMode,
       roleName: role?.name,
       instructions: role?.promptTemplate,
+      model: modelForRun(snapshot, role),
+      reasoningEffort: reasoningEffortForRun(snapshot),
       apiKey: openAI?.apiKey,
       openAI,
       workflowTools: this.workflowTools(snapshot, agentId, publish),
@@ -524,6 +528,8 @@ export class SessionManager {
       debugMode: snapshot.debugMode,
       roleName: role?.name,
       instructions: role?.promptTemplate,
+      model: modelForRun(snapshot, role),
+      reasoningEffort: reasoningEffortForRun(snapshot),
       apiKey: openAI?.apiKey,
       openAI,
       workflowTools: this.workflowTools(snapshot, agentId, publish, context),
@@ -1829,6 +1835,18 @@ function truncateForToolResult(text: string, maxLength: number) {
 
 function isNegativeCompletion(reason: string) {
   return /\b(unable|cannot|can't|couldn.t|failed|blocked|not functioning|did not|no usable)\b/i.test(reason);
+}
+
+function modelForRun(snapshot: SessionSnapshot, role?: { model?: string }) {
+  const configured = typeof snapshot.model === "string" && snapshot.model.trim() ? snapshot.model.trim() : undefined;
+  return configured ?? role?.model;
+}
+
+function reasoningEffortForRun(snapshot: SessionSnapshot) {
+  const value = typeof snapshot.reasoningEffort === "string" ? snapshot.reasoningEffort : undefined;
+  return ["none", "minimal", "low", "medium", "high", "xhigh"].includes(value ?? "")
+    ? value as "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+    : undefined;
 }
 
 function temperatureConverterProgram() {

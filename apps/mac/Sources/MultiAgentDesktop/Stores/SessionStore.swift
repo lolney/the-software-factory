@@ -32,6 +32,9 @@ final class SessionStore {
     var chatGPTAccountIdInput = ""
     var connectionStatus = "Disconnected"
     var debugMode = false
+    var newSessionWorkspaceRoot = ""
+    var newSessionModel = ""
+    var newSessionReasoningEffort = "none"
     var isCreatingSession = false
     var lastError: String?
     var selectedAgentId: String?
@@ -87,7 +90,7 @@ final class SessionStore {
     var canSendComposerMessage: Bool {
         let hasText = !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if isComposingNewSession {
-            return hasText && !isCreatingSession
+            return hasText && !isCreatingSession && (debugMode || authStatus?.liveCredentialConfigured == true)
         }
         return daemon.isConnected && hasActiveSession && !selectedSessionArchived && ![.paused, .cancelled, .failed, .completed].contains(orchestratorStatus) && hasText
     }
@@ -261,6 +264,11 @@ final class SessionStore {
         }
         daemon.connect(port: daemonPort)
         try? await Task.sleep(for: .milliseconds(250))
+        if let prompt = pendingCreatePrompt {
+            pendingCreatePrompt = nil
+            sendCreateSession(prompt: prompt)
+            return
+        }
         refreshSessions()
         refreshCatalogs()
         startSessionRefreshLoop()
@@ -321,11 +329,23 @@ final class SessionStore {
         isCreatingSession = true
         lastError = nil
         let workflowId = selectedWorkflowId(for: prompt)
-        daemon.sendRequest(method: "createSession", params: [
+        var params: [String: Any] = [
             "prompt": prompt,
             "workflowId": workflowId,
             "debugMode": debugMode
-        ])
+        ]
+        let model = newSessionModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !model.isEmpty {
+            params["model"] = model
+        }
+        if newSessionReasoningEffort != "none" {
+            params["reasoningEffort"] = newSessionReasoningEffort
+        }
+        let workspaceRoot = newSessionWorkspaceRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !workspaceRoot.isEmpty {
+            params["workspaceRoot"] = workspaceRoot
+        }
+        daemon.sendRequest(method: "createSession", params: params)
     }
 
     func selectSidebarItem(_ item: String?) {
@@ -392,7 +412,7 @@ final class SessionStore {
         selectedSidebarItem = sessionId
         selectedSidebarItems = [sessionId]
         isLoadingSelection = true
-        currentWorkspaceRoot = sessions.first { $0.id == sessionId }?.workspaceRoot
+        currentWorkspaceRoot = (sessions + archivedSessions).first { $0.id == sessionId }?.workspaceRoot
         currentSessionDebugMode = nil
         graph = GraphState(sessionId: sessionId, workflowId: "", nodes: [], edges: [])
         transcript = []
@@ -427,7 +447,6 @@ final class SessionStore {
         guard !trimmed.isEmpty else { return }
         if isComposingNewSession {
             createSession(prompt: trimmed)
-            composerText = ""
             return
         }
         guard let selectedSessionId, daemon.isConnected else { return }
@@ -478,6 +497,22 @@ final class SessionStore {
         dashboardSessionFilterIds = []
         selectedSidebarItem = Self.sessionDashboardId
         selectedSidebarItems = [Self.sessionDashboardId]
+    }
+
+    func chooseNewSessionWorkspace() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Session Parent Folder"
+        panel.message = "Agents will work inside <selected folder>/<session id>/workspace."
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url {
+            newSessionWorkspaceRoot = url.path
+        }
+    }
+
+    func useBlankWorkspace() {
+        newSessionWorkspaceRoot = ""
     }
 
     func saveRole(_ role: RoleSpec) {
@@ -630,6 +665,9 @@ final class SessionStore {
         isCreatingSession = false
         pendingCreatePrompt = nil
         composerText = ""
+        newSessionWorkspaceRoot = ""
+        newSessionModel = ""
+        newSessionReasoningEffort = "none"
         selectedSessionId = nil
         selectedSidebarItem = Self.newSessionDraftId
         selectedSidebarItems = [Self.newSessionDraftId]
@@ -652,15 +690,16 @@ final class SessionStore {
             )
         ]
         debugLogs = []
+        if daemon.isConnected {
+            refreshAuthStatus()
+        } else {
+            connectAndRefresh()
+        }
     }
 
     private func handleDaemonMessage(_ data: Data) {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         connectionStatus = "Connected"
-        if let prompt = pendingCreatePrompt, object["method"] == nil {
-            pendingCreatePrompt = nil
-            sendCreateSession(prompt: prompt)
-        }
         if pendingOpenAIOAuth, object["method"] == nil {
             pendingOpenAIOAuth = false
             sendBeginOpenAIOAuth()
@@ -824,12 +863,13 @@ final class SessionStore {
         }
         currentWorkspaceRoot = snapshot.workspaceRoot
         currentSessionDebugMode = snapshot.debugMode ?? false
-        let summary = SessionSummary(id: snapshot.sessionId, title: snapshot.title, detail: snapshot.workflowId, createdAt: snapshot.createdAt, updatedAt: snapshot.updatedAt, workspaceRoot: snapshot.workspaceRoot, archived: snapshot.archived)
+        let summary = SessionSummary(id: snapshot.sessionId, title: snapshot.title, detail: snapshot.workflowId, createdAt: snapshot.createdAt, updatedAt: snapshot.updatedAt, workspaceRoot: snapshot.workspaceRoot, archived: snapshot.archived, debugMode: snapshot.debugMode, model: snapshot.model, reasoningEffort: snapshot.reasoningEffort)
         upsertSessionSummary(summary)
         connectionStatus = "Connected"
         isCreatingSession = false
         isLoadingSelection = false
         isComposingNewSession = false
+        composerText = ""
     }
 
     private func apply(event: SessionEvent) {
@@ -838,7 +878,7 @@ final class SessionStore {
                 let title = event.payload["title"]?.stringValue ?? event.sessionId
                 let workflowId = event.payload["workflowId"]?.stringValue ?? ""
                 let workspaceRoot = event.payload["workspaceRoot"]?.stringValue
-                upsertSessionSummary(SessionSummary(id: event.sessionId, title: title, detail: workflowId, createdAt: event.timestamp, updatedAt: event.timestamp, workspaceRoot: workspaceRoot))
+                upsertSessionSummary(SessionSummary(id: event.sessionId, title: title, detail: workflowId, createdAt: event.timestamp, updatedAt: event.timestamp, workspaceRoot: workspaceRoot, debugMode: event.payload["debugMode"]?.boolValue, model: event.payload["model"]?.stringValue, reasoningEffort: event.payload["reasoningEffort"]?.stringValue))
                 if isCreatingSession {
                     selectedSessionId = event.sessionId
                     selectedSidebarItem = event.sessionId
@@ -858,6 +898,7 @@ final class SessionStore {
                     subscribeDebugLogs(to: event.sessionId)
                     isCreatingSession = false
                     isComposingNewSession = false
+                    composerText = ""
                 }
             }
             return
@@ -874,7 +915,7 @@ final class SessionStore {
             let workflowId = event.payload["workflowId"]?.stringValue ?? graph.workflowId
             currentWorkspaceRoot = event.payload["workspaceRoot"]?.stringValue
             currentSessionDebugMode = event.payload["debugMode"]?.boolValue
-            upsertSessionSummary(SessionSummary(id: event.sessionId, title: title, detail: workflowId, createdAt: event.timestamp, updatedAt: event.timestamp, workspaceRoot: currentWorkspaceRoot))
+            upsertSessionSummary(SessionSummary(id: event.sessionId, title: title, detail: workflowId, createdAt: event.timestamp, updatedAt: event.timestamp, workspaceRoot: currentWorkspaceRoot, debugMode: event.payload["debugMode"]?.boolValue, model: event.payload["model"]?.stringValue, reasoningEffort: event.payload["reasoningEffort"]?.stringValue))
             selectedSessionId = event.sessionId
             selectedSidebarItem = event.sessionId
             selectedSidebarItems = [event.sessionId]
@@ -885,6 +926,7 @@ final class SessionStore {
             isCreatingSession = false
             isLoadingSelection = false
             isComposingNewSession = false
+            composerText = ""
         case "session.archived":
             updateSessionArchiveState(sessionId: event.sessionId, archived: true)
         case "session.restored":

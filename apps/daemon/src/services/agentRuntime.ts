@@ -13,6 +13,8 @@ export interface AgentTurnInput {
   debugMode: boolean;
   roleName?: string;
   instructions?: string;
+  model?: string;
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
   apiKey?: string;
   openAI?: {
     apiKey: string;
@@ -184,7 +186,8 @@ export class OpenAIAgentRuntime implements AgentRuntime {
     const agent = new Agent({
       name: input.roleName ?? input.agentId,
       instructions: input.instructions ?? "You are a role-specific coding agent in a local multiagent coding workflow. Be concise, operational, and report concrete progress.",
-      modelSettings: { store: false },
+      model: input.model,
+      modelSettings: { store: false, reasoning: input.reasoningEffort ? { effort: input.reasoningEffort } : undefined },
       toolUseBehavior: input.agentId === "orchestrator" ? "stop_on_first_tool" : "run_llm_again",
       tools,
       mcpServers: input.mcpServers ?? [],
@@ -324,7 +327,8 @@ async function runWhamTurn(
       return events;
     }
     const { outputText, functionCalls } = await whamResponsesRequest(connection, {
-      model: process.env.MULTIAGENT_WHAM_MODEL ?? "gpt-5.4",
+      model: input.model ?? process.env.MULTIAGENT_WHAM_MODEL ?? "gpt-5.4",
+      ...(input.reasoningEffort ? { reasoning: { effort: input.reasoningEffort } } : {}),
       instructions: input.instructions ?? "You are a role-specific coding agent in a local multiagent coding workflow. Be concise, operational, and report concrete progress.",
       input: conversation,
       tools: responseTools,

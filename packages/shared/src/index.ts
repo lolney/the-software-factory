@@ -213,12 +213,21 @@ export const SessionSnapshotSchema = z.object({
   workflowId: SafeIdSchema,
   debugMode: z.boolean().default(false),
   archived: z.boolean().default(false),
+  model: z.string().optional(),
+  reasoningEffort: z.enum(["none", "minimal", "low", "medium", "high", "xhigh"]).optional(),
   graph: GraphStateSchema,
   transcript: z.array(SessionEventSchema)
 });
 
 export const DaemonRequestSchema = z.discriminatedUnion("method", [
-  z.object({ id: z.string(), method: z.literal("createSession"), params: z.object({ prompt: z.string(), workspaceRoot: z.string().optional(), workflowId: SafeIdSchema.optional(), debugMode: z.boolean().default(false) }) }),
+  z.object({ id: z.string(), method: z.literal("createSession"), params: z.object({
+    prompt: z.string(),
+    workspaceRoot: z.string().optional(),
+    workflowId: SafeIdSchema.optional(),
+    debugMode: z.boolean().default(false),
+    model: z.string().optional(),
+    reasoningEffort: z.enum(["none", "minimal", "low", "medium", "high", "xhigh"]).optional()
+  }) }),
   z.object({ id: z.string(), method: z.literal("sendMessage"), params: z.object({ sessionId: SafeIdSchema, targetAgentId: SafeIdSchema.optional(), text: z.string() }) }),
   z.object({ id: z.string(), method: z.literal("pauseAgent"), params: z.object({ sessionId: SafeIdSchema, agentId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("resumeAgent"), params: z.object({ sessionId: SafeIdSchema, agentId: SafeIdSchema }) }),

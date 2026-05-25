@@ -20,6 +20,8 @@ export interface CreateSessionInput {
   workflowId: string;
   debugMode: boolean;
   archived?: boolean;
+  model?: string;
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
   graph: GraphState;
 }
 
@@ -60,6 +62,8 @@ export class EventStore {
         workflowId: input.workflowId,
         debugMode: input.debugMode,
         archived: input.archived ?? false,
+        model: input.model,
+        reasoningEffort: input.reasoningEffort,
         graph: input.graph
       }
     };
@@ -94,6 +98,8 @@ export class EventStore {
       workflowId: input.workflowId,
       debugMode: input.debugMode,
       archived: input.archived ?? false,
+      model: input.model,
+      reasoningEffort: input.reasoningEffort,
       graph: input.graph,
       transcript
     };
@@ -140,7 +146,7 @@ export class EventStore {
       if (!entry.isDirectory()) continue;
       const snapshotPath = path.join(this.sessionsRoot, entry.name, "snapshot.json");
       if (!existsSync(snapshotPath)) continue;
-      const snapshot = JSON.parse(await readFile(snapshotPath, "utf8")) as SessionSnapshot;
+      const snapshot = await this.rebuildSnapshot(entry.name);
       const events = await this.readEvents(snapshot.sessionId);
       const updatedAt = events.at(-1)?.timestamp ?? snapshot.updatedAt;
       const activeAgents = snapshot.graph.nodes.filter((node) => ["working", "waiting", "paused"].includes(node.status)).length;
@@ -154,6 +160,8 @@ export class EventStore {
         workspaceRoot: snapshot.workspaceRoot,
         archived: snapshot.archived === true,
         debugMode: snapshot.debugMode === true,
+        model: snapshot.model,
+        reasoningEffort: snapshot.reasoningEffort,
         activeAgents,
         failureCount
       });
@@ -236,6 +244,8 @@ export class EventStore {
     const workspaceRoot = String(created.payload.workspaceRoot ?? process.cwd());
     const workflowId = String(created.payload.workflowId ?? "orchestrator-basic");
     const debugMode = created.payload.debugMode === true;
+    const model = typeof created.payload.model === "string" ? created.payload.model : undefined;
+    const reasoningEffort = parseReasoningEffort(created.payload.reasoningEffort);
     let archived = created.payload.archived === true;
     const updatedAt = events.at(-1)?.timestamp ?? created.timestamp;
     const parsedGraph = GraphStateSchema.safeParse(created.payload.graph);
@@ -333,6 +343,8 @@ export class EventStore {
       workflowId,
       debugMode,
       archived,
+      model,
+      reasoningEffort,
       graph,
       transcript: events
     };
@@ -374,4 +386,10 @@ function normalizeSnapshot(snapshot: SessionSnapshot, hasExplicitDebugMode: bool
     debugMode: hasExplicitDebugMode ? snapshot.debugMode : snapshot.transcript.some((event) => event.payload.runtime === "deterministic"),
     archived: snapshot.archived ?? false
   };
+}
+
+function parseReasoningEffort(value: unknown): "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | undefined {
+  return ["none", "minimal", "low", "medium", "high", "xhigh"].includes(String(value ?? ""))
+    ? String(value) as "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+    : undefined;
 }
