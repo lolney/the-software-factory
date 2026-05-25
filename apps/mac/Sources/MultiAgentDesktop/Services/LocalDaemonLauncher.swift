@@ -79,6 +79,7 @@ final class LocalDaemonLauncher: @unchecked Sendable {
             "MULTIAGENT_DAEMON_PORT": String(port),
             "MULTIAGENT_SESSIONS_ROOT": sessionsURL.path
         ]) { _, new in new }
+        environment["PATH"] = sanitizedPath(environment["PATH"])
         if let workflowsURL = launch.workflowsURL {
             environment["MULTIAGENT_BUILTIN_WORKFLOWS_DIR"] = workflowsURL.path
         }
@@ -242,9 +243,10 @@ final class LocalDaemonLauncher: @unchecked Sendable {
 
     private func findNodeExecutable() -> URL? {
         let fileManager = FileManager.default
-        var candidates = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+        var candidates = sanitizedPath(ProcessInfo.processInfo.environment["PATH"])
             .split(separator: ":")
-            .map { URL(fileURLWithPath: String($0)).appending(path: "node").path }
+            .map { URL(fileURLWithPath: String($0)).appending(path: "node") }
+            .map(\.path)
         candidates.append(contentsOf: [
             "/opt/homebrew/bin/node",
             "/usr/local/bin/node",
@@ -259,6 +261,24 @@ final class LocalDaemonLauncher: @unchecked Sendable {
         return candidates
             .first { fileManager.isExecutableFile(atPath: $0) }
             .map { URL(fileURLWithPath: $0) }
+    }
+
+    private func sanitizedPath(_ path: String?) -> String {
+        (path ?? "")
+            .split(separator: ":")
+            .map(String.init)
+            .filter { !isInPrivacyProtectedUserFolder(URL(fileURLWithPath: $0)) }
+            .joined(separator: ":")
+    }
+
+    private func isInPrivacyProtectedUserFolder(_ url: URL) -> Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        let protectedFolders = ["Desktop", "Documents", "Downloads"]
+            .map { home.appending(path: $0, directoryHint: .isDirectory).path }
+        let path = url.standardizedFileURL.path
+        return protectedFolders.contains { protectedPath in
+            path == protectedPath || path.hasPrefix(protectedPath + "/")
+        }
     }
 
     private func write(_ text: String, to handle: FileHandle) {
