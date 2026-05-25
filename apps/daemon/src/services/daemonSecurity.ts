@@ -1,4 +1,5 @@
 import type http from "node:http";
+import { createHmac } from "node:crypto";
 
 export function configuredDaemonToken() {
   return process.env.MULTIAGENT_DAEMON_TOKEN?.trim() || undefined;
@@ -47,4 +48,18 @@ export function authorizeDaemonRequest(input: {
     return { ok: false, status: 403, message: "Forbidden daemon origin." };
   }
   return { ok: true, status: 200, message: "ok" };
+}
+
+export function daemonOwnershipChallenge(nonce: string) {
+  const token = configuredDaemonToken();
+  const normalizedNonce = nonce.trim();
+  if (!token || normalizedNonce.length < 16 || normalizedNonce.length > 256) {
+    return undefined;
+  }
+  return {
+    ok: true,
+    service: "multiagent-daemon",
+    nonce: normalizedNonce,
+    proof: createHmac("sha256", token).update(normalizedNonce).digest("hex")
+  };
 }

@@ -3,7 +3,7 @@ import { WebSocketServer } from "ws";
 import { SessionManager } from "./services/sessionManager.js";
 import { routeDaemonMessage } from "./protocol/router.js";
 import { defaultSessionsRoot } from "./services/sessionRoot.js";
-import { authorizeDaemonRequest } from "./services/daemonSecurity.js";
+import { authorizeDaemonRequest, daemonOwnershipChallenge } from "./services/daemonSecurity.js";
 
 const port = Number(process.env.MULTIAGENT_DAEMON_PORT ?? 3767);
 const sessionsRoot = defaultSessionsRoot();
@@ -25,6 +25,12 @@ const server = http.createServer(async (request, response) => {
   if (url.pathname === "/health") {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ ok: true, service: "multiagent-daemon", transport: "node" }));
+    return;
+  }
+  if (url.pathname === "/ownership-challenge") {
+    const challenge = daemonOwnershipChallenge(url.searchParams.get("nonce") ?? "");
+    response.writeHead(challenge ? 200 : 404, { "content-type": "application/json" });
+    response.end(JSON.stringify(challenge ? { ...challenge, transport: "node" } : { ok: false }));
     return;
   }
   const authorization = authorizeDaemonRequest({ url, headers: request.headers, port });

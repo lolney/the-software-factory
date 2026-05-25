@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import CryptoKit
 
 final class LocalDaemonLauncher: @unchecked Sendable {
     private var process: Process?
@@ -7,23 +8,23 @@ final class LocalDaemonLauncher: @unchecked Sendable {
 
     func ensureStarted(port: Int) async -> Bool {
         prepareStableSessionsRoot()
-        if process?.isRunning == true, Self.isListening(port: port), Self.isHealthyDaemon(port: port) {
+        if process?.isRunning == true, Self.isListening(port: port), Self.isOwnedDaemon(port: port) {
             return true
         }
         terminateStaleDaemonIfNeeded(port: port)
         if Self.isListening(port: port) {
-            return Self.isHealthyDaemon(port: port)
+            return Self.isOwnedDaemon(port: port)
         }
         await Task.detached(priority: .utility) { [weak self] in
             self?.start(port: port)
         }.value
         for _ in 0..<40 {
-            if Self.isListening(port: port), Self.isHealthyDaemon(port: port) {
+            if Self.isListening(port: port), Self.isOwnedDaemon(port: port) {
                 return true
             }
             try? await Task.sleep(for: .milliseconds(250))
         }
-        return Self.isListening(port: port) && Self.isHealthyDaemon(port: port)
+        return Self.isListening(port: port) && Self.isOwnedDaemon(port: port)
     }
 
     func stop() {
@@ -200,14 +201,35 @@ final class LocalDaemonLauncher: @unchecked Sendable {
         }
     }
 
-    private static func isHealthyDaemon(port: Int) -> Bool {
-        guard let url = URL(string: "http://127.0.0.1:\(port)/health"),
+    private static func isOwnedDaemon(port: Int) -> Bool {
+        guard let token = daemonToken(), !token.isEmpty else { return false }
+        let nonce = UUID().uuidString + UUID().uuidString
+        guard let url = URL(string: "http://127.0.0.1:\(port)/ownership-challenge?nonce=\(nonce)"),
               let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8) else {
+              let response = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              response["ok"] as? Bool == true,
+              response["service"] as? String == "multiagent-daemon",
+              response["nonce"] as? String == nonce,
+              let proof = response["proof"] as? String else {
             return false
         }
-        return text.contains("\"service\":\"multiagent-daemon\"")
-            || text.contains("\"service\": \"multiagent-daemon\"")
+        return proof == ownershipProof(token: token, nonce: nonce)
+    }
+
+    private static func daemonToken() -> String? {
+        guard let supportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appending(path: "MultiAgentDesktop", directoryHint: .isDirectory)
+            .appending(path: "daemon.token") else {
+            return nil
+        }
+        return try? String(contentsOf: supportURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func ownershipProof(token: String, nonce: String) -> String {
+        let key = SymmetricKey(data: Data(token.utf8))
+        let signature = HMAC<SHA256>.authenticationCode(for: Data(nonce.utf8), using: key)
+        return signature.map { String(format: "%02x", $0) }.joined()
     }
 
     private func daemonLaunchConfiguration() -> (arguments: [String], workflowsURL: URL?)? {

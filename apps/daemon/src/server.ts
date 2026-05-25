@@ -1,6 +1,6 @@
 import { SessionManager } from "./services/sessionManager.js";
 import { routeDaemonMessage } from "./protocol/router.js";
-import { authorizeDaemonRequest } from "./services/daemonSecurity.js";
+import { authorizeDaemonRequest, daemonOwnershipChallenge } from "./services/daemonSecurity.js";
 
 export interface DaemonServerOptions {
   port: number;
@@ -30,6 +30,13 @@ export function createDaemonServer(options: DaemonServerOptions) {
       }
       if (url.pathname === "/health") {
         return new Response(JSON.stringify({ ok: true, service: "multiagent-daemon", transport: "bun" }), {
+          headers: { "content-type": "application/json" }
+        });
+      }
+      if (url.pathname === "/ownership-challenge") {
+        const challenge = daemonOwnershipChallenge(url.searchParams.get("nonce") ?? "");
+        return new Response(JSON.stringify(challenge ? { ...challenge, transport: "bun" } : { ok: false }), {
+          status: challenge ? 200 : 404,
           headers: { "content-type": "application/json" }
         });
       }

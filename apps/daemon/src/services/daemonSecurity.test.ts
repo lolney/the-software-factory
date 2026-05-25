@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { authorizeDaemonRequest, isAllowedOrigin } from "./daemonSecurity.js";
+import { authorizeDaemonRequest, daemonOwnershipChallenge, isAllowedOrigin } from "./daemonSecurity.js";
 
 describe("daemon security", () => {
   it("allows absent or loopback origins and rejects remote origins", () => {
@@ -67,6 +67,28 @@ describe("daemon security", () => {
         delete process.env.MULTIAGENT_DAEMON_ALLOW_UNAUTHENTICATED;
       } else {
         process.env.MULTIAGENT_DAEMON_ALLOW_UNAUTHENTICATED = previousOptOut;
+      }
+    }
+  });
+
+  it("creates an ownership proof without receiving the token in the request", () => {
+    const previous = process.env.MULTIAGENT_DAEMON_TOKEN;
+    process.env.MULTIAGENT_DAEMON_TOKEN = "secret-token";
+    try {
+      const challenge = daemonOwnershipChallenge("nonce-1234567890abcdef");
+      expect(challenge).toMatchObject({
+        ok: true,
+        service: "multiagent-daemon",
+        nonce: "nonce-1234567890abcdef"
+      });
+      expect(challenge?.proof).toMatch(/^[a-f0-9]{64}$/);
+      expect(challenge?.proof).toBe("865223c717320f93ab1ec6689662cee35433f5e9da8a636fcd28a7f00b31692a");
+      expect(daemonOwnershipChallenge("short")).toBeUndefined();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.MULTIAGENT_DAEMON_TOKEN;
+      } else {
+        process.env.MULTIAGENT_DAEMON_TOKEN = previous;
       }
     }
   });
