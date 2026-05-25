@@ -39,6 +39,7 @@ export interface AgentTurnInput {
   skills?: SkillCatalogItem[];
   signal?: AbortSignal;
   causationId?: string;
+  emitEvent?: (event: SessionEvent) => Promise<void>;
 }
 
 export interface AgentRuntime {
@@ -355,7 +356,8 @@ async function runWhamTurn(
   tools: RuntimeTool[],
   options: { fetch?: typeof fetch; timeoutMs?: number } = {}
 ): Promise<SessionEvent[]> {
-  const events: SessionEvent[] = [statusEvent(input, "working")];
+  const events: SessionEvent[] = [];
+  await emitOrCollect(input, events, statusEvent(input, "working"));
   const startedMs = Date.now();
   const callableTools = tools.filter((candidate) => candidate.type === "function" && typeof candidate.invoke === "function");
   const toolByName = new Map(callableTools.map((candidate) => [candidate.name, candidate]));
@@ -376,7 +378,7 @@ async function runWhamTurn(
   const maxTurns = input.agentId === "orchestrator" ? Number.POSITIVE_INFINITY : 24;
   for (let turn = 0; turn < maxTurns; turn += 1) {
     if (input.signal?.aborted) {
-      events.push(statusEvent(input, "cancelled"));
+      await emitOrCollect(input, events, statusEvent(input, "cancelled"));
       return events;
     }
     const { outputText, functionCalls, usage, attempts, durationMs } = await whamResponsesRequest(connection, {
@@ -396,7 +398,7 @@ async function runWhamTurn(
       usageSamples.push(usage);
     }
     if (!functionCalls.length) {
-      events.push({
+      await emitOrCollect(input, events, {
         eventId: makeEventId(),
         sessionId: input.sessionId,
         agentId: input.agentId,
@@ -415,7 +417,7 @@ async function runWhamTurn(
         },
         causationId: input.causationId
       });
-      events.push(statusEvent(input, "idle"));
+      await emitOrCollect(input, events, statusEvent(input, "idle"));
       return events;
     }
     for (const call of functionCalls) {
@@ -423,7 +425,7 @@ async function runWhamTurn(
       const toolName = stringValue(call.name) ?? "";
       const args = stringValue(call.arguments) ?? "{}";
       const localTool = toolByName.get(toolName);
-      events.push({
+      await emitOrCollect(input, events, {
         eventId: makeEventId(),
         sessionId: input.sessionId,
         agentId: input.agentId,
@@ -435,7 +437,7 @@ async function runWhamTurn(
       const output = localTool
         ? String(await localTool.invoke(new RunContext(), args, { toolCall: call as never, signal: input.signal }))
         : `Unknown tool: ${toolName}`;
-      events.push({
+      await emitOrCollect(input, events, {
         eventId: makeEventId(),
         sessionId: input.sessionId,
         agentId: input.agentId,
@@ -449,6 +451,14 @@ async function runWhamTurn(
     }
   }
   throw new Error(`WHAM run exceeded ${maxTurns} turns.`);
+}
+
+async function emitOrCollect(input: AgentTurnInput, events: SessionEvent[], event: SessionEvent) {
+  if (input.emitEvent) {
+    await input.emitEvent(event);
+    return;
+  }
+  events.push(event);
 }
 
 async function whamResponsesRequest(

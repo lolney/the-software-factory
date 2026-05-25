@@ -139,4 +139,73 @@ describe("OpenAIAgentRuntime", () => {
     })).rejects.toThrow();
     expect(attempts).toBe(1);
   });
+
+  it("emits WHAM tool transcript events around tool side effects in causal order", async () => {
+    const { OpenAIAgentRuntime } = await import("./agentRuntime.js");
+    const order: string[] = [];
+    let requestIndex = 0;
+    const fetchMock = async () => {
+      requestIndex += 1;
+      if (requestIndex === 1) {
+        return new Response([
+          `data: ${JSON.stringify({
+            type: "response.output_item.done",
+            item: {
+              type: "function_call",
+              call_id: "call_stop",
+              name: "workflow_stop_self",
+              arguments: JSON.stringify({
+                reason: "done",
+                artifact: "artifact",
+                completedCriteria: ["criterion.done"]
+              })
+            }
+          })}`,
+          "",
+          "data: [DONE]",
+          ""
+        ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response([
+        `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "finished" })}`,
+        "",
+        "data: [DONE]",
+        ""
+      ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+
+    const emittedEvents: string[] = [];
+    const events = await new OpenAIAgentRuntime({ fetch: fetchMock as unknown as typeof fetch, timeoutMs: 1_000 }).runTurn({
+      sessionId: "sess_wham_tools",
+      agentId: "implementor",
+      prompt: "finish your work",
+      debugMode: false,
+      openAI: {
+        apiKey: "test-token",
+        baseURL: "https://chatgpt.com/backend-api/wham"
+      },
+      workflowTools: {
+        stopSelf: async () => {
+          order.push("side-effect");
+          return "stopped";
+        }
+      },
+      emitEvent: async (event) => {
+        if (event.type === "agent.tool_call" || event.type === "agent.tool_result") {
+          const toolName = typeof event.payload.toolName === "string" ? event.payload.toolName : "unknown";
+          order.push(`${event.type}:${toolName}`);
+          emittedEvents.push(event.type);
+        }
+      }
+    });
+
+    expect(order).toEqual([
+      "agent.tool_call:workflow_stop_self",
+      "side-effect",
+      "agent.tool_result:workflow_stop_self"
+    ]);
+    expect(events.map((event) => event.type)).not.toContain("agent.tool_call");
+    expect(events.map((event) => event.type)).not.toContain("agent.tool_result");
+    expect(emittedEvents).toEqual(["agent.tool_call", "agent.tool_result"]);
+  });
 });

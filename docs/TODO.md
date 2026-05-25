@@ -4,7 +4,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 ## Architecture And Code Review Follow-Ups
 
-- **P1: Fix transcript/event causality ordering.** Tool-side effects such as `agent.stopped`, `workflow.completed`, and workspace file events can appear before the `agent.tool_call`/`agent.tool_result` transcript items that caused them; normalize event buffering so the timeline reads in causal order.
 - **P1: Make child workflow execution resumable outside a single model turn.** The orchestrator currently executes long child workflows inside one WHAM tool-call loop, which can still exhaust the model turn budget. Move child workflows to durable scheduler jobs and notify the caller asynchronously.
 - **P1: De-duplicate tool transcript events.** Engine tools such as `workspace_write_file` currently emit both runtime-level tool call/result events and internal engine tool events, creating duplicate rows and inconsistent tool names.
 - **P2: Expand UI control and observability for autonomous workflows.** Add a first-class workflow/run inspector, criteria checklist, diff/artifact browser, per-agent control panel, reconnect/resume UI.
@@ -49,6 +48,7 @@ Computer Use could inspect this app, but direct Computer Use access to `com.open
 - **2026-05-25: Route workflow prompts with real context.** Workflow handoffs and messages now include the original goal, role-specific fallback tasks, done criteria, and the sender's latest artifact/message instead of generic edge text.
 - **2026-05-25: Add workspace command tool.** Command-enabled roles can run bounded commands inside the session workspace, allowing QA to execute tests and local CLI checks.
 - **2026-05-25: Harden WHAM live calls.** Added retry/backoff for transient WHAM 429/502/503/504 responses and raised the live turn budget for longer workflow orchestration.
+- **2026-05-25: Normalize runtime tool causality.** Added runtime-side event streaming for WHAM transcript events so tool calls are durably logged before engine side effects and tool results are logged afterward, with tests preventing duplicate returned tool events.
 
 
 

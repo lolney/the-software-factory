@@ -305,7 +305,7 @@ export class SessionManager {
       causationId: promptEvent.eventId
     });
     try {
-      const events = await this.runControlledTurn(snapshot.sessionId, agentId, {
+      const events = await this.runControlledTurn(snapshot.sessionId, agentId, publish, {
         sessionId: snapshot.sessionId,
         agentId,
         prompt: userText,
@@ -608,7 +608,7 @@ export class SessionManager {
       causationId
     });
     try {
-      const events = await this.runControlledTurn(snapshot.sessionId, agentId, {
+      const events = await this.runControlledTurn(snapshot.sessionId, agentId, publish, {
         sessionId: snapshot.sessionId,
         agentId,
         prompt,
@@ -2264,12 +2264,18 @@ export class SessionManager {
     await this.finishScheduledTurn(sessionId, agentId, job, publish, "failed", 2, message);
   }
 
-  private async runControlledTurn(sessionId: string, agentId: string, input: Parameters<AgentRuntime["runTurn"]>[0]): Promise<SessionEvent[]> {
+  private async runControlledTurn(sessionId: string, agentId: string, publish: (event: SessionEvent) => void, input: Parameters<AgentRuntime["runTurn"]>[0]): Promise<SessionEvent[]> {
     const key = runKey(sessionId, agentId);
     const controller = new AbortController();
     this.activeRuns.set(key, controller);
     try {
-      return await this.runtime.runTurn({ ...input, signal: controller.signal });
+      return await this.runtime.runTurn({
+        ...input,
+        signal: controller.signal,
+        emitEvent: async (event) => {
+          await this.appendAndPublish(event, publish);
+        }
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return [
