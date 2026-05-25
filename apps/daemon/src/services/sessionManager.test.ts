@@ -278,6 +278,7 @@ describe("SessionManager deterministic debug sessions", () => {
       }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
 
       expect(replay.events.some((event) => event.type === "agent.tool_call" && event.agentId === "implementor" && event.payload.toolName === "workspace.write_file")).toBe(true);
+      expect(replay.events.some((event) => event.type === "capability.checked" && event.agentId === "implementor" && event.payload.action === "workspace.write" && event.payload.allowed === true)).toBe(true);
       expect(replay.events.some((event) => event.type === "agent.tool_result" && event.agentId === "implementor" && String(event.payload.diff).includes("+++ b/hello.py"))).toBe(true);
       expect(replay.events.some((event) => event.type === "workspace.file_touched" && event.agentId === "implementor" && String(event.payload.diff).includes("print('hello from live tool')"))).toBe(true);
     } finally {
@@ -591,6 +592,7 @@ describe("SessionManager deterministic debug sessions", () => {
       }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
 
       expect(replay.events.some((event) => event.type === "plan.created" && event.agentId === "planner" && event.payload.plan && (event.payload.plan as { id?: string }).id === "tool_created_plan")).toBe(true);
+      expect(replay.events.some((event) => event.type === "capability.checked" && event.agentId === "planner" && event.payload.action === "plan.create" && event.payload.allowed === true)).toBe(true);
       expect(replay.events.some((event) => event.type === "plan.instantiated" && event.payload.planId === "tool_created_plan")).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -730,6 +732,12 @@ describe("SessionManager deterministic debug sessions", () => {
         method: "subscribeEvents",
         params: { sessionId: snapshot.sessionId }
       }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
+      expect(replay.events.some((event) =>
+        event.type === "capability.checked"
+        && event.agentId?.includes("qa")
+        && event.payload.action === "workspace.command"
+        && event.payload.allowed === true
+      )).toBe(true);
       expect(replay.events.some((event) =>
         event.type === "agent.message"
         && event.agentId?.includes("qa")

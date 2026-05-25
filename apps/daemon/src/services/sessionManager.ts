@@ -10,6 +10,7 @@ import { WorkflowEngine } from "./workflowEngine.js";
 import { WorkspaceCoordinator } from "./workspaceCoordinator.js";
 import { AuthManager, CODEX_PUBLIC_CLIENT_ID } from "./authManager.js";
 import { CodexIntegrationManager } from "./codexIntegrationManager.js";
+import { CapabilityBroker, type CapabilityAction } from "./capabilityBroker.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -47,6 +48,7 @@ export class SessionManager {
   private readonly runtime: AgentRuntime;
   private readonly workflows: WorkflowEngine;
   private readonly workspace = new WorkspaceCoordinator();
+  private readonly capabilities = new CapabilityBroker();
   private readonly integrations = new CodexIntegrationManager();
   private readonly activeRuns = new Map<string, AbortController>();
   private readonly auth = new AuthManager();
@@ -314,7 +316,7 @@ export class SessionManager {
         apiKey: openAI?.apiKey,
         openAI,
         workflowTools: this.workflowTools(snapshot, agentId, publish),
-        mcpServers: debugMode || this.options.runtime ? [] : await this.mcpServersForRole(role),
+      mcpServers: debugMode || this.options.runtime ? [] : await this.mcpServersForRole(snapshot, agentId, role, publish),
         skills: integrationCatalog.skills,
         causationId: promptEvent.eventId
       });
@@ -389,6 +391,41 @@ export class SessionManager {
     publishLog(entry);
     this.publishLog(entry, publishLog);
     return entry;
+  }
+
+  private async authorizeCapability(
+    snapshot: SessionSnapshot,
+    agentId: string,
+    action: CapabilityAction,
+    resource: Record<string, unknown>,
+    publish: (event: SessionEvent) => void,
+    causationId?: string
+  ) {
+    const role = this.resolveRole(snapshot, agentId);
+    const decision = this.capabilities.check({
+      sessionId: snapshot.sessionId,
+      agentId,
+      role,
+      action,
+      resource
+    });
+    await this.appendAndPublish({ ...decision.event, causationId }, publish);
+    if (!decision.allowed) {
+      throw new Error(decision.reason);
+    }
+    if (!role) {
+      throw new Error(`Unknown role for agent ${agentId}.`);
+    }
+    return role;
+  }
+
+  private hasCapability(snapshot: SessionSnapshot, agentId: string, action: CapabilityAction) {
+    return this.capabilities.check({
+      sessionId: snapshot.sessionId,
+      agentId,
+      role: this.resolveRole(snapshot, agentId),
+      action
+    }).allowed;
   }
 
   private async logEvent(event: SessionEvent, publishLog: (entry: DebugLogEntry) => void = () => {}) {
@@ -562,7 +599,7 @@ export class SessionManager {
         apiKey: openAI?.apiKey,
         openAI,
         workflowTools: this.workflowTools(snapshot, agentId, publish, context),
-        mcpServers: snapshot.debugMode || this.options.runtime ? [] : await this.mcpServersForRole(role),
+        mcpServers: snapshot.debugMode || this.options.runtime ? [] : await this.mcpServersForRole(snapshot, agentId, role, publish),
         skills: integrationCatalog.skills,
         causationId
       });
@@ -664,13 +701,15 @@ export class SessionManager {
     }, publish, causationId);
   }
 
-  private async readWorkspacePath(workspaceRoot: string, relativePath: string) {
-    const target = containedPath(workspaceRoot, relativePath || ".");
+  private async readWorkspacePath(snapshot: SessionSnapshot, agentId: string, relativePath: string, publish: (event: SessionEvent) => void, causationId?: string) {
+    const role = await this.authorizeCapability(snapshot, agentId, "workspace.read", { path: relativePath || "." }, publish, causationId);
+    const policy = { sessionId: snapshot.sessionId, workspaceRoot: snapshot.workspaceRoot, allowedRoots: role.workspace.allowedRoots };
+    const target = this.workspace.assertAllowed(policy, relativePath || ".");
     const info = await stat(target);
     if (!info.isDirectory()) {
       return readFile(target, "utf8");
     }
-    const entries = await listDirectoryTree(target, workspaceRoot);
+    const entries = await listDirectoryTree(target, snapshot.workspaceRoot);
     return entries.length ? entries.join("\n") : ".";
   }
 
@@ -815,10 +854,6 @@ export class SessionManager {
   }
 
   private async writeTemperatureConverter(snapshot: SessionSnapshot, agentId: string, causationId: string, publish: (event: SessionEvent) => void) {
-    const role = this.resolveRole(snapshot, agentId);
-    if (!role?.toolPolicy.canWrite) {
-      throw new Error(`Agent ${agentId} is not allowed to write files.`);
-    }
     const files = new Map([
       ["temperature_converter.py", temperatureConverterProgram()],
       ["test_temperature_converter.py", temperatureConverterTests()]
@@ -848,10 +883,7 @@ export class SessionManager {
     causationId: string | undefined,
     publish: (event: SessionEvent) => void
   ) {
-    const role = this.resolveRole(snapshot, agentId);
-    if (!role?.toolPolicy.canWrite) {
-      throw new Error(`Agent ${agentId} is not allowed to write files.`);
-    }
+    const role = await this.authorizeCapability(snapshot, agentId, "workspace.write", { path: relativePath }, publish, causationId);
     const policy = { sessionId: snapshot.sessionId, workspaceRoot: snapshot.workspaceRoot, allowedRoots: role.workspace.allowedRoots };
     const absolutePath = this.workspace.assertAllowed(policy, relativePath);
     const callId = `call_${crypto.randomUUID()}`;
@@ -883,7 +915,8 @@ export class SessionManager {
     return `Edited ${relativePath} +${stats.additions} -${stats.deletions}.`;
   }
 
-  private async runWorkspaceCommand(snapshot: SessionSnapshot, command: string, args: string[] = [], cwd?: string) {
+  private async runWorkspaceCommand(snapshot: SessionSnapshot, agentId: string, command: string, args: string[] = [], cwd: string | undefined, publish: (event: SessionEvent) => void) {
+    await this.authorizeCapability(snapshot, agentId, "workspace.command", { command, args, cwd: cwd ?? "." }, publish);
     const workingDirectory = cwd ? containedPath(snapshot.workspaceRoot, cwd) : snapshot.workspaceRoot;
     try {
       const result = await execFileAsync(command, args, {
@@ -908,10 +941,7 @@ export class SessionManager {
   }
 
   private async runTemperatureConverterQA(snapshot: SessionSnapshot, agentId: string, causationId: string, publish: (event: SessionEvent) => void) {
-    const role = this.resolveRole(snapshot, agentId);
-    if (!role?.toolPolicy.canRunCommands) {
-      throw new Error(`Agent ${agentId} is not allowed to run commands.`);
-    }
+    await this.authorizeCapability(snapshot, agentId, "workspace.command", { command: "python3", args: ["-m", "unittest", "test_temperature_converter.py"] }, publish, causationId);
     const callId = `call_${crypto.randomUUID()}`;
     await this.appendAndPublish({
       eventId: makeEventId(),
@@ -1220,7 +1250,7 @@ export class SessionManager {
     const role = this.resolveRole(snapshot, agentId);
     const roleId = role?.id ?? snapshot.graph.nodes.find((node) => node.id === agentId)?.roleId;
     const tools: NonNullable<Parameters<AgentRuntime["runTurn"]>[0]["workflowTools"]> = {};
-    if (role?.toolPolicy.canRead) {
+    if (this.hasCapability(snapshot, agentId, "workspace.read")) {
       tools.listWorkflows = () => this.workflows.list().map((workflow) => ({
         id: workflow.id,
         name: workflow.name,
@@ -1231,8 +1261,9 @@ export class SessionManager {
         stopCriteria: workflow.stopCriteria
       }));
     }
-    if (role?.toolPolicy.canCreatePlans) {
+    if (this.hasCapability(snapshot, agentId, "plan.create")) {
       tools.createPlan = async (rawPlan: unknown) => {
+        await this.authorizeCapability(snapshot, agentId, "plan.create", { source: "plan_create" }, publish);
         const plan = PlanSpecSchema.parse(rawPlan);
         await this.appendAndPublish({
           eventId: makeEventId(),
@@ -1245,14 +1276,14 @@ export class SessionManager {
         return `Created plan ${plan.id}.`;
       };
     }
-    if (role?.toolPolicy.canWrite) {
+    if (this.hasCapability(snapshot, agentId, "workspace.write")) {
       tools.writeWorkspaceFile = async (relativePath: string, content: string) => {
         return this.writeWorkspaceFile(snapshot, agentId, relativePath, content, undefined, publish);
       };
     }
-    if (role?.toolPolicy.canRunCommands) {
+    if (this.hasCapability(snapshot, agentId, "workspace.command")) {
       tools.runWorkspaceCommand = async (command: string, args: string[] = [], cwd?: string) => {
-        return this.runWorkspaceCommand(snapshot, command, args, cwd);
+        return this.runWorkspaceCommand(snapshot, agentId, command, args, cwd, publish);
       };
     }
     if (roleId === "orchestrator") {
@@ -1305,7 +1336,7 @@ export class SessionManager {
         return result.stopped ? `Stopped agent ${resolvedAgentId}.` : `Agent ${resolvedAgentId} stop blocked: ${result.reason}.`;
       };
       tools.inspectAgents = async () => (await this.store.readSnapshot(snapshot.sessionId)).graph;
-      tools.readWorkspaceFile = async (relativePath: string) => this.readWorkspacePath(snapshot.workspaceRoot, relativePath);
+      tools.readWorkspaceFile = async (relativePath: string) => this.readWorkspacePath(snapshot, agentId, relativePath, publish);
       tools.sendAgentMessage = async (targetAgentId: string, text: string) => {
         const latest = await this.store.readSnapshot(snapshot.sessionId);
         const resolvedAgentId = this.resolveAgentTarget(latest, targetAgentId);
@@ -1796,10 +1827,14 @@ export class SessionManager {
     return this.workflows.get(workflowId).edges.find((edge) => edge.id === edgeId)?.description ?? "";
   }
 
-  private async mcpServersForRole(role: ReturnType<SessionManager["resolveRole"]>) {
+  private async mcpServersForRole(snapshot: SessionSnapshot, agentId: string, role: ReturnType<SessionManager["resolveRole"]>, publish: (event: SessionEvent) => void) {
     if (!role) return [];
     if (role.id === "orchestrator") return [];
-    if (!role.toolPolicy.canRunCommands || !role.toolPolicy.canWrite) return [];
+    try {
+      await this.authorizeCapability(snapshot, agentId, "mcp.use", { source: "codex-configured-mcp" }, publish);
+    } catch {
+      return [];
+    }
     return this.integrations.getConnectedMCPServers();
   }
 
