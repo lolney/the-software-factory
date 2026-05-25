@@ -27,7 +27,7 @@ export interface AgentTurnInput {
     stopWorkflow?: (workflowInstanceId: string, reason: string) => Promise<string>;
     stopAgent?: (agentId: string, reason: string, artifact?: unknown) => Promise<string>;
     stopSelf?: (reason: string, artifact?: unknown, completedCriteria?: string[]) => Promise<string>;
-    inspectAgents?: () => unknown;
+    inspectAgents?: () => unknown | Promise<unknown>;
     readWorkspaceFile?: (relativePath: string) => Promise<string>;
     writeWorkspaceFile?: (relativePath: string, content: string) => Promise<string>;
     runWorkspaceCommand?: (command: string, args?: string[], cwd?: string) => Promise<string>;
@@ -90,7 +90,7 @@ export class OpenAIAgentRuntime implements AgentRuntime {
     if (input.workflowTools?.startWorkflow) {
       tools.push(tool({
         name: "workflow_start",
-        description: "Start a predefined workflow in the current session graph. Returns a workflow instance id that must complete before you can stop.",
+        description: "Start a predefined workflow in the current session graph and run it to quiescence before returning. The result includes the created agent ids and completion state.",
         parameters: z.object({ workflowId: z.string(), anchorNodeId: z.string().nullable() }),
         execute: async (args) => input.workflowTools?.startWorkflow?.(args.workflowId, args.anchorNodeId ?? undefined) ?? "Workflow start tool unavailable."
       }));
@@ -124,7 +124,7 @@ export class OpenAIAgentRuntime implements AgentRuntime {
         name: "agent_state_inspect",
         description: "Inspect the current workflow graph, agent statuses, and active tool calls.",
         parameters: z.object({}),
-        execute: async () => JSON.stringify(input.workflowTools?.inspectAgents?.() ?? {})
+        execute: async () => JSON.stringify(await input.workflowTools?.inspectAgents?.() ?? {})
       }));
     }
     if (input.workflowTools?.readWorkspaceFile) {
@@ -193,12 +193,15 @@ export class OpenAIAgentRuntime implements AgentRuntime {
         convertSchemasToStrict: true
       }
     });
-    const result = await run(agent, input.prompt, {
+    const runOptions: Parameters<typeof run>[2] = {
       signal: input.signal,
-      maxTurns: 16,
       toolNotFoundBehavior: "return_error_to_model",
       stream: true
-    });
+    };
+    if (input.agentId !== "orchestrator") {
+      runOptions.maxTurns = 24;
+    }
+    const result = await run(agent, input.prompt, runOptions);
     await result.completed;
     if (result.error) {
       throw result.error;
@@ -314,8 +317,12 @@ async function runWhamTurn(
     role: "user",
     content: [{ type: "input_text", text: input.prompt }]
   }];
-  const maxTurns = 20;
+  const maxTurns = input.agentId === "orchestrator" ? Number.POSITIVE_INFINITY : 24;
   for (let turn = 0; turn < maxTurns; turn += 1) {
+    if (input.signal?.aborted) {
+      events.push(statusEvent(input, "cancelled"));
+      return events;
+    }
     const { outputText, functionCalls } = await whamResponsesRequest(connection, {
       model: process.env.MULTIAGENT_WHAM_MODEL ?? "gpt-5.4",
       instructions: input.instructions ?? "You are a role-specific coding agent in a local multiagent coding workflow. Be concise, operational, and report concrete progress.",
@@ -376,7 +383,8 @@ async function whamResponsesRequest(connection: NonNullable<AgentTurnInput["open
   const requestBody = JSON.stringify(body);
   let response: Response | undefined;
   let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  const maxAttempts = 5;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
       response = await fetch(`${connection.baseURL}/responses`, {
         method: "POST",
@@ -393,8 +401,8 @@ async function whamResponsesRequest(connection: NonNullable<AgentTurnInput["open
     } catch (error) {
       lastError = error;
     }
-    if (attempt < 2) {
-      await sleep(300 * (attempt + 1));
+    if (attempt < maxAttempts - 1) {
+      await sleep(500 * 2 ** attempt);
     }
   }
   if (!response) {

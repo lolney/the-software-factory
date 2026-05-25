@@ -339,7 +339,8 @@ const baseRoles: WorkflowSpec["roles"] = [
     promptTemplate: [
       "Coordinate the session without directly modifying files or creating plans.",
       "You may instantiate planner-created plans, inspect agent state, read workspace files, and send messages to agents.",
-      "All implementation must happen through implementor, reviewer, QA, researcher, or other workflow agents."
+      "All implementation must happen through implementor, reviewer, QA, researcher, or other workflow agents.",
+      "When workflow_start returns that a workflow completed with implementor, reviewer, and QA summaries, treat that as completed delegated work and summarize success instead of restarting the workflow or claiming the agents were unavailable."
     ].join(" "),
     model: "gpt-5.4",
     toolPolicy: { canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: false },

@@ -1,5 +1,5 @@
 import { PlanSpecSchema, type DaemonRequest, type DebugLogEntry, type DebugLogLevel, type GraphState, type PlanSpec, type SessionEvent, type SessionSnapshot, type WorkflowSpec } from "@multiagent/shared";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -255,9 +255,7 @@ export class SessionManager {
       skills: integrationCatalog.skills,
       causationId: promptEvent.eventId
     });
-    for (const event of events) {
-      await this.appendAndPublish(event, publish);
-    }
+    await this.appendRuntimeEvents(snapshot.sessionId, agentId, events, publish);
     await this.store.rebuildSnapshot(snapshot.sessionId);
   }
 
@@ -489,14 +487,20 @@ export class SessionManager {
       skills: integrationCatalog.skills,
       causationId
     });
-    for (const event of events) {
-      await this.appendAndPublish(event, publish);
-    }
+    await this.appendRuntimeEvents(snapshot.sessionId, agentId, events, publish);
     if (role?.toolPolicy.canCreatePlans) {
       await this.createPlanForSession(snapshot, agentId, causationId, publish);
     } else if (snapshot.debugMode) {
       await this.applyDeterministicRoleWork(snapshot, agentId, causationId, publish, context);
     }
+    await this.maybeAutoStopSatisfiedAgent(
+      snapshot.sessionId,
+      agentId,
+      role?.id ?? snapshot.graph.nodes.find((node) => node.id === agentId)?.roleId ?? agentId,
+      context.workflowInstanceId,
+      publish,
+      causationId
+    );
     await this.store.rebuildSnapshot(snapshot.sessionId);
   }
 
@@ -508,6 +512,128 @@ export class SessionManager {
     if (["paused", "cancelled", "failed", "completed"].includes(node.status)) {
       throw new Error(`Agent ${agentId} cannot receive messages while ${node.status}.`);
     }
+  }
+
+  private resolveAgentTarget(snapshot: SessionSnapshot, requestedAgentId: string) {
+    if (snapshot.graph.nodes.some((node) => node.id === requestedAgentId)) {
+      return requestedAgentId;
+    }
+    const matches = snapshot.graph.nodes.filter((node) =>
+      node.roleId === requestedAgentId
+      || node.id.endsWith(`_${requestedAgentId}`)
+    );
+    if (matches.length === 1) {
+      return matches[0]?.id;
+    }
+    const activeMatches = matches.filter((node) => !["cancelled", "failed", "completed"].includes(node.status));
+    return activeMatches.length === 1 ? activeMatches[0]?.id : undefined;
+  }
+
+  private async appendRuntimeEvents(
+    sessionId: string,
+    agentId: string,
+    events: SessionEvent[],
+    publish: (event: SessionEvent) => void
+  ) {
+    const existingEvents = await this.store.readEvents(sessionId);
+    const stoppedDuringRun = existingEvents.some((event) => event.type === "agent.stopped" && event.agentId === agentId);
+    for (const event of events) {
+      if (stoppedDuringRun && event.agentId === agentId && event.type === "agent.status") {
+        continue;
+      }
+      await this.appendAndPublish(event, publish);
+    }
+  }
+
+  private async maybeAutoStopSatisfiedAgent(
+    sessionId: string,
+    agentId: string,
+    roleId: string,
+    workflowInstanceId: string | undefined,
+    publish: (event: SessionEvent) => void,
+    causationId?: string
+  ) {
+    if (!workflowInstanceId || roleId === "orchestrator" || roleId === "planner") return;
+    const events = await this.store.readEvents(sessionId);
+    if (events.some((event) => event.type === "agent.stopped" && event.agentId === agentId && event.payload.workflowInstanceId === workflowInstanceId)) {
+      return;
+    }
+    const instance = (await this.workflowInstancesForSession(sessionId)).find((candidate) => candidate.workflowInstanceId === workflowInstanceId);
+    if (!instance || !(await this.canAgentStop(sessionId, instance, agentId))) return;
+    const latestMessage = [...events]
+      .reverse()
+      .find((event) => event.agentId === agentId && event.type === "agent.message");
+    const text = String(latestMessage?.payload.text ?? "");
+    const satisfied =
+      (roleId === "reviewer" && /\b(approved|approval|no blocking|no blockers)\b/i.test(text))
+      || (roleId === "qa" && /\b(pass|passed|acceptance checks completed|acceptance status:\s*pass)\b/i.test(text))
+      || (roleId === "implementor" && /\b(implemented|complete|approved|ready for qa|tests pass|tests passed)\b/i.test(text));
+    if (!satisfied) return;
+    await this.stopCurrentAgent(sessionId, agentId, {
+      reason: `Engine inferred ${roleId} completion from final message.`,
+      artifact: text,
+      completedCriteria: [`${roleId} reported completion`],
+      workflowInstanceId
+    }, publish, causationId);
+  }
+
+  private async readWorkspacePath(workspaceRoot: string, relativePath: string) {
+    const target = containedPath(workspaceRoot, relativePath || ".");
+    const info = await stat(target);
+    if (!info.isDirectory()) {
+      return readFile(target, "utf8");
+    }
+    const entries = await listDirectoryTree(target, workspaceRoot);
+    return entries.length ? entries.join("\n") : ".";
+  }
+
+  private async hasCompletedImplementationWorkflow(sessionId: string) {
+    return (await this.store.readEvents(sessionId)).some((event) =>
+      event.type === "workflow.completed"
+      && event.payload.workflowId === "implementation-review-qa"
+    );
+  }
+
+  private async completedWorkflowSummary(sessionId: string) {
+    const events = await this.store.readEvents(sessionId);
+    const completed = [...events].reverse().find((event) =>
+      event.type === "workflow.completed"
+      && event.payload.workflowId === "implementation-review-qa"
+    );
+    if (!completed) return "";
+    return [
+      `Completed workflow: ${String(completed.payload.workflowId)} (${String(completed.payload.workflowInstanceId)}).`,
+      this.workflowCompletionSummaryFromEvents(events, String(completed.payload.workflowInstanceId))
+    ].filter(Boolean).join("\n");
+  }
+
+  private async workflowCompletionSummary(sessionId: string, workflowInstanceId: string, nodeMap: Map<string, string>) {
+    const events = await this.store.readEvents(sessionId);
+    const mappedAgents = [...nodeMap.values()].filter((agentId) => agentId !== "orchestrator").join(", ");
+    return [
+      mappedAgents ? `Mapped workflow agents: ${mappedAgents}.` : undefined,
+      this.workflowCompletionSummaryFromEvents(events, workflowInstanceId)
+    ].filter(Boolean).join("\n");
+  }
+
+  private workflowCompletionSummaryFromEvents(events: SessionEvent[], workflowInstanceId: string) {
+    const lines: string[] = [];
+    const agentIds = [...new Set(events
+      .filter((event) => event.payload.workflowInstanceId === workflowInstanceId && event.agentId)
+      .map((event) => String(event.agentId)))];
+    for (const agentId of agentIds) {
+      const stopped = [...events].reverse().find((event) =>
+        event.type === "agent.stopped"
+        && event.agentId === agentId
+        && event.payload.workflowInstanceId === workflowInstanceId
+      );
+      const message = [...events].reverse().find((event) => event.type === "agent.message" && event.agentId === agentId);
+      const text = String(message?.payload.text ?? stopped?.payload.artifact ?? stopped?.payload.reason ?? "");
+      if (text) {
+        lines.push(`${agentId}: ${truncateForToolResult(text, 900)}`);
+      }
+    }
+    return lines.join("\n");
   }
 
   private async createPlanForSession(snapshot: SessionSnapshot, agentId: string, causationId: string, publish: (event: SessionEvent) => void) {
@@ -1028,36 +1154,70 @@ export class SessionManager {
           doneCriteria: {},
           completionCriteria: {}
         }, result.eventId, publish, result.workflowInstanceId);
-        return `Started workflow ${workflowId} as ${result.workflowInstanceId}.`;
+        const latest = await this.store.readSnapshot(snapshot.sessionId);
+        const agentIds = [...result.nodeMap.entries()]
+          .filter(([nodeId]) => nodeId !== result.spec.lifecycle.orchestratorNodeId)
+          .map(([nodeId, mappedId]) => {
+            const node = result.spec.nodes.find((candidate) => candidate.id === nodeId);
+            return `${mappedId} (${node?.roleId ?? nodeId})`;
+          });
+        const completed = latest.transcript.find((event) =>
+          event.type === "workflow.completed"
+          && event.payload.workflowInstanceId === result.workflowInstanceId
+        );
+        return [
+          `Started workflow ${workflowId} as ${result.workflowInstanceId}.`,
+          agentIds.length ? `Agents: ${agentIds.join(", ")}.` : undefined,
+          completed ? `Workflow completed: ${String(completed.payload.message ?? "all agents stopped")}.` : "Workflow has not completed yet.",
+          await this.workflowCompletionSummary(snapshot.sessionId, result.workflowInstanceId, result.nodeMap),
+          "Use the mapped agent ids above when sending messages; role names alone are not agent ids."
+        ].filter(Boolean).join("\n");
       };
       tools.stopWorkflow = async (workflowInstanceId: string, reason: string) => {
         await this.stopWorkflowInstance(snapshot.sessionId, workflowInstanceId, agentId, reason, publish);
         return `Stopped workflow ${workflowInstanceId}.`;
       };
       tools.stopAgent = async (targetAgentId: string, reason: string, artifact?: unknown) => {
-        const result = await this.stopCurrentAgent(snapshot.sessionId, targetAgentId, {
+        const latest = await this.store.readSnapshot(snapshot.sessionId);
+        const resolvedAgentId = this.resolveAgentTarget(latest, targetAgentId);
+        if (!resolvedAgentId) {
+          throw new Error(`Unknown agent ${targetAgentId} in session ${snapshot.sessionId}. Use agent_state_inspect to get current agent ids.`);
+        }
+        const result = await this.stopCurrentAgent(snapshot.sessionId, resolvedAgentId, {
           reason,
           artifact,
           stoppedBy: agentId
         }, publish);
-        return result.stopped ? `Stopped agent ${targetAgentId}.` : `Agent ${targetAgentId} stop blocked: ${result.reason}.`;
+        return result.stopped ? `Stopped agent ${resolvedAgentId}.` : `Agent ${resolvedAgentId} stop blocked: ${result.reason}.`;
       };
-      tools.inspectAgents = () => snapshot.graph;
-      tools.readWorkspaceFile = async (relativePath: string) => readFile(containedPath(snapshot.workspaceRoot, relativePath), "utf8");
+      tools.inspectAgents = async () => (await this.store.readSnapshot(snapshot.sessionId)).graph;
+      tools.readWorkspaceFile = async (relativePath: string) => this.readWorkspacePath(snapshot.workspaceRoot, relativePath);
       tools.sendAgentMessage = async (targetAgentId: string, text: string) => {
-        this.assertAgentCanReceive(await this.store.readSnapshot(snapshot.sessionId), targetAgentId);
+        const latest = await this.store.readSnapshot(snapshot.sessionId);
+        const resolvedAgentId = this.resolveAgentTarget(latest, targetAgentId);
+        if (!resolvedAgentId) {
+          throw new Error(`Unknown agent ${targetAgentId} in session ${snapshot.sessionId}. Use agent_state_inspect to get current agent ids.`);
+        }
+        this.assertAgentCanReceive(latest, resolvedAgentId);
         await this.appendAndPublish({
           eventId: makeEventId(),
           sessionId: snapshot.sessionId,
           agentId,
           timestamp: new Date().toISOString(),
           type: "message.sent",
-          payload: { from: agentId, to: targetAgentId, text }
+          payload: { from: agentId, to: resolvedAgentId, requestedTo: targetAgentId, text }
         }, publish);
-        return `Sent message to ${targetAgentId}.`;
+        return `Sent message to ${resolvedAgentId}.`;
       };
     }
     tools.stopSelf = async (reason: string, artifact?: unknown, completedCriteria: string[] = []) => {
+      if (roleId === "orchestrator" && isNegativeCompletion(reason) && await this.hasCompletedImplementationWorkflow(snapshot.sessionId)) {
+        return [
+          "Stop rejected: implementation-review-qa has completed successfully in the session.",
+          "Inspect agent state or read the workspace if needed, then call workflow_stop_self with a successful completion summary.",
+          await this.completedWorkflowSummary(snapshot.sessionId)
+        ].filter(Boolean).join("\n");
+      }
       const result = await this.stopCurrentAgent(snapshot.sessionId, agentId, {
         reason,
         artifact,
@@ -1601,6 +1761,30 @@ function containedPath(root: string, relativePath: string) {
     throw new Error(`Path escapes workspace: ${relativePath}`);
   }
   return resolved;
+}
+
+async function listDirectoryTree(directoryPath: string, workspaceRoot: string, depth = 0): Promise<string[]> {
+  if (depth > 4) return [];
+  const entries = await readdir(directoryPath, { withFileTypes: true });
+  const lines: string[] = [];
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name)).slice(0, 80)) {
+    if (entry.name === "__pycache__" || entry.name === ".git") continue;
+    const absolute = path.join(directoryPath, entry.name);
+    const relative = path.relative(workspaceRoot, absolute) || ".";
+    lines.push(entry.isDirectory() ? `${relative}/` : relative);
+    if (entry.isDirectory()) {
+      lines.push(...await listDirectoryTree(absolute, workspaceRoot, depth + 1));
+    }
+  }
+  return lines;
+}
+
+function truncateForToolResult(text: string, maxLength: number) {
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function isNegativeCompletion(reason: string) {
+  return /\b(unable|cannot|can't|couldn.t|failed|blocked|not functioning|did not|no usable)\b/i.test(reason);
 }
 
 function temperatureConverterProgram() {
