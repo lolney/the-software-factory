@@ -2,9 +2,10 @@ import http from "node:http";
 import { WebSocketServer } from "ws";
 import { SessionManager } from "./services/sessionManager.js";
 import { routeDaemonMessage } from "./protocol/router.js";
+import { defaultSessionsRoot } from "./services/sessionRoot.js";
 
 const port = Number(process.env.MULTIAGENT_DAEMON_PORT ?? 3767);
-const sessionsRoot = process.env.MULTIAGENT_SESSIONS_ROOT ?? "sessions";
+const sessionsRoot = defaultSessionsRoot();
 const manager = new SessionManager({ sessionsRoot });
 
 const server = http.createServer(async (request, response) => {

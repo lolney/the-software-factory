@@ -1,6 +1,7 @@
 import { createDaemonServer } from "./server.js";
+import { defaultSessionsRoot } from "./services/sessionRoot.js";
 
 const port = Number(process.env.MULTIAGENT_DAEMON_PORT ?? 3767);
-const sessionsRoot = process.env.MULTIAGENT_SESSIONS_ROOT ?? "sessions";
+const sessionsRoot = defaultSessionsRoot();
 
 createDaemonServer({ port, sessionsRoot });

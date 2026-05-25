@@ -48,7 +48,7 @@ export class SessionManager {
   constructor(private readonly options: { sessionsRoot: string; runtime?: AgentRuntime }) {
     this.store = new EventStore(options.sessionsRoot);
     this.runtime = options.runtime ?? new OpenAIAgentRuntime();
-    this.workflows = new WorkflowEngine(undefined, path.join(options.sessionsRoot, "config"));
+    this.workflows = new WorkflowEngine(process.env.MULTIAGENT_BUILTIN_WORKFLOWS_DIR, path.join(options.sessionsRoot, "config"));
   }
 
   setPublisher(publish: (event: SessionEvent) => void) {

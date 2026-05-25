@@ -6,6 +6,11 @@ final class LocalDaemonLauncher: @unchecked Sendable {
     private let lock = NSLock()
 
     func ensureStarted(port: Int) async -> Bool {
+        prepareStableSessionsRoot()
+        if process?.isRunning == true, Self.isListening(port: port) {
+            return true
+        }
+        terminateStaleDaemonIfNeeded(port: port)
         if Self.isListening(port: port) {
             return true
         }
@@ -21,13 +26,35 @@ final class LocalDaemonLauncher: @unchecked Sendable {
         return Self.isListening(port: port)
     }
 
+    func stop() {
+        lock.lock()
+        let runningProcess = process
+        process = nil
+        lock.unlock()
+
+        guard let runningProcess, runningProcess.isRunning else { return }
+        runningProcess.terminate()
+        for _ in 0..<20 {
+            if !runningProcess.isRunning {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if runningProcess.isRunning {
+            kill(runningProcess.processIdentifier, SIGKILL)
+        }
+    }
+
     private func start(port: Int) {
         lock.lock()
         defer { lock.unlock() }
         guard process?.isRunning != true, let rootURL = findRepositoryRoot() else { return }
-        let distURL = rootURL.appending(path: "dist", directoryHint: .isDirectory)
-        try? FileManager.default.createDirectory(at: distURL, withIntermediateDirectories: true)
-        let logURL = distURL.appending(path: "app-daemon.log")
+        guard let supportURL = appSupportURL() else { return }
+        let sessionsURL = supportURL.appending(path: "sessions", directoryHint: .isDirectory)
+        let logsURL = supportURL.appending(path: "logs", directoryHint: .isDirectory)
+        migrateLegacySessions(from: rootURL, to: sessionsURL)
+        try? FileManager.default.createDirectory(at: logsURL, withIntermediateDirectories: true)
+        let logURL = logsURL.appending(path: "app-daemon.log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
 
         guard let logHandle = try? FileHandle(forWritingTo: logURL) else { return }
@@ -40,11 +67,16 @@ final class LocalDaemonLauncher: @unchecked Sendable {
         }
 
         let process = Process()
-        process.currentDirectoryURL = rootURL
+        process.currentDirectoryURL = supportURL
         process.executableURL = nodeURL
-        process.arguments = [rootURL.appending(path: "node_modules/.bin/tsx").path, "apps/daemon/src/nodeMain.ts"]
+        process.arguments = [
+            rootURL.appending(path: "node_modules/.bin/tsx").path,
+            rootURL.appending(path: "apps/daemon/src/nodeMain.ts").path
+        ]
         process.environment = ProcessInfo.processInfo.environment.merging([
-            "MULTIAGENT_DAEMON_PORT": String(port)
+            "MULTIAGENT_DAEMON_PORT": String(port),
+            "MULTIAGENT_SESSIONS_ROOT": sessionsURL.path,
+            "MULTIAGENT_BUILTIN_WORKFLOWS_DIR": rootURL.appending(path: "apps/daemon/src/workflows").path
         ]) { _, new in new }
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = logHandle
@@ -59,6 +91,62 @@ final class LocalDaemonLauncher: @unchecked Sendable {
         } catch {
             try? logHandle.close()
         }
+    }
+
+    private func prepareStableSessionsRoot() {
+        guard let supportURL = appSupportURL() else { return }
+        let sessionsURL = supportURL.appending(path: "sessions", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        if let rootURL = findRepositoryRoot() {
+            migrateLegacySessions(from: rootURL, to: sessionsURL)
+        }
+    }
+
+    private func terminateStaleDaemonIfNeeded(port: Int) {
+        for pid in listenerPIDs(port: port) {
+            guard pid != getpid(), isKnownDaemonProcess(pid: pid) else { continue }
+            kill(pid, SIGTERM)
+        }
+    }
+
+    private func listenerPIDs(port: Int) -> [pid_t] {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        process.arguments = ["-tiTCP:\(port)", "-sTCP:LISTEN"]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return []
+        }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        let text = String(data: data, encoding: .utf8) ?? ""
+        return text
+            .split(whereSeparator: \.isNewline)
+            .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) }
+    }
+
+    private func isKnownDaemonProcess(pid: pid_t) -> Bool {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-p", String(pid), "-o", "command="]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return false
+        }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        let command = String(data: data, encoding: .utf8) ?? ""
+        return command.contains("apps/daemon/src/nodeMain.ts")
+            || command.contains("apps/daemon/src/main.ts")
+            || command.contains("multiagent daemon")
     }
 
     private static func isListening(port: Int) -> Bool {
@@ -80,6 +168,10 @@ final class LocalDaemonLauncher: @unchecked Sendable {
     }
 
     private func findRepositoryRoot() -> URL? {
+        if let plistRoot = Bundle.main.object(forInfoDictionaryKey: "MultiAgentRepositoryRoot") as? String,
+           !plistRoot.isEmpty {
+            return URL(fileURLWithPath: plistRoot)
+        }
         let candidates = [
             URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
             Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent(),
@@ -92,6 +184,50 @@ final class LocalDaemonLauncher: @unchecked Sendable {
             }
         }
         return nil
+    }
+
+    private func appSupportURL() -> URL? {
+        guard let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let supportURL = baseURL.appending(path: "MultiAgentDesktop", directoryHint: .isDirectory)
+        do {
+            try FileManager.default.createDirectory(at: supportURL, withIntermediateDirectories: true)
+            return supportURL
+        } catch {
+            return nil
+        }
+    }
+
+    private func migrateLegacySessions(from rootURL: URL, to sessionsURL: URL) {
+        let fileManager = FileManager.default
+        try? fileManager.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let markerURL = sessionsURL.deletingLastPathComponent().appending(path: ".legacy-session-migration-v1")
+        if fileManager.fileExists(atPath: markerURL.path) {
+            return
+        }
+        let legacyRoots = [
+            rootURL.appending(path: "sessions", directoryHint: .isDirectory),
+            rootURL.appending(path: "apps/daemon/sessions", directoryHint: .isDirectory)
+        ]
+
+        for legacyRoot in legacyRoots where fileManager.fileExists(atPath: legacyRoot.path) {
+            guard let entries = try? fileManager.contentsOfDirectory(at: legacyRoot, includingPropertiesForKeys: nil) else {
+                continue
+            }
+            for entry in entries {
+                let destination = sessionsURL.appending(path: entry.lastPathComponent, directoryHint: .inferFromPath)
+                if fileManager.fileExists(atPath: destination.path) {
+                    continue
+                }
+                do {
+                    try fileManager.copyItem(at: entry, to: destination)
+                } catch {
+                    continue
+                }
+            }
+        }
+        fileManager.createFile(atPath: markerURL.path, contents: Data())
     }
 
     private func walkUp(from startURL: URL) -> URL? {

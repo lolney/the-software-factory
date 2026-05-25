@@ -128,13 +128,18 @@ final class SessionStore {
         }
     }
 
+    func shutdownLocalDaemon() {
+        daemon.disconnect()
+        localDaemonLauncher.stop()
+    }
+
     private func connectAndRefreshAsync() async {
         connectionStatus = daemon.isConnected ? "Connected" : "Connecting"
         lastError = nil
         let daemonStarted = await localDaemonLauncher.ensureStarted(port: daemonPort)
         guard daemonStarted else {
             connectionStatus = "Disconnected"
-            lastError = "Could not start the local daemon. Check dist/app-daemon.log for details."
+            lastError = "Could not start the local daemon. Check ~/Library/Application Support/MultiAgentDesktop/logs/app-daemon.log for details."
             return
         }
         daemon.connect(port: daemonPort)

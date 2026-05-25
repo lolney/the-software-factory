@@ -10,6 +10,12 @@ struct MultiAgentDesktopApp: App {
         WindowGroup("Multiagent Coding", id: "main") {
             ContentView(store: store)
                 .frame(minWidth: 1100, minHeight: 720)
+                .task {
+                    appDelegate.onWillTerminate = { [store] in
+                        store.shutdownLocalDaemon()
+                    }
+                    store.connectAndRefresh()
+                }
         }
         .commands {
             CommandGroup(after: .newItem) {
@@ -27,8 +33,14 @@ struct MultiAgentDesktopApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    var onWillTerminate: (() -> Void)?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        onWillTerminate?()
     }
 }
