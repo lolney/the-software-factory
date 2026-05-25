@@ -11,3 +11,8 @@ Render them with Graphviz:
 dot -Tsvg docs/daemon-architecture.dot -o docs/daemon-architecture.svg
 dot -Tsvg docs/app-architecture.dot -o docs/app-architecture.svg
 ```
+
+Rendered SVGs are checked in for quick viewing:
+
+- `daemon-architecture.svg`
+- `app-architecture.svg`
