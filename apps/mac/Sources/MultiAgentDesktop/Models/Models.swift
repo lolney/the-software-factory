@@ -188,10 +188,15 @@ struct TranscriptItem: Identifiable, Hashable {
     var text: String
     var timestamp: Date
     var payload: [String: JSONValue]
+    var causationId: String?
+    var correlationId: String?
 
     var searchText: String {
         [
+            id,
             agentId,
+            causationId,
+            correlationId,
             sender,
             recipient,
             type,
@@ -239,6 +244,7 @@ struct DebugLogItem: Identifiable, Hashable, Codable {
 
 enum InspectorPanel: String, CaseIterable, Identifiable {
     case graph = "Graph"
+    case plan = "Plan"
     case workspace = "Workspace"
     case debug = "Debug"
 

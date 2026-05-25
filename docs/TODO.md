@@ -18,7 +18,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 Computer Use could inspect this app, but direct Computer Use access to `com.openai.codex` was blocked by the environment. These follow-ups are based on Codex-style coding-agent features visible from the current desktop context and prior screenshots in this project thread.
 
-- **P1: Add an explicit plan/checklist panel.** Show the orchestrator's current plan as editable/checkable steps with status, owner agent, and links to related transcript events.
 - **P1: Add a changed-files and diff review surface.** Summarize touched files in a dedicated panel, open inline diffs from `workspace.file_touched` events, show additions/deletions, and allow copying file paths or diff hunks.
 - **P1: Add command/tool execution details.** For tool calls, show duration, status, working directory, exit code when applicable, raw input/result, and a compact/expanded Codex-style rendering.
 - **P2: Add copy/share/export actions for session artifacts.** Export transcript, event log, debug log, workspace path, and selected diffs from the session UI.
@@ -34,6 +33,15 @@ Workflow graph UX improvements:
 - Edges should not terminate at the center of the node, but instead at the edge of the rectangle representing the node
 - If an edge connects rectangles representing node a and b, we should choose where to draw the line as follows: we should choose the edge of the node a rectangle and the edge of the node b rectangle that minimizes the length of the line
 - The end of an edge should be represented with a dot (shared if there are multiple edges terminating at the same spot)
+
+Continuous improvement workflow:
+- Consists of a todo-generator, reviewer, and implementor
+- These run continuously until shut down by the orchestrator, or until the todo-generator judges the project is in an acceptable state and no further improvements can be made in the spirit of the original prompt (and calls the stop tool)
+- The roles hand off to each other in a loop:
+    - todo-generator looks for potential improvements to the project, not necessarily bounded by the original requirements, and generates a TODO list. Hands this off to the implementor as a prompt.
+    - The implementor implements and hands off to the todo-generator again, once the reviwer (which reviews asynchronously) is satisfied
+    - Todo-generator can inspect the graph state. It can sleep for x minutes if there haven't been enough changes to the project
+- There should be proper concurrency controls here so that the implementor doesn't interfere with ongoing implementation. These should already be in place to some extent, but do an audit of these.
 
 ## Completed Non-Controversial Items
 
@@ -63,6 +71,7 @@ Workflow graph UX improvements:
 - **2026-05-25: Schedule child workflow execution durably.** Changed `workflow_start` and `plan_instantiate` to enqueue workflow execution as durable scheduler jobs, added recovery that reschedules interrupted workflow jobs, prevented root workflow activation from consuming child graph edges, and covered async completion/recovery in daemon tests.
 - **2026-05-25: De-duplicate WHAM workspace tool transcript rows.** Marked workspace write/command tools as engine-logged and suppressed WHAM wrapper `agent.tool_call`/`agent.tool_result` rows for those tools, preserving canonical diff/command transcript events from the engine while keeping normal workflow tools visible.
 - **2026-05-25: Harden transcript timeline rendering.** Moved timeline grouping into SwiftUI state, bounded rendered rows to the latest 500 filtered events, throttled auto-scroll, and deferred large transition/plan/tool payload rendering until rows are expanded.
+- **2026-05-25: Add a Plan inspector panel.** Added a right-side Plan pane with current goal, workflow status, completion-criteria checklist state, owner-agent links, agent prompts/done criteria, and transcript event filtering by event id.
 
 
 

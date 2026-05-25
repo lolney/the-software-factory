@@ -686,7 +686,9 @@ final class SessionStore {
                 type: "message",
                 text: "Write the initial prompt below. It will be sent as the first message to the orchestrator when the session is created.",
                 timestamp: Date(),
-                payload: [:]
+                payload: [:],
+                causationId: nil,
+                correlationId: nil
             )
         ]
         debugLogs = []
@@ -972,7 +974,18 @@ final class SessionStore {
     private func transcriptItem(_ event: SessionEvent) -> TranscriptItem {
         let sender = event.payload["from"]?.stringValue ?? event.agentId ?? "system"
         let recipient = event.payload["to"]?.stringValue
-        return TranscriptItem(id: event.eventId, agentId: event.agentId, sender: sender, recipient: recipient, type: event.type, text: displayText(for: event), timestamp: parseTimestamp(event.timestamp), payload: event.payload)
+        return TranscriptItem(
+            id: event.eventId,
+            agentId: event.agentId,
+            sender: sender,
+            recipient: recipient,
+            type: event.type,
+            text: displayText(for: event),
+            timestamp: parseTimestamp(event.timestamp),
+            payload: event.payload,
+            causationId: event.causationId,
+            correlationId: event.correlationId
+        )
     }
 
     private func decodeIntegrations(from resultDict: [String: Any]) {
@@ -1029,7 +1042,18 @@ final class SessionStore {
         isLoadingSelection = false
         graph = GraphState(sessionId: "", workflowId: "", nodes: [], edges: [])
         transcript = [
-            TranscriptItem(id: UUID().uuidString, agentId: "orchestrator", sender: "orchestrator", recipient: nil, type: "message", text: "Create a new session to connect to the daemon and launch a workflow.", timestamp: Date(), payload: [:])
+            TranscriptItem(
+                id: UUID().uuidString,
+                agentId: "orchestrator",
+                sender: "orchestrator",
+                recipient: nil,
+                type: "message",
+                text: "Create a new session to connect to the daemon and launch a workflow.",
+                timestamp: Date(),
+                payload: [:],
+                causationId: nil,
+                correlationId: nil
+            )
         ]
         debugLogs = []
     }
