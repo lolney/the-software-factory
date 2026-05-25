@@ -30,6 +30,7 @@ export interface AgentTurnInput {
     inspectAgents?: () => unknown;
     readWorkspaceFile?: (relativePath: string) => Promise<string>;
     writeWorkspaceFile?: (relativePath: string, content: string) => Promise<string>;
+    runWorkspaceCommand?: (command: string, args?: string[], cwd?: string) => Promise<string>;
     sendAgentMessage?: (agentId: string, text: string) => Promise<string>;
   };
   mcpServers?: MCPServer[];
@@ -140,6 +141,14 @@ export class OpenAIAgentRuntime implements AgentRuntime {
         description: "Write a file inside the session workspace through the engine. The engine records a durable diff in the session event log.",
         parameters: z.object({ path: z.string(), content: z.string() }),
         execute: async (args) => input.workflowTools?.writeWorkspaceFile?.(args.path, args.content) ?? "Write tool unavailable."
+      }));
+    }
+    if (input.workflowTools?.runWorkspaceCommand) {
+      tools.push(tool({
+        name: "workspace_run_command",
+        description: "Run a command inside the session workspace. Provide the executable as command and arguments as args. Use this for tests, linters, and local verification.",
+        parameters: z.object({ command: z.string(), args: z.array(z.string()).default([]), cwd: z.string().nullable() }),
+        execute: async (args) => input.workflowTools?.runWorkspaceCommand?.(args.command, args.args, args.cwd ?? undefined) ?? "Command tool unavailable."
       }));
     }
     if (input.workflowTools?.sendAgentMessage) {
@@ -305,7 +314,7 @@ async function runWhamTurn(
     role: "user",
     content: [{ type: "input_text", text: input.prompt }]
   }];
-  const maxTurns = 12;
+  const maxTurns = 20;
   for (let turn = 0; turn < maxTurns; turn += 1) {
     const { outputText, functionCalls } = await whamResponsesRequest(connection, {
       model: process.env.MULTIAGENT_WHAM_MODEL ?? "gpt-5.4",
@@ -364,18 +373,38 @@ async function runWhamTurn(
 }
 
 async function whamResponsesRequest(connection: NonNullable<AgentTurnInput["openAI"]>, body: Record<string, unknown>) {
-  const response = await fetch(`${connection.baseURL}/responses`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${connection.apiKey}`,
-      "content-type": "application/json",
-      ...(connection.defaultHeaders ?? {}),
-      session_id: crypto.randomUUID()
-    },
-    body: JSON.stringify(body)
-  });
+  const requestBody = JSON.stringify(body);
+  let response: Response | undefined;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      response = await fetch(`${connection.baseURL}/responses`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${connection.apiKey}`,
+          "content-type": "application/json",
+          ...(connection.defaultHeaders ?? {}),
+          session_id: crypto.randomUUID()
+        },
+        body: requestBody
+      });
+      if (response.ok || !isRetryableStatus(response.status)) break;
+      lastError = `HTTP ${response.status}: ${await response.text()}`;
+    } catch (error) {
+      lastError = error;
+    }
+    if (attempt < 2) {
+      await sleep(300 * (attempt + 1));
+    }
+  }
+  if (!response) {
+    throw new Error(`WHAM Responses request failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+  }
   if (!response.ok || !response.body) {
-    throw new Error(`WHAM Responses request failed with HTTP ${response.status}: ${await response.text()}`);
+    const errorText = !response.ok && isRetryableStatus(response.status) && lastError
+      ? String(lastError)
+      : await response.text();
+    throw new Error(`WHAM Responses request failed with HTTP ${response.status}: ${errorText}`);
   }
   const output: string[] = [];
   const functionCalls: Array<Record<string, unknown>> = [];
@@ -403,6 +432,14 @@ async function whamResponsesRequest(connection: NonNullable<AgentTurnInput["open
     }
   }
   return { outputText: output.join(""), functionCalls };
+}
+
+function isRetryableStatus(status: number) {
+  return status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function safeJson(raw: string): unknown {

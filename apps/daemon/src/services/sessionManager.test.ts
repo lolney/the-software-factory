@@ -374,6 +374,52 @@ describe("SessionManager deterministic debug sessions", () => {
     }
   });
 
+  it("exposes bounded workspace command execution to command-enabled roles", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            const output = input.agentId.includes("qa")
+              ? await input.workflowTools?.runWorkspaceCommand?.("node", ["-e", "console.log(process.cwd())"])
+              : "ok";
+            return [{
+              eventId: `evt_${crypto.randomUUID()}`,
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { text: output ?? "" }
+            }];
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_command_tool",
+        method: "createSession",
+        params: {
+          prompt: "Implement and QA with command execution",
+          workspaceRoot: root,
+          workflowId: "implementor-qa-loop",
+          debugMode: false
+        }
+      }) as { sessionId: string; workspaceRoot: string };
+      const replay = await manager.handle({
+        id: "req_command_tool_replay",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
+      expect(replay.events.some((event) =>
+        event.type === "agent.message"
+        && event.agentId?.includes("qa")
+        && String(event.payload.text).includes(snapshot.workspaceRoot)
+      )).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("continues handoff workflows into downstream QA agents", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
     try {

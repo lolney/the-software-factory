@@ -39,6 +39,7 @@ final class SessionStore {
     private var pendingCreatePrompt: String?
     private var pendingOpenAIOAuth = false
     private let localDaemonLauncher = LocalDaemonLauncher()
+    @ObservationIgnored private var sessionRefreshTask: Task<Void, Never>?
 
     var daemonPort: Int {
         get {
@@ -186,6 +187,7 @@ final class SessionStore {
                 self?.isCreatingSession = false
                 self?.pendingCreatePrompt = nil
                 self?.pendingOpenAIOAuth = false
+                self?.stopSessionRefreshLoop()
             }
         }
         daemon.onSendError = { [weak self] reason in
@@ -205,8 +207,22 @@ final class SessionStore {
     }
 
     func shutdownLocalDaemon() {
+        stopSessionRefreshLoop()
         daemon.disconnect()
         localDaemonLauncher.stop()
+    }
+
+    func refreshSessions() {
+        daemon.sendRequest(method: "listSessions", params: [:])
+    }
+
+    func refreshForAppActivation() {
+        if daemon.isConnected {
+            refreshSessions()
+            refreshCatalogs()
+        } else {
+            connectAndRefresh()
+        }
     }
 
     private func connectAndRefreshAsync() async {
@@ -220,8 +236,9 @@ final class SessionStore {
         }
         daemon.connect(port: daemonPort)
         try? await Task.sleep(for: .milliseconds(250))
-        daemon.sendRequest(method: "listSessions", params: [:])
+        refreshSessions()
         refreshCatalogs()
+        startSessionRefreshLoop()
     }
 
     func refreshCatalogs() {
@@ -229,6 +246,22 @@ final class SessionStore {
         daemon.sendRequest(method: "listWorkflows", params: [:])
         daemon.sendRequest(method: "getAuthStatus", params: [:])
         daemon.sendRequest(method: "listIntegrations", params: [:])
+    }
+
+    private func startSessionRefreshLoop() {
+        sessionRefreshTask?.cancel()
+        sessionRefreshTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { break }
+                self?.refreshSessions()
+            }
+        }
+    }
+
+    private func stopSessionRefreshLoop() {
+        sessionRefreshTask?.cancel()
+        sessionRefreshTask = nil
     }
 
     func createSession(prompt: String) {
@@ -587,6 +620,36 @@ final class SessionStore {
         }
 
         if let resultDict = result as? [String: Any],
+           let sessionsValue = resultDict["sessions"],
+           let sessionsData = try? JSONSerialization.data(withJSONObject: sessionsValue),
+           let summaries = try? JSONDecoder().decode([SessionSummary].self, from: sessionsData) {
+            sessions = summaries
+            if !isComposingNewSession,
+               let first = sessions.first,
+               selectedSessionId == nil || sessions.allSatisfy({ $0.id != selectedSessionId }) {
+                selectSession(first.id)
+            }
+            if let workflowsValue = resultDict["workflows"],
+               let workflowsData = try? JSONSerialization.data(withJSONObject: workflowsValue),
+               let decodedWorkflows = try? JSONDecoder().decode([WorkflowSpec].self, from: workflowsData) {
+                workflows = decodedWorkflows
+            }
+            if let rolesValue = resultDict["roles"],
+               let rolesData = try? JSONSerialization.data(withJSONObject: rolesValue),
+               let decodedRoles = try? JSONDecoder().decode([RoleSpec].self, from: rolesData) {
+                roles = decodedRoles
+            }
+            if let authValue = resultDict["codexOAuth"],
+               let authData = try? JSONSerialization.data(withJSONObject: authValue),
+               let decodedAuth = try? JSONDecoder().decode(AuthStatus.self, from: authData) {
+                authStatus = decodedAuth
+            }
+            decodeCatalogPaths(from: resultDict)
+            decodeIntegrations(from: resultDict)
+            return
+        }
+
+        if let resultDict = result as? [String: Any],
            let rolesValue = resultDict["roles"],
            let rolesData = try? JSONSerialization.data(withJSONObject: rolesValue),
            let decodedRoles = try? JSONDecoder().decode([RoleSpec].self, from: rolesData) {
@@ -648,18 +711,6 @@ final class SessionStore {
             return
         }
 
-        if let resultDict = result as? [String: Any],
-           let sessionsValue = resultDict["sessions"],
-           let sessionsData = try? JSONSerialization.data(withJSONObject: sessionsValue),
-            let summaries = try? JSONDecoder().decode([SessionSummary].self, from: sessionsData) {
-            sessions = summaries
-            if isComposingNewSession {
-                return
-            }
-            if let first = sessions.first, selectedSessionId == nil || sessions.allSatisfy({ $0.id != selectedSessionId }) {
-                selectSession(first.id)
-            }
-        }
     }
 
     private func apply(snapshot: SessionSnapshot) {

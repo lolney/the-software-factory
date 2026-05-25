@@ -347,6 +347,7 @@ export class SessionManager {
     const orchestratorId = spec.lifecycle.orchestratorNodeId;
     const runCounts = new Map<string, number>([[orchestratorId, 1]]);
     const processedHandoffs = new Set<string>();
+    const processedMessages = new Set<string>();
     const maxConcurrent = Math.max(1, spec.concurrency.maxActiveAgents);
     const maxIterationsPerAgent = 3;
     const initialGraphSize = snapshot.graph.nodes.length + snapshot.graph.edges.length + 1;
@@ -395,10 +396,12 @@ export class SessionManager {
       const readyMessages = graph.edges
         .filter((edge) => edge.kind === "message")
         .filter((edge) => (runCounts.get(edge.from) ?? 0) > 0 && (runCounts.get(edge.to) ?? 0) < maxIterationsPerAgent)
+        .filter((edge) => !processedMessages.has(edge.id))
         .filter((edge) => this.canSchedule(snapshot, edge.from) && this.canSchedule(snapshot, edge.to));
       if (readyMessages.length === 0) break;
       const batch = readyMessages.slice(0, maxConcurrent);
       await Promise.all(batch.map(async (edge) => {
+        processedMessages.add(edge.id);
         const message = await this.appendAndPublish({
           eventId: makeEventId(),
           sessionId: snapshot.sessionId,
@@ -667,6 +670,30 @@ export class SessionManager {
     return `Edited ${relativePath} +${stats.additions} -${stats.deletions}.`;
   }
 
+  private async runWorkspaceCommand(snapshot: SessionSnapshot, command: string, args: string[] = [], cwd?: string) {
+    const workingDirectory = cwd ? containedPath(snapshot.workspaceRoot, cwd) : snapshot.workspaceRoot;
+    try {
+      const result = await execFileAsync(command, args, {
+        cwd: workingDirectory,
+        timeout: 60_000,
+        maxBuffer: 1024 * 1024
+      });
+      return [
+        `exitCode: 0`,
+        result.stdout ? `stdout:\n${result.stdout}` : undefined,
+        result.stderr ? `stderr:\n${result.stderr}` : undefined
+      ].filter(Boolean).join("\n");
+    } catch (error) {
+      const processError = error as { code?: unknown; stdout?: string; stderr?: string; message?: string };
+      return [
+        `exitCode: ${typeof processError.code === "number" ? processError.code : 1}`,
+        processError.stdout ? `stdout:\n${processError.stdout}` : undefined,
+        processError.stderr ? `stderr:\n${processError.stderr}` : undefined,
+        processError.message ? `error:\n${processError.message}` : undefined
+      ].filter(Boolean).join("\n");
+    }
+  }
+
   private async runTemperatureConverterQA(snapshot: SessionSnapshot, agentId: string, causationId: string, publish: (event: SessionEvent) => void) {
     const role = this.resolveRole(snapshot, agentId);
     if (!role?.toolPolicy.canRunCommands) {
@@ -850,6 +877,7 @@ export class SessionManager {
     const orchestratorId = nodeMap.get(spec.lifecycle.orchestratorNodeId) ?? spec.lifecycle.orchestratorNodeId;
     const runCounts = new Map<string, number>([[orchestratorId, 1]]);
     const processedHandoffs = new Set<string>();
+    const processedMessages = new Set<string>();
     const maxIterationsPerAgent = 2;
     const maxSteps = Math.max(1, spec.edges.length * maxIterationsPerAgent + 4);
     for (let step = 0; step < maxSteps; step += 1) {
@@ -869,8 +897,8 @@ export class SessionManager {
         processedHandoffs.add(readyHandoff.id);
         const from = nodeMap.get(readyHandoff.from) ?? readyHandoff.from;
         const to = nodeMap.get(readyHandoff.to) ?? readyHandoff.to;
-        const prompt = this.promptForPlanAgent(planWorkflow, readyHandoff.to);
         const originalGoal = await this.sessionGoal(snapshot.sessionId, snapshot.title);
+        const prompt = this.promptForPlanAgent(planWorkflow, readyHandoff.to, originalGoal, readyHandoff.description, this.latestAgentMessage(snapshot, from));
         const handoff = await this.appendAndPublish({
           eventId: makeEventId(),
           sessionId: snapshot.sessionId,
@@ -907,22 +935,24 @@ export class SessionManager {
           const to = nodeMap.get(edge.to) ?? edge.to;
           return (runCounts.get(from) ?? 0) > 0
             && (runCounts.get(to) ?? 0) < maxIterationsPerAgent
+            && !processedMessages.has(edge.id)
             && this.canEmitFrom(snapshot, from)
             && this.canSchedule(snapshot, to)
             && this.canHandoffFrom(snapshot, spec, nodeMap, edge.from, edge.to, workflowInstanceId);
         });
       if (!readyMessage) break;
+      processedMessages.add(readyMessage.id);
       const from = nodeMap.get(readyMessage.from) ?? readyMessage.from;
       const to = nodeMap.get(readyMessage.to) ?? readyMessage.to;
-      const prompt = this.promptForPlanAgent(planWorkflow, readyMessage.to);
       const originalGoal = await this.sessionGoal(snapshot.sessionId, snapshot.title);
+      const prompt = this.promptForPlanAgent(planWorkflow, readyMessage.to, originalGoal, readyMessage.description, this.latestAgentMessage(snapshot, from));
       const message = await this.appendAndPublish({
         eventId: makeEventId(),
         sessionId: snapshot.sessionId,
         agentId: from,
         timestamp: new Date().toISOString(),
         type: "message.sent",
-        payload: { from, to, text: `Plan workflow message: ${readyMessage.description}`, edgeId: readyMessage.id, originalGoal, prompt, workflowInstanceId },
+        payload: { from, to, text: prompt, edgeId: readyMessage.id, originalGoal, prompt, workflowInstanceId, description: readyMessage.description },
         causationId
       }, publish);
       if (to !== orchestratorId) {
@@ -978,6 +1008,11 @@ export class SessionManager {
     if (role?.toolPolicy.canWrite) {
       tools.writeWorkspaceFile = async (relativePath: string, content: string) => {
         return this.writeWorkspaceFile(snapshot, agentId, relativePath, content, undefined, publish);
+      };
+    }
+    if (role?.toolPolicy.canRunCommands) {
+      tools.runWorkspaceCommand = async (command: string, args: string[] = [], cwd?: string) => {
+        return this.runWorkspaceCommand(snapshot, command, args, cwd);
       };
     }
     if (roleId === "orchestrator") {
@@ -1333,10 +1368,29 @@ export class SessionManager {
     return snapshot.graph.nodes.find((node) => node.roleId === roleId)?.id;
   }
 
-  private promptForPlanAgent(planWorkflow: PlanSpec["workflows"][number], nodeId: string) {
-    return planWorkflow.agentPrompts[nodeId]
-      ?? planWorkflow.agentPrompts[nodeId.split("_").at(-1) ?? nodeId]
-      ?? `Execute plan workflow ${planWorkflow.workflowId} as ${nodeId}.`;
+  private promptForPlanAgent(planWorkflow: PlanSpec["workflows"][number], nodeId: string, originalGoal: string, edgeDescription = "", incomingMessage?: string) {
+    const roleKey = nodeId.split("_").at(-1) ?? nodeId;
+    const explicitPrompt = planWorkflow.agentPrompts[nodeId] ?? planWorkflow.agentPrompts[roleKey];
+    const doneCriteria = planWorkflow.doneCriteria[nodeId] ?? planWorkflow.doneCriteria[roleKey] ?? [];
+    const completionCriteria = planWorkflow.completionCriteria[nodeId] ?? planWorkflow.completionCriteria[roleKey] ?? [];
+    const defaultTask = defaultTaskForRole(roleKey, planWorkflow.workflowId);
+    return [
+      explicitPrompt,
+      `Original user goal:\n${originalGoal}`,
+      `Workflow: ${planWorkflow.workflowId}`,
+      `Assigned role: ${roleKey}`,
+      edgeDescription ? `Transition instruction: ${edgeDescription}` : undefined,
+      incomingMessage ? `Incoming message or artifact from the previous agent:\n${incomingMessage}` : undefined,
+      `Task: ${defaultTask}`,
+      doneCriteria.length > 0 ? `Done criteria:\n${doneCriteria.map((criterion) => `- ${criterion}`).join("\n")}` : undefined,
+      completionCriteria.length > 0 ? `Completion criteria:\n${completionCriteria.map((criterion) => `- ${criterion.description}`).join("\n")}` : undefined,
+      "Use the available workflow/workspace tools. Report concrete files, commands, findings, and acceptance status instead of asking for context already present here."
+    ].filter(Boolean).join("\n\n");
+  }
+
+  private latestAgentMessage(snapshot: SessionSnapshot, agentId: string) {
+    const event = [...snapshot.transcript].reverse().find((candidate) => candidate.agentId === agentId && candidate.type === "agent.message");
+    return event?.payload.text ? String(event.payload.text) : undefined;
   }
 
   private async openAIConnection(debugMode: boolean) {
@@ -1456,6 +1510,25 @@ export class SessionManager {
 
 function firstLine(text: string) {
   return text.trim().split("\n").find(Boolean)?.slice(0, 80) ?? "";
+}
+
+function defaultTaskForRole(roleId: string, workflowId: string) {
+  switch (roleId) {
+    case "planner":
+      return "Create a decision-complete PlanSpec for the original user goal. Select one or more available workflows, provide agentPrompts and doneCriteria for every participating role, call plan_create, then stop with the plan artifact.";
+    case "orchestrator":
+      return "Coordinate the workflow through planner-created plans and workflow tools. Instantiate concrete plans, inspect agent state, and send messages to agents without writing files directly.";
+    case "implementor":
+      return "Implement the requested project in the session workspace. Create or edit the needed files through workspace_write_file, include tests/docs when requested, and stop only after downstream review/QA dependencies are satisfied.";
+    case "reviewer":
+      return "Review the implementation transcript, touched files, and diffs. Send concise blocking findings to the implementor or report approval.";
+    case "qa":
+      return "Run acceptance checks against the workspace using the available tools. Report exact commands, pass/fail status, and any unmet criteria.";
+    case "researcher":
+      return "Gather focused research needed for the original goal and return sources or implementation guidance to the requesting agent.";
+    default:
+      return `Execute the ${roleId} responsibilities in workflow ${workflowId} against the original user goal.`;
+  }
 }
 
 function runKey(sessionId: string, agentId: string) {

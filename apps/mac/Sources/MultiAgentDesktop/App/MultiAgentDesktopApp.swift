@@ -4,6 +4,7 @@ import AppKit
 @main
 struct MultiAgentDesktopApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.scenePhase) private var scenePhase
     @State private var store = SessionStore()
 
     var body: some Scene {
@@ -15,6 +16,11 @@ struct MultiAgentDesktopApp: App {
                         store.shutdownLocalDaemon()
                     }
                     store.connectAndRefresh()
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active {
+                        store.refreshForAppActivation()
+                    }
                 }
         }
         .commands {
