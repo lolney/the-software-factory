@@ -17,8 +17,5 @@ struct ContentView: View {
                 SessionDetailView(store: store)
             }
         }
-        .sheet(isPresented: $store.presentNewSession) {
-            NewSessionView(store: store)
-        }
     }
 }

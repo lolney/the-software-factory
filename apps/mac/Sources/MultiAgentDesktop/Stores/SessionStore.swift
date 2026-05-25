@@ -5,6 +5,8 @@ import Observation
 @MainActor
 @Observable
 final class SessionStore {
+    static let newSessionDraftId = "new-session-draft"
+
     var sessions: [SessionSummary] = []
     var selectedSessionId: String?
     var selectedSidebarItem: String?
@@ -20,7 +22,7 @@ final class SessionStore {
     var integrations = IntegrationCatalog(mcpServers: [], skills: [])
     var currentWorkspaceRoot: String?
     var currentSessionDebugMode: Bool?
-    var presentNewSession = false
+    var isComposingNewSession = false
     var composerText = ""
     var connectionStatus = "Disconnected"
     var debugMode = false
@@ -51,7 +53,11 @@ final class SessionStore {
     }
 
     var canSendComposerMessage: Bool {
-        daemon.isConnected && hasActiveSession && ![.paused, .cancelled, .failed, .completed].contains(orchestratorStatus) && !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasText = !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if isComposingNewSession {
+            return hasText && !isCreatingSession
+        }
+        return daemon.isConnected && hasActiveSession && ![.paused, .cancelled, .failed, .completed].contains(orchestratorStatus) && hasText
     }
 
     var orchestratorStatus: AgentStatus {
@@ -169,7 +175,18 @@ final class SessionStore {
     func cancelNewSession() {
         pendingCreatePrompt = nil
         isCreatingSession = false
-        presentNewSession = false
+        isComposingNewSession = false
+        if selectedSidebarItem == Self.newSessionDraftId {
+            if let selectedSessionId {
+                selectSession(selectedSessionId)
+            } else if let first = sessions.first {
+                selectSession(first.id)
+            } else {
+                selectedSessionId = "local-preview"
+                selectedSidebarItem = "local-preview"
+                resetPreview()
+            }
+        }
     }
 
     private func sendCreateSession(prompt: String) {
@@ -189,11 +206,16 @@ final class SessionStore {
         if item == "roles" || item == "workflows" {
             return
         }
+        if item == Self.newSessionDraftId {
+            beginNewSession()
+            return
+        }
         selectSession(item)
     }
 
     func selectSession(_ sessionId: String?) {
         guard let sessionId else { return }
+        isComposingNewSession = false
         selectedSessionId = sessionId
         selectedSidebarItem = sessionId
         guard sessionId != "local-preview" else {
@@ -225,7 +247,13 @@ final class SessionStore {
 
     func sendComposerMessage() {
         let trimmed = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let selectedSessionId, daemon.isConnected else { return }
+        guard !trimmed.isEmpty else { return }
+        if isComposingNewSession {
+            createSession(prompt: trimmed)
+            composerText = ""
+            return
+        }
+        guard let selectedSessionId, daemon.isConnected else { return }
         daemon.sendRequest(method: "sendMessage", params: [
             "sessionId": selectedSessionId,
             "text": trimmed
@@ -359,6 +387,33 @@ final class SessionStore {
         }
     }
 
+    func beginNewSession() {
+        isComposingNewSession = true
+        isCreatingSession = false
+        pendingCreatePrompt = nil
+        composerText = ""
+        selectedSessionId = nil
+        selectedSidebarItem = Self.newSessionDraftId
+        selectedAgentId = nil
+        currentWorkspaceRoot = nil
+        currentSessionDebugMode = nil
+        isLoadingSelection = false
+        graph = GraphState(sessionId: Self.newSessionDraftId, workflowId: "planner-orchestrator", nodes: [], edges: [])
+        transcript = [
+            TranscriptItem(
+                id: UUID().uuidString,
+                agentId: "orchestrator",
+                sender: "orchestrator",
+                recipient: nil,
+                type: "message",
+                text: "Write the initial prompt below. It will be sent as the first message to the orchestrator when the session is created.",
+                timestamp: Date(),
+                payload: [:]
+            )
+        ]
+        debugLogs = []
+    }
+
     private func handleDaemonMessage(_ data: Data) {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         connectionStatus = "Connected"
@@ -485,6 +540,9 @@ final class SessionStore {
            let sessionsData = try? JSONSerialization.data(withJSONObject: sessionsValue),
             let summaries = try? JSONDecoder().decode([SessionSummary].self, from: sessionsData) {
             sessions = summaries
+            if isComposingNewSession {
+                return
+            }
             if let first = sessions.first, selectedSessionId == nil || sessions.allSatisfy({ $0.id != selectedSessionId }) {
                 selectSession(first.id)
             }
@@ -508,7 +566,7 @@ final class SessionStore {
         connectionStatus = "Connected"
         isCreatingSession = false
         isLoadingSelection = false
-        presentNewSession = false
+        isComposingNewSession = false
     }
 
     private func apply(event: SessionEvent) {
@@ -533,7 +591,7 @@ final class SessionStore {
                     subscribe(to: event.sessionId)
                     subscribeDebugLogs(to: event.sessionId)
                     isCreatingSession = false
-                    presentNewSession = false
+                    isComposingNewSession = false
                 }
             }
             return
@@ -558,7 +616,7 @@ final class SessionStore {
             selectedAgentId = nil
             isCreatingSession = false
             isLoadingSelection = false
-            presentNewSession = false
+            isComposingNewSession = false
         case "graph.updated":
             if let graphValue = event.payload["graph"],
                let data = try? JSONEncoder().encode(graphValue),

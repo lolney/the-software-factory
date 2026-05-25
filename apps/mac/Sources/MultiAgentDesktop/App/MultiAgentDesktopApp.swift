@@ -20,7 +20,7 @@ struct MultiAgentDesktopApp: App {
         .commands {
             CommandGroup(after: .newItem) {
                 Button("New Session") {
-                    store.presentNewSession = true
+                    store.beginNewSession()
                 }
                 .keyboardShortcut("n", modifiers: [.command])
             }

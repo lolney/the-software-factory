@@ -13,6 +13,10 @@ struct SidebarView: View {
             }
 
             Section("Sessions") {
+                if store.isComposingNewSession {
+                    Label("New Session", systemImage: "plus.message")
+                        .tag(SessionStore.newSessionDraftId)
+                }
                 ForEach(store.sessions) { session in
                     HStack(spacing: 10) {
                         Image(systemName: "rectangle.3.group.bubble")
@@ -38,7 +42,7 @@ struct SidebarView: View {
         }
         .safeAreaInset(edge: .bottom) {
             Button {
-                store.presentNewSession = true
+                store.beginNewSession()
             } label: {
                 Label("New Session", systemImage: "plus")
                     .frame(maxWidth: .infinity)

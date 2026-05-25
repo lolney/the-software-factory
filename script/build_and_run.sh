@@ -15,17 +15,35 @@ APP_MACOS="$APP_CONTENTS/MacOS"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 ENTITLEMENTS="$ROOT_DIR/apps/mac/MultiAgentDesktop.entitlements"
+DAEMON_BUNDLE_DIR="$DIST_DIR/Daemon"
+DAEMON_ENTRY="$DAEMON_BUNDLE_DIR/nodeMain.cjs"
+DAEMON_WORKFLOWS_DIR="$DAEMON_BUNDLE_DIR/workflows"
+LEGACY_APP_BUNDLE="$ROOT_DIR/dist/$APP_NAME.app"
 
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 pkill -f "$ROOT_DIR/node_modules/.bin/tsx.*$ROOT_DIR/apps/daemon/src/nodeMain.ts" >/dev/null 2>&1 || true
+pkill -f "node_modules/.bin/tsx.*apps/daemon/src/nodeMain.ts" >/dev/null 2>&1 || true
+pkill -f "tsx/dist/loader.*apps/daemon/src/nodeMain.ts" >/dev/null 2>&1 || true
+pkill -f "apps/daemon/src/nodeMain.ts" >/dev/null 2>&1 || true
+pkill -f "$DAEMON_ENTRY" >/dev/null 2>&1 || true
+rm -rf "$LEGACY_APP_BUNDLE"
 
 swift build --package-path "$MAC_DIR"
 BUILD_BINARY="$(swift build --package-path "$MAC_DIR" --show-bin-path)/$APP_NAME"
 
-rm -rf "$APP_BUNDLE"
+rm -rf "$APP_BUNDLE" "$DAEMON_BUNDLE_DIR"
 mkdir -p "$APP_MACOS"
 cp "$BUILD_BINARY" "$APP_BINARY"
 chmod +x "$APP_BINARY"
+
+mkdir -p "$DAEMON_WORKFLOWS_DIR"
+"$ROOT_DIR/node_modules/.bin/esbuild" "$ROOT_DIR/apps/daemon/src/nodeMain.ts" \
+  --bundle \
+  --platform=node \
+  --format=cjs \
+  --outfile="$DAEMON_ENTRY" \
+  --log-level=warning
+cp -R "$ROOT_DIR/apps/daemon/src/workflows/." "$DAEMON_WORKFLOWS_DIR/"
 
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -42,12 +60,12 @@ cat >"$INFO_PLIST" <<PLIST
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
   <string>$MIN_SYSTEM_VERSION</string>
-  <key>MultiAgentRepositoryRoot</key>
-  <string>$ROOT_DIR</string>
+  <key>MultiAgentDaemonEntry</key>
+  <string>$DAEMON_ENTRY</string>
+  <key>MultiAgentBuiltinWorkflowsDir</key>
+  <string>$DAEMON_WORKFLOWS_DIR</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
-  <key>NSDocumentsFolderUsageDescription</key>
-  <string>MultiAgentDesktop may read legacy session logs from a development checkout in Documents during one-time migration.</string>
 </dict>
 </plist>
 PLIST
