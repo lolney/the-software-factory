@@ -20,6 +20,15 @@ struct GraphPanelView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal)
 
+            HStack(spacing: 8) {
+                Label("Viewing: \(store.transcriptFilterLabel)", systemImage: "line.3.horizontal.decrease.circle")
+                Spacer()
+                Label("Controlling: \(store.selectedControlAgentLabel)", systemImage: "scope")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal)
+
             GeometryReader { proxy in
                 let positions = layout(size: proxy.size)
                 ZStack {
@@ -70,8 +79,8 @@ struct GraphPanelView: View {
             }
             .frame(minHeight: 320)
 
-            List(selection: $store.selectedAgentId) {
-                ForEach(graph.nodes) { node in
+            List {
+                ForEach(Array(graph.nodes.enumerated()), id: \.element.id) { _, node in
                     Button {
                         store.selectAgent(node.id)
                     } label: {
@@ -93,12 +102,16 @@ struct GraphPanelView: View {
                                     .font(.caption2.weight(.bold))
                                     .foregroundStyle(.red)
                             }
+                            if node.id == store.selectedControlAgentId {
+                                Text("control")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(Color.accentColor)
+                            }
                             Text(node.status.rawValue)
                                 .foregroundStyle(.secondary)
                         }
                     }
                     .buttonStyle(.plain)
-                    .tag(node.id)
                 }
             }
         }

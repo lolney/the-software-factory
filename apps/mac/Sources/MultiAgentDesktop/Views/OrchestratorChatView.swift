@@ -29,11 +29,50 @@ struct OrchestratorChatView: View {
                     .font(.caption)
                 }
                 Spacer()
+                TextField("Search transcript", text: $store.transcriptSearchText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 220)
                 Text(store.connectionStatus)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .padding()
+
+            if let status = store.statusBannerText {
+                HStack(spacing: 8) {
+                    Image(systemName: store.sessionErrorCount > 0 ? "exclamationmark.triangle.fill" : "info.circle")
+                        .foregroundStyle(store.sessionErrorCount > 0 ? .orange : .secondary)
+                    Text(status)
+                        .font(.caption)
+                        .lineLimit(2)
+                    Spacer(minLength: 8)
+                    Button {
+                        store.inspectorPanel = .debug
+                    } label: {
+                        Label("Debug", systemImage: "ladybug")
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    if store.lastError != nil {
+                        Button {
+                            store.clearLastError()
+                        } label: {
+                            Image(systemName: "xmark")
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                        .accessibilityLabel("Dismiss status")
+                    }
+                }
+                .padding(8)
+                .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(.orange.opacity(0.25))
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+            }
 
             Divider()
 
@@ -47,7 +86,7 @@ struct OrchestratorChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
                         if timelineItems.isEmpty {
-                            Text(store.isTranscriptFiltered ? "No transcript events for this agent yet." : "No transcript events yet.")
+                            Text(store.isTranscriptFiltered ? "No transcript events match the current filter." : "No transcript events yet.")
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)

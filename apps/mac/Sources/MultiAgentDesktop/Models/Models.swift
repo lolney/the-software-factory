@@ -170,6 +170,31 @@ struct TranscriptItem: Identifiable, Hashable {
     var text: String
     var timestamp: Date
     var payload: [String: JSONValue]
+
+    var searchText: String {
+        [
+            agentId,
+            sender,
+            recipient,
+            type,
+            text,
+            payload.map { "\($0.key): \($0.value.searchText)" }.sorted().joined(separator: "\n")
+        ]
+        .compactMap { $0 }
+        .joined(separator: "\n")
+    }
+}
+
+struct WorkspaceFileSummary: Identifiable, Hashable {
+    var path: String
+    var lastAgentId: String?
+    var lastEventType: String
+    var lastTimestamp: Date
+    var additions: Int
+    var deletions: Int
+    var conflictCount: Int
+
+    var id: String { path }
 }
 
 enum DebugLogLevel: String, Codable, CaseIterable {
@@ -196,6 +221,7 @@ struct DebugLogItem: Identifiable, Hashable, Codable {
 
 enum InspectorPanel: String, CaseIterable, Identifiable {
     case graph = "Graph"
+    case workspace = "Workspace"
     case debug = "Debug"
 
     var id: String { rawValue }
@@ -288,6 +314,28 @@ enum JSONValue: Codable, Hashable {
     var objectValue: [String: JSONValue]? {
         if case .object(let value) = self { return value }
         return nil
+    }
+
+    var arrayValue: [JSONValue]? {
+        if case .array(let value) = self { return value }
+        return nil
+    }
+
+    var searchText: String {
+        switch self {
+        case .string(let value):
+            return value
+        case .number(let value):
+            return String(value)
+        case .bool(let value):
+            return String(value)
+        case .object(let object):
+            return object.map { "\($0.key): \($0.value.searchText)" }.sorted().joined(separator: "\n")
+        case .array(let values):
+            return values.map(\.searchText).joined(separator: "\n")
+        case .null:
+            return "null"
+        }
     }
 }
 

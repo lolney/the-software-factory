@@ -30,6 +30,8 @@ final class SessionStore {
     var isCreatingSession = false
     var lastError: String?
     var selectedAgentId: String?
+    var controlAgentId: String?
+    var transcriptSearchText = ""
     var isLoadingSelection = false
     private var subscribedSessionIds = Set<String>()
     private var subscribedDebugLogSessionIds = Set<String>()
@@ -66,23 +68,89 @@ final class SessionStore {
     }
 
     var selectedControlAgentId: String {
-        selectedAgentId ?? "orchestrator"
+        if let controlAgentId,
+           graph.nodes.contains(where: { $0.id == controlAgentId }) {
+            return controlAgentId
+        }
+        if graph.nodes.contains(where: { $0.id == "orchestrator" }) {
+            return "orchestrator"
+        }
+        return graph.nodes.first?.id ?? "orchestrator"
+    }
+
+    var selectedControlAgentLabel: String {
+        graph.nodes.first { $0.id == selectedControlAgentId }?.label ?? selectedControlAgentId
     }
 
     var filteredTranscript: [TranscriptItem] {
-        guard let selectedAgentId else { return transcript }
-        return transcript.filter { item in
-            item.agentId == selectedAgentId || item.sender == selectedAgentId || item.recipient == selectedAgentId
+        let visibleTranscript: [TranscriptItem]
+        if let selectedAgentId {
+            visibleTranscript = transcript.filter { item in
+                item.agentId == selectedAgentId || item.sender == selectedAgentId || item.recipient == selectedAgentId
+            }
+        } else {
+            visibleTranscript = transcript
         }
+
+        let query = transcriptSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return visibleTranscript }
+        return visibleTranscript.filter { item in
+            item.searchText.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var sessionErrorCount: Int {
+        graph.nodes.reduce(0) { total, node in total + node.errorCount }
+    }
+
+    var statusBannerText: String? {
+        if let lastError, !lastError.isEmpty {
+            return lastError
+        }
+        if sessionErrorCount > 0 {
+            let suffix = sessionErrorCount == 1 ? "" : "s"
+            return "\(sessionErrorCount) agent error\(suffix) in this session. Open Debug for details."
+        }
+        return nil
+    }
+
+    var touchedWorkspaceFiles: [WorkspaceFileSummary] {
+        var summaries: [String: WorkspaceFileSummary] = [:]
+        for item in transcript where item.type == "workspace.file_touched" || item.type == "workspace.conflict_detected" {
+            guard let path = item.payload["path"]?.stringValue ?? item.text.nilIfEmpty else { continue }
+            var summary = summaries[path] ?? WorkspaceFileSummary(
+                path: path,
+                lastAgentId: item.agentId,
+                lastEventType: item.type,
+                lastTimestamp: item.timestamp,
+                additions: 0,
+                deletions: 0,
+                conflictCount: 0
+            )
+            summary.lastAgentId = item.agentId ?? summary.lastAgentId
+            summary.lastEventType = item.type
+            summary.lastTimestamp = item.timestamp
+            if item.type == "workspace.conflict_detected" {
+                summary.conflictCount += 1
+            }
+            if let stats = item.payload["diffStats"]?.objectValue {
+                summary.additions += Int(stats["additions"]?.numberValue ?? 0)
+                summary.deletions += Int(stats["deletions"]?.numberValue ?? 0)
+            }
+            summaries[path] = summary
+        }
+        return summaries.values.sorted { left, right in
+            left.lastTimestamp > right.lastTimestamp
+        }
+    }
+
+    var isTranscriptFiltered: Bool {
+        selectedAgentId != nil || !transcriptSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var transcriptFilterLabel: String {
         guard let selectedAgentId else { return "All Agents" }
         return graph.nodes.first { $0.id == selectedAgentId }?.label ?? selectedAgentId
-    }
-
-    var isTranscriptFiltered: Bool {
-        selectedAgentId != nil
     }
 
     var canPauseOrchestrator: Bool {
@@ -246,6 +314,14 @@ final class SessionStore {
         }
     }
 
+    func setControlAgent(_ agentId: String?) {
+        controlAgentId = agentId
+    }
+
+    func clearLastError() {
+        lastError = nil
+    }
+
     func sendComposerMessage() {
         let trimmed = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -311,6 +387,10 @@ final class SessionStore {
 
     func copyPersonalWorkflowsPath() {
         copyPath(personalWorkflowsPath, fallback: "Workflows directory has not been reported by the daemon yet.")
+    }
+
+    func copyCurrentWorkspacePath() {
+        copyPath(currentWorkspaceRoot, fallback: "This session does not have a workspace yet.")
     }
 
     func instantiateWorkflow(_ workflowId: String) {
@@ -411,6 +491,7 @@ final class SessionStore {
         selectedSessionId = nil
         selectedSidebarItem = Self.newSessionDraftId
         selectedAgentId = nil
+        controlAgentId = nil
         currentWorkspaceRoot = nil
         currentSessionDebugMode = nil
         isLoadingSelection = false
@@ -575,6 +656,9 @@ final class SessionStore {
         if let selectedAgentId, graph.nodes.allSatisfy({ $0.id != selectedAgentId }) {
             self.selectedAgentId = nil
         }
+        if let controlAgentId, graph.nodes.allSatisfy({ $0.id != controlAgentId }) {
+            self.controlAgentId = nil
+        }
         currentWorkspaceRoot = snapshot.workspaceRoot
         currentSessionDebugMode = snapshot.debugMode ?? false
         let summary = SessionSummary(id: snapshot.sessionId, title: snapshot.title, detail: snapshot.workflowId, createdAt: snapshot.createdAt, workspaceRoot: snapshot.workspaceRoot)
@@ -599,6 +683,8 @@ final class SessionStore {
                     currentSessionDebugMode = event.payload["debugMode"]?.boolValue
                     transcript = []
                     debugLogs = []
+                    selectedAgentId = nil
+                    controlAgentId = nil
                     if let graphValue = event.payload["graph"],
                        let data = try? JSONEncoder().encode(graphValue),
                        let decoded = try? JSONDecoder().decode(GraphState.self, from: data) {
@@ -630,6 +716,7 @@ final class SessionStore {
             subscribe(to: event.sessionId)
             subscribeDebugLogs(to: event.sessionId)
             selectedAgentId = nil
+            controlAgentId = nil
             isCreatingSession = false
             isLoadingSelection = false
             isComposingNewSession = false
@@ -638,6 +725,9 @@ final class SessionStore {
                let data = try? JSONEncoder().encode(graphValue),
                let decoded = try? JSONDecoder().decode(GraphState.self, from: data) {
                 graph = decoded
+                if let controlAgentId, graph.nodes.allSatisfy({ $0.id != controlAgentId }) {
+                    self.controlAgentId = nil
+                }
             }
         case "agent.status":
             guard let agentId = event.agentId,
@@ -722,6 +812,7 @@ final class SessionStore {
 
     private func resetPreview() {
         selectedAgentId = nil
+        controlAgentId = nil
         currentWorkspaceRoot = nil
         currentSessionDebugMode = nil
         isLoadingSelection = false
@@ -852,5 +943,11 @@ private func runProcess(_ executable: String, _ arguments: [String]) -> Bool {
         return process.terminationStatus == 0
     } catch {
         return false
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

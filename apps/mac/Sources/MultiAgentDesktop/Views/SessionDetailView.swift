@@ -47,10 +47,23 @@ struct SessionDetailView: View {
                 }
                 .disabled(store.daemon.isConnecting)
 
+                Menu {
+                    ForEach(store.graph.nodes) { node in
+                        Button {
+                            store.setControlAgent(node.id)
+                        } label: {
+                            Label(node.label, systemImage: node.id == store.selectedControlAgentId ? "checkmark.circle.fill" : "circle")
+                        }
+                    }
+                } label: {
+                    Label("Control: \(store.selectedControlAgentLabel)", systemImage: "scope")
+                }
+                .disabled(store.graph.nodes.isEmpty || store.isLoadingSelection)
+
                 Button {
                     store.pauseOrchestrator()
                 } label: {
-                    Label("Pause Agent", systemImage: "pause.circle")
+                    Label("Pause Scheduling", systemImage: "pause.circle")
                 }
                 .disabled(!store.canPauseOrchestrator)
 
@@ -76,8 +89,8 @@ struct SessionDetailView: View {
                 }
             }
         }
-        .confirmationDialog("Cancel the selected agent for this session?", isPresented: $confirmCancel) {
-            Button("Cancel Agent", role: .destructive) {
+        .confirmationDialog("Cancel \(store.selectedControlAgentLabel) for this session?", isPresented: $confirmCancel) {
+            Button("Cancel \(store.selectedControlAgentLabel)", role: .destructive) {
                 store.cancelOrchestrator()
             }
         }
