@@ -81,6 +81,12 @@ export class SessionManager {
       case "disconnectOpenAIOAuth":
         await this.auth.deleteTokens();
         return this.auth.status();
+      case "setChatGPTAccountId":
+        await this.auth.saveChatGPTAccountId(request.params.accountId);
+        return this.auth.status();
+      case "disconnectChatGPTAccountId":
+        await this.auth.deleteChatGPTAccountId();
+        return this.auth.status();
       case "setOpenAIAPIKey":
         await this.auth.saveApiKey(request.params.apiKey);
         return this.auth.status();

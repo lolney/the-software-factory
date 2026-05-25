@@ -91,12 +91,29 @@ private struct AuthSettingsPane: View {
                     Text(authStatusLabel)
                         .foregroundStyle(store.authStatus?.connected == true ? .green : .secondary)
                 }
+                LabeledContent("Live Runs") {
+                    Text(liveStatusLabel)
+                        .foregroundStyle(store.authStatus?.liveCredentialConfigured == true ? .green : .orange)
+                }
                 if let email = store.authStatus?.email {
                     LabeledContent("Account", value: email)
                 }
+                if let accountId = store.authStatus?.chatGPTAccountId {
+                    LabeledContent("ChatGPT Account ID") {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(accountId)
+                                .textSelection(.enabled)
+                            if let source = store.authStatus?.chatGPTAccountIdSource {
+                                Text(source)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
                 LabeledContent("Client ID", value: store.authStatus?.clientId ?? "app_EMoamEEZ73f0CkXaXp7hrann")
                 if store.authStatus?.liveCredentialSource == "codex-oauth" {
-                    LabeledContent("Live Runs", value: "Codex OAuth via WHAM")
+                    LabeledContent("Runtime", value: "Codex OAuth via WHAM")
                 }
                 if let whamBaseURL = store.authStatus?.whamBaseURL {
                     LabeledContent("WHAM Base URL", value: whamBaseURL)
@@ -123,12 +140,41 @@ private struct AuthSettingsPane: View {
                     }
                     .disabled(store.authStatus?.connected != true)
                 }
+                if let liveReadinessError = store.authStatus?.liveReadinessError {
+                    Text(liveReadinessError)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
                 if let error = store.lastError {
                     Text(error)
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
                 Text("Codex OAuth is used for live agent runs through the Codex WHAM backend. API keys remain available as a fallback.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("ChatGPT Account ID") {
+                TextField("ChatGPT-Account-Id", text: $store.chatGPTAccountIdInput)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Button {
+                        store.saveChatGPTAccountId()
+                    } label: {
+                        Label("Save Account ID", systemImage: "person.text.rectangle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.chatGPTAccountIdInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    Button(role: .destructive) {
+                        store.disconnectChatGPTAccountId()
+                    } label: {
+                        Label("Forget Account ID", systemImage: "xmark.circle")
+                    }
+                    .disabled(store.authStatus?.chatGPTAccountIdSource != "keychain")
+                }
+                Text("Usually this is discovered from the OAuth token or ~/.codex/auth.json. Configure it here only when live runs report a missing account id.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -139,6 +185,13 @@ private struct AuthSettingsPane: View {
     private var authStatusLabel: String {
         if store.authStatus?.connected == true { return "Connected" }
         return "Not Connected"
+    }
+
+    private var liveStatusLabel: String {
+        if store.authStatus?.liveCredentialConfigured == true {
+            return "Ready"
+        }
+        return "Not Ready"
     }
 }
 

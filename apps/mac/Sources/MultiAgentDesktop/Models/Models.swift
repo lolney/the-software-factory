@@ -95,6 +95,9 @@ struct AuthStatus: Hashable, Codable {
     var connected: Bool
     var hasTokens: Bool?
     var email: String?
+    var chatGPTAccountId: String?
+    var chatGPTAccountIdSource: String?
+    var chatGPTAccountIdConfigured: Bool?
     var expiresAt: String?
     var needsRefresh: Bool?
     var scopes: [String]?
@@ -103,6 +106,7 @@ struct AuthStatus: Hashable, Codable {
     var liveCredentialConfigured: Bool?
     var liveCredentialSource: String?
     var whamBaseURL: String?
+    var liveReadinessError: String?
 }
 
 struct MCPServerCatalogItem: Identifiable, Hashable, Codable {

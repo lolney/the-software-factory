@@ -34,6 +34,8 @@ export interface OpenAIConnection {
   source: "environment" | "keychain" | "codex-oauth";
 }
 
+type AccountIdSource = "environment" | "keychain" | "oauth-token" | "codex-auth";
+
 interface PendingOAuth {
   state: string;
   verifier: string;
@@ -43,6 +45,7 @@ interface PendingOAuth {
 export class AuthManager {
   private readonly keychainService = "local.multiagent.codex-oauth";
   private readonly keychainAccount = "codex-public-client";
+  private readonly chatGPTAccountIdKeychainAccount = "chatgpt-account-id";
   private readonly apiKeychainService = "local.multiagent.openai-api-key";
   private readonly apiKeychainAccount = "openai-api-key";
   private readonly pending = new Map<string, PendingOAuth>();
@@ -115,6 +118,8 @@ export class AuthManager {
       refresh_token?: string;
       expires_in?: number;
       id_token?: string;
+      account_id?: string;
+      accountId?: string;
     };
     if (!raw.access_token) {
       throw new Error("OAuth token exchange did not return an access token.");
@@ -124,7 +129,7 @@ export class AuthManager {
       refreshToken: raw.refresh_token,
       expiresAt: raw.expires_in ? new Date(Date.now() + raw.expires_in * 1000).toISOString() : undefined,
       email: emailFromIdToken(raw.id_token),
-      accountId: accountIdFromToken(raw.id_token) ?? accountIdFromToken(raw.access_token),
+      accountId: raw.account_id ?? raw.accountId ?? accountIdFromToken(raw.id_token) ?? accountIdFromToken(raw.access_token),
       scopes: [...OPENAI_OAUTH_SCOPES]
     };
   }
@@ -151,6 +156,8 @@ export class AuthManager {
       refresh_token?: string;
       expires_in?: number;
       id_token?: string;
+      account_id?: string;
+      accountId?: string;
     };
     if (!raw.access_token) {
       throw new Error("OAuth token refresh did not return an access token.");
@@ -160,7 +167,7 @@ export class AuthManager {
       refreshToken: raw.refresh_token ?? tokens.refreshToken,
       expiresAt: raw.expires_in ? new Date(Date.now() + raw.expires_in * 1000).toISOString() : tokens.expiresAt,
       email: emailFromIdToken(raw.id_token) ?? tokens.email,
-      accountId: accountIdFromToken(raw.id_token) ?? accountIdFromToken(raw.access_token) ?? tokens.accountId,
+      accountId: raw.account_id ?? raw.accountId ?? accountIdFromToken(raw.id_token) ?? accountIdFromToken(raw.access_token) ?? tokens.accountId,
       scopes: tokens.scopes ?? [...OPENAI_OAUTH_SCOPES]
     };
     await this.saveTokens(refreshed);
@@ -176,13 +183,18 @@ export class AuthManager {
       if (await this.needsRefresh()) {
         tokens = await this.refreshTokens(tokens);
       }
-      const defaultHeaders: Record<string, string> = {
-        "User-Agent": `${OPENAI_OAUTH_CLIENT_NAME}/${OPENAI_OAUTH_CLIENT_VERSION}`
-      };
-      const accountId = tokens.accountId ?? accountIdFromToken(tokens.accessToken);
-      if (accountId) {
-        defaultHeaders["ChatGPT-Account-Id"] = accountId;
+      const resolvedAccount = await this.resolveChatGPTAccountId(tokens);
+      if (!resolvedAccount.accountId) {
+        const apiKey = await this.loadApiKey();
+        if (apiKey) {
+          return { apiKey, source: "keychain" };
+        }
+        return undefined;
       }
+      const defaultHeaders: Record<string, string> = {
+        "User-Agent": `${OPENAI_OAUTH_CLIENT_NAME}/${OPENAI_OAUTH_CLIENT_VERSION}`,
+        "ChatGPT-Account-Id": resolvedAccount.accountId
+      };
       return {
         apiKey: tokens.accessToken,
         baseURL: OPENAI_WHAM_BASE_URL,
@@ -235,10 +247,13 @@ export class AuthManager {
         refresh?: string;
         expires?: number;
         accountId?: string;
+        account_id?: string;
         tokens?: {
           access_token?: string;
           refresh_token?: string;
           id_token?: string;
+          account_id?: string;
+          accountId?: string;
           expires_at?: number;
           expires_in?: number;
         };
@@ -248,7 +263,7 @@ export class AuthManager {
           accessToken: parsed.access,
           refreshToken: parsed.refresh,
           expiresAt: parsed.expires ? new Date(parsed.expires).toISOString() : undefined,
-          accountId: parsed.accountId ?? accountIdFromToken(parsed.access),
+          accountId: parsed.accountId ?? parsed.account_id ?? accountIdFromToken(parsed.access),
           scopes: [...OPENAI_OAUTH_SCOPES]
         };
       }
@@ -260,7 +275,7 @@ export class AuthManager {
         refreshToken: parsed.tokens.refresh_token,
         expiresAt: parsed.tokens.expires_at ? new Date(parsed.tokens.expires_at * 1000).toISOString() : undefined,
         email: emailFromIdToken(parsed.tokens.id_token),
-        accountId: accountIdFromToken(parsed.tokens.id_token) ?? accountIdFromToken(parsed.tokens.access_token),
+        accountId: parsed.tokens.account_id ?? parsed.tokens.accountId ?? accountIdFromToken(parsed.tokens.id_token) ?? accountIdFromToken(parsed.tokens.access_token),
         scopes: [...OPENAI_OAUTH_SCOPES]
       };
     } catch {
@@ -293,6 +308,49 @@ export class AuthManager {
       apiKey,
       "-U"
     ]);
+  }
+
+  async saveChatGPTAccountId(accountId: string) {
+    await execFileAsync("security", [
+      "add-generic-password",
+      "-a",
+      this.chatGPTAccountIdKeychainAccount,
+      "-s",
+      this.keychainService,
+      "-w",
+      accountId.trim(),
+      "-U"
+    ]);
+  }
+
+  async loadChatGPTAccountId() {
+    try {
+      const { stdout } = await execFileAsync("security", [
+        "find-generic-password",
+        "-a",
+        this.chatGPTAccountIdKeychainAccount,
+        "-s",
+        this.keychainService,
+        "-w"
+      ]);
+      return stdout.trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async deleteChatGPTAccountId() {
+    try {
+      await execFileAsync("security", [
+        "delete-generic-password",
+        "-a",
+        this.chatGPTAccountIdKeychainAccount,
+        "-s",
+        this.keychainService
+      ]);
+    } catch {
+      // Deletion is idempotent for callers.
+    }
   }
 
   async loadApiKey() {
@@ -329,7 +387,10 @@ export class AuthManager {
     const tokens = await this.loadTokens();
     const needsRefresh = await this.needsRefresh();
     const apiKeyConfigured = Boolean(process.env.OPENAI_API_KEY || await this.loadApiKey());
+    const account = await this.resolveChatGPTAccountId(tokens ?? undefined);
     const oauthUsable = Boolean(tokens?.accessToken) && (!needsRefresh || Boolean(tokens?.refreshToken));
+    const oauthLiveReady = oauthUsable && Boolean(account.accountId);
+    const liveCredentialConfigured = apiKeyConfigured || oauthLiveReady;
     return {
       clientId: CODEX_PUBLIC_CLIENT_ID,
       connected: oauthUsable,
@@ -338,13 +399,19 @@ export class AuthManager {
       expiresAt: tokens?.expiresAt,
       needsRefresh,
       scopes: tokens?.scopes ?? [],
+      chatGPTAccountId: account.accountId,
+      chatGPTAccountIdSource: account.source,
+      chatGPTAccountIdConfigured: Boolean(account.accountId),
       apiKeyConfigured,
       apiKeySource: process.env.OPENAI_API_KEY ? "environment" : apiKeyConfigured ? "keychain" : undefined,
-      liveCredentialConfigured: apiKeyConfigured || oauthUsable,
+      liveCredentialConfigured,
       liveCredentialSource: process.env.OPENAI_API_KEY
         ? "environment"
-        : oauthUsable ? "codex-oauth" : apiKeyConfigured ? "keychain" : undefined,
-      whamBaseURL: OPENAI_WHAM_BASE_URL
+        : oauthLiveReady ? "codex-oauth" : apiKeyConfigured ? "keychain" : undefined,
+      whamBaseURL: OPENAI_WHAM_BASE_URL,
+      liveReadinessError: oauthUsable && !account.accountId && !apiKeyConfigured
+        ? "Codex OAuth is connected, but live WHAM runs need a ChatGPT account id. Configure ChatGPT-Account-Id in Settings or sign in with Codex so ~/.codex/auth.json contains tokens.account_id."
+        : undefined
     };
   }
 
@@ -352,6 +419,26 @@ export class AuthManager {
     const tokens = await this.loadTokens();
     if (!tokens?.expiresAt) return false;
     return new Date(tokens.expiresAt).getTime() - now.getTime() < 60_000;
+  }
+
+  private async resolveChatGPTAccountId(tokens?: OAuthTokenSet): Promise<{ accountId?: string; source?: AccountIdSource }> {
+    const envAccountId = process.env.MULTIAGENT_CHATGPT_ACCOUNT_ID ?? process.env.CHATGPT_ACCOUNT_ID;
+    if (envAccountId?.trim()) {
+      return { accountId: envAccountId.trim(), source: "environment" };
+    }
+    const configured = await this.loadChatGPTAccountId();
+    if (configured) {
+      return { accountId: configured, source: "keychain" };
+    }
+    const tokenAccountId = tokens?.accountId ?? accountIdFromToken(tokens?.accessToken);
+    if (tokenAccountId) {
+      return { accountId: tokenAccountId, source: "oauth-token" };
+    }
+    const codexTokens = await this.loadCodexTokens();
+    if (codexTokens?.accountId) {
+      return { accountId: codexTokens.accountId, source: "codex-auth" };
+    }
+    return {};
   }
 }
 
@@ -374,9 +461,16 @@ function accountIdFromToken(token?: string) {
   if (!decoded) return undefined;
   const direct = decoded.chatgpt_account_id;
   if (typeof direct === "string" && direct) return direct;
+  const directAccount = decoded.account_id;
+  if (typeof directAccount === "string" && directAccount) return directAccount;
+  const flattened = decoded["https://api.openai.com/auth.chatgpt_account_id"];
+  if (typeof flattened === "string" && flattened) return flattened;
   const authNamespace = decoded["https://api.openai.com/auth"];
   if (isRecord(authNamespace) && typeof authNamespace.chatgpt_account_id === "string") {
     return authNamespace.chatgpt_account_id;
+  }
+  if (isRecord(authNamespace) && typeof authNamespace.account_id === "string") {
+    return authNamespace.account_id;
   }
   if (Array.isArray(decoded.organizations)) {
     const firstOrg = decoded.organizations.find(isRecord);

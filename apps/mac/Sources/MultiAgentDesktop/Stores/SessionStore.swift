@@ -25,6 +25,7 @@ final class SessionStore {
     var isComposingNewSession = false
     var composerText = ""
     var openAIApiKeyInput = ""
+    var chatGPTAccountIdInput = ""
     var connectionStatus = "Disconnected"
     var debugMode = false
     var isCreatingSession = false
@@ -428,6 +429,21 @@ final class SessionStore {
 
     func disconnectOpenAIOAuth() {
         daemon.sendRequest(method: "disconnectOpenAIOAuth", params: [:])
+    }
+
+    func saveChatGPTAccountId() {
+        let trimmed = chatGPTAccountIdInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            lastError = "Paste a ChatGPT account id before saving."
+            return
+        }
+        lastError = nil
+        daemon.sendRequest(method: "setChatGPTAccountId", params: ["accountId": trimmed])
+        chatGPTAccountIdInput = ""
+    }
+
+    func disconnectChatGPTAccountId() {
+        daemon.sendRequest(method: "disconnectChatGPTAccountId", params: [:])
     }
 
     func saveOpenAIAPIKey() {
