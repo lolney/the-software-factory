@@ -10,6 +10,7 @@ import { OpenAIAgentRuntime, type AgentRuntime } from "./agentRuntime.js";
 import { WorkflowEngine } from "./workflowEngine.js";
 import { WorkspaceCoordinator } from "./workspaceCoordinator.js";
 import { AuthManager, CODEX_PUBLIC_CLIENT_ID } from "./authManager.js";
+import { CodexIntegrationManager } from "./codexIntegrationManager.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,6 +21,7 @@ export class SessionManager {
   private readonly runtime: AgentRuntime;
   private readonly workflows = new WorkflowEngine();
   private readonly workspace = new WorkspaceCoordinator();
+  private readonly integrations = new CodexIntegrationManager();
   private readonly activeRuns = new Map<string, AbortController>();
   private readonly auth = new AuthManager();
   private roleOverridesLoaded = false;
@@ -47,6 +49,7 @@ export class SessionManager {
           workflows: this.workflows.list(),
           roles: this.workflows.listRoles(),
           codexOAuth: await this.auth.status(),
+          integrations: await this.integrations.listCatalog(),
           sessions: await this.store.listSessions()
         };
       case "getAuthStatus":
@@ -68,6 +71,12 @@ export class SessionManager {
         return { roles: this.workflows.listRoles() };
       case "listWorkflows":
         return { workflows: this.workflows.list() };
+      case "listIntegrations":
+        return this.integrations.listCatalog();
+      case "beginMCPAuth":
+        return this.integrations.beginMCPAuth(request.params.serverId);
+      case "reconnectMCPServers":
+        return this.integrations.reconnectMCPServers({ serverId: request.params.serverId });
       case "createSession": {
         const sessionId = `sess_${crypto.randomUUID()}`;
         const title = firstLine(request.params.prompt) || "Untitled Session";
@@ -190,6 +199,7 @@ export class SessionManager {
       causationId
     }, publish);
     const role = this.resolveRole(snapshot, agentId);
+    const integrationCatalog = await this.integrations.listCatalog();
     const events = await this.runControlledTurn(snapshot.sessionId, agentId, {
       sessionId: snapshot.sessionId,
       agentId,
@@ -199,6 +209,8 @@ export class SessionManager {
       instructions: role?.promptTemplate,
       apiKey: await this.openAIApiKey(debugMode),
       workflowTools: this.workflowTools(snapshot, agentId, publish),
+      mcpServers: debugMode || this.options.runtime ? [] : await this.mcpServersForRole(role),
+      skills: integrationCatalog.skills,
       causationId: promptEvent.eventId
     });
     for (const event of events) {
@@ -310,6 +322,7 @@ export class SessionManager {
         const batch = readyHandoffs.slice(0, maxConcurrent);
         await Promise.all(batch.map(async (edge) => {
           processedHandoffs.add(edge.id);
+          const transition = await this.promptForWorkflowEdge(snapshot, edge.from, edge.to, edge.id, this.edgeDescription(snapshot.workflowId, edge.id), step === 0 ? "workflow start" : "workflow graph continuation");
           const handoff = await this.appendAndPublish({
             eventId: makeEventId(),
             sessionId: snapshot.sessionId,
@@ -317,9 +330,7 @@ export class SessionManager {
             timestamp: new Date().toISOString(),
             type: "handoff.created",
             payload: {
-              from: edge.from,
-              to: edge.to,
-              reason: step === 0 ? "workflow start" : "workflow graph continuation"
+              ...transition
             }
           }, publish);
           await this.appendAndPublish({
@@ -332,7 +343,7 @@ export class SessionManager {
             causationId: handoff.eventId
           }, publish);
           if (edge.to !== orchestratorId) {
-            await this.runWorkflowAgent(snapshot, edge.to, `Workflow handoff from ${edge.from}: ${edge.id}`, handoff.eventId, publish);
+            await this.runWorkflowAgent(snapshot, edge.to, transition.prompt, handoff.eventId, publish);
             runCounts.set(edge.to, (runCounts.get(edge.to) ?? 0) + 1);
           }
         }));
@@ -353,9 +364,7 @@ export class SessionManager {
           timestamp: new Date().toISOString(),
           type: "message.sent",
           payload: {
-            from: edge.from,
-            to: edge.to,
-            text: `Workflow message from ${edge.from} to ${edge.to}: ${edge.id}`
+            ...(await this.promptForWorkflowEdge(snapshot, edge.from, edge.to, edge.id, this.edgeDescription(snapshot.workflowId, edge.id), "workflow message"))
           }
         }, publish);
         if (edge.to !== orchestratorId) {
@@ -368,7 +377,7 @@ export class SessionManager {
             payload: { status: snapshot.debugMode ? "waiting" : "working" },
             causationId: message.eventId
           }, publish);
-          await this.runWorkflowAgent(snapshot, edge.to, `Workflow message from ${edge.from}: ${edge.id}`, message.eventId, publish);
+          await this.runWorkflowAgent(snapshot, edge.to, String(message.payload.prompt ?? message.payload.text), message.eventId, publish);
           runCounts.set(edge.to, (runCounts.get(edge.to) ?? 0) + 1);
         } else {
           const plan = await this.latestUninstantiatedPlan(snapshot.sessionId);
@@ -418,6 +427,7 @@ export class SessionManager {
     publish: (event: SessionEvent) => void
   ) {
     const role = this.resolveRole(snapshot, agentId);
+    const integrationCatalog = await this.integrations.listCatalog();
     const events = await this.runControlledTurn(snapshot.sessionId, agentId, {
       sessionId: snapshot.sessionId,
       agentId,
@@ -427,6 +437,8 @@ export class SessionManager {
       instructions: role?.promptTemplate,
       apiKey: await this.openAIApiKey(snapshot.debugMode),
       workflowTools: this.workflowTools(snapshot, agentId, publish),
+      mcpServers: snapshot.debugMode || this.options.runtime ? [] : await this.mcpServersForRole(role),
+      skills: integrationCatalog.skills,
       causationId
     });
     for (const event of events) {
@@ -482,7 +494,7 @@ export class SessionManager {
       agentId,
       timestamp: new Date().toISOString(),
       type: "plan.created",
-      payload: { plan },
+      payload: { plan, workflowSpecs: this.workflowSpecsForPlan(plan) },
       causationId
     }, publish);
   }
@@ -520,32 +532,8 @@ export class SessionManager {
       ["temperature_converter.py", temperatureConverterProgram()],
       ["test_temperature_converter.py", temperatureConverterTests()]
     ]);
-    const policy = { sessionId: snapshot.sessionId, workspaceRoot: snapshot.workspaceRoot, allowedRoots: role.workspace.allowedRoots };
     for (const [relativePath, content] of files) {
-      const absolutePath = path.join(snapshot.workspaceRoot, relativePath);
-      const callId = `call_${crypto.randomUUID()}`;
-      await this.appendAndPublish({
-        eventId: makeEventId(),
-        sessionId: snapshot.sessionId,
-        agentId,
-        timestamp: new Date().toISOString(),
-        type: "agent.tool_call",
-        payload: { callId, toolName: "workspace.write_file", input: { path: relativePath } },
-        causationId
-      }, publish);
-      await mkdir(path.dirname(absolutePath), { recursive: true });
-      await writeFile(absolutePath, content, "utf8");
-      await this.appendAndPublish(this.workspace.claimFile(policy, agentId, relativePath), publish);
-      await this.appendAndPublish(this.workspace.recordTouched(policy, agentId, relativePath), publish);
-      await this.appendAndPublish({
-        eventId: makeEventId(),
-        sessionId: snapshot.sessionId,
-        agentId,
-        timestamp: new Date().toISOString(),
-        type: "agent.tool_result",
-        payload: { callId, toolName: "workspace.write_file", output: `Wrote ${absolutePath}` },
-        causationId
-      }, publish);
+      await this.writeWorkspaceFile(snapshot, agentId, relativePath, content, causationId, publish);
     }
     await this.appendAndPublish({
       eventId: makeEventId(),
@@ -559,6 +547,49 @@ export class SessionManager {
       },
       causationId
     }, publish);
+  }
+
+  private async writeWorkspaceFile(
+    snapshot: SessionSnapshot,
+    agentId: string,
+    relativePath: string,
+    content: string,
+    causationId: string | undefined,
+    publish: (event: SessionEvent) => void
+  ) {
+    const role = this.resolveRole(snapshot, agentId);
+    if (!role?.toolPolicy.canWrite) {
+      throw new Error(`Agent ${agentId} is not allowed to write files.`);
+    }
+    const policy = { sessionId: snapshot.sessionId, workspaceRoot: snapshot.workspaceRoot, allowedRoots: role.workspace.allowedRoots };
+    const absolutePath = this.workspace.assertAllowed(policy, relativePath);
+    const callId = `call_${crypto.randomUUID()}`;
+    const before = existsSync(absolutePath) ? await readFile(absolutePath, "utf8") : "";
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.tool_call",
+      payload: { callId, toolName: "workspace.write_file", input: { path: relativePath } },
+      causationId
+    }, publish);
+    await mkdir(path.dirname(absolutePath), { recursive: true });
+    await writeFile(absolutePath, content, "utf8");
+    const diff = unifiedDiff(relativePath, before, content);
+    const stats = diffStats(diff);
+    await this.appendAndPublish(this.workspace.claimFile(policy, agentId, relativePath), publish);
+    await this.appendAndPublish(this.workspace.recordTouched(policy, agentId, relativePath, "write", diff, stats), publish);
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.tool_result",
+      payload: { callId, toolName: "workspace.write_file", output: `Wrote ${absolutePath}`, diff, diffStats: stats, path: relativePath },
+      causationId
+    }, publish);
+    return `Edited ${relativePath} +${stats.additions} -${stats.deletions}.`;
   }
 
   private async runTemperatureConverterQA(snapshot: SessionSnapshot, agentId: string, causationId: string, publish: (event: SessionEvent) => void) {
@@ -707,7 +738,7 @@ export class SessionManager {
       agentId: anchorNodeId,
       timestamp: new Date().toISOString(),
       type: "plan.instantiated",
-      payload: { planId, workflowIds: plan.workflows.map((workflow) => workflow.workflowId) }
+      payload: { planId, workflowIds: plan.workflows.map((workflow) => workflow.workflowId), plan, workflowSpecs: this.workflowSpecsForPlan(plan) }
     }, publish);
     for (const workflow of plan.workflows) {
       const graphResult = await this.instantiateWorkflowGraph(
@@ -751,13 +782,15 @@ export class SessionManager {
         processedHandoffs.add(readyHandoff.id);
         const from = nodeMap.get(readyHandoff.from) ?? readyHandoff.from;
         const to = nodeMap.get(readyHandoff.to) ?? readyHandoff.to;
+        const prompt = this.promptForPlanAgent(planWorkflow, readyHandoff.to);
+        const originalGoal = await this.sessionGoal(snapshot.sessionId, snapshot.title);
         const handoff = await this.appendAndPublish({
           eventId: makeEventId(),
           sessionId: snapshot.sessionId,
           agentId: from,
           timestamp: new Date().toISOString(),
           type: "handoff.created",
-          payload: { from, to, reason: `plan workflow ${planWorkflow.workflowId}: ${readyHandoff.description}` },
+          payload: { from, to, reason: `plan workflow ${planWorkflow.workflowId}: ${readyHandoff.description}`, edgeId: readyHandoff.id, originalGoal, prompt },
           causationId
         }, publish);
         if (to !== orchestratorId) {
@@ -770,7 +803,7 @@ export class SessionManager {
             payload: { status: snapshot.debugMode ? "waiting" : "working" },
             causationId: handoff.eventId
           }, publish);
-          await this.runWorkflowAgent(snapshot, to, this.promptForPlanAgent(planWorkflow, readyHandoff.to), handoff.eventId, publish);
+          await this.runWorkflowAgent(snapshot, to, prompt, handoff.eventId, publish);
           runCounts.set(to, (runCounts.get(to) ?? 0) + 1);
         }
         continue;
@@ -789,13 +822,15 @@ export class SessionManager {
       if (!readyMessage) break;
       const from = nodeMap.get(readyMessage.from) ?? readyMessage.from;
       const to = nodeMap.get(readyMessage.to) ?? readyMessage.to;
+      const prompt = this.promptForPlanAgent(planWorkflow, readyMessage.to);
+      const originalGoal = await this.sessionGoal(snapshot.sessionId, snapshot.title);
       const message = await this.appendAndPublish({
         eventId: makeEventId(),
         sessionId: snapshot.sessionId,
         agentId: from,
         timestamp: new Date().toISOString(),
         type: "message.sent",
-        payload: { from, to, text: `Plan workflow message: ${readyMessage.description}` },
+        payload: { from, to, text: `Plan workflow message: ${readyMessage.description}`, edgeId: readyMessage.id, originalGoal, prompt },
         causationId
       }, publish);
       if (to !== orchestratorId) {
@@ -808,7 +843,7 @@ export class SessionManager {
           payload: { status: snapshot.debugMode ? "waiting" : "working" },
           causationId: message.eventId
         }, publish);
-        await this.runWorkflowAgent(snapshot, to, this.promptForPlanAgent(planWorkflow, readyMessage.to), message.eventId, publish);
+        await this.runWorkflowAgent(snapshot, to, prompt, message.eventId, publish);
         runCounts.set(to, (runCounts.get(to) ?? 0) + 1);
       }
     }
@@ -836,9 +871,14 @@ export class SessionManager {
           agentId,
           timestamp: new Date().toISOString(),
           type: "plan.created",
-          payload: { plan }
+          payload: { plan, workflowSpecs: this.workflowSpecsForPlan(plan) }
         }, publish);
         return `Created plan ${plan.id}.`;
+      };
+    }
+    if (role?.toolPolicy.canWrite) {
+      tools.writeWorkspaceFile = async (relativePath: string, content: string) => {
+        return this.writeWorkspaceFile(snapshot, agentId, relativePath, content, undefined, publish);
       };
     }
     if (roleId === "orchestrator") {
@@ -882,6 +922,10 @@ export class SessionManager {
     return plans;
   }
 
+  private workflowSpecsForPlan(plan: PlanSpec) {
+    return plan.workflows.map((workflow) => this.workflows.get(workflow.workflowId));
+  }
+
   private async latestUninstantiatedPlan(sessionId: string) {
     const plans = await this.plansForSession(sessionId);
     const instantiatedPlanIds = new Set(
@@ -895,6 +939,31 @@ export class SessionManager {
   private async sessionGoal(sessionId: string, fallback: string) {
     const created = (await this.store.readEvents(sessionId)).find((event) => event.type === "session.created");
     return String(created?.payload.goal ?? created?.payload.title ?? fallback);
+  }
+
+  private async promptForWorkflowEdge(snapshot: SessionSnapshot, from: string, to: string, edgeId: string, description: string, reason: string) {
+    const originalGoal = await this.sessionGoal(snapshot.sessionId, snapshot.title);
+    const prompt = [
+      `Original user goal: ${originalGoal}`,
+      `Workflow transition: ${reason}`,
+      `Edge: ${edgeId}`,
+      `From: ${from}`,
+      `To: ${to}`,
+      description ? `Instructions: ${description}` : undefined,
+      "Use the original goal as the source of truth and report concrete progress against it."
+    ].filter(Boolean).join("\n");
+    return { from, to, text: prompt, prompt, reason, edgeId, originalGoal, description };
+  }
+
+  private edgeDescription(workflowId: string, edgeId: string) {
+    return this.workflows.get(workflowId).edges.find((edge) => edge.id === edgeId)?.description ?? "";
+  }
+
+  private async mcpServersForRole(role: ReturnType<SessionManager["resolveRole"]>) {
+    if (!role) return [];
+    if (role.id === "orchestrator") return [];
+    if (!role.toolPolicy.canRunCommands || !role.toolPolicy.canWrite) return [];
+    return this.integrations.getConnectedMCPServers();
   }
 
   private firstNodeForRole(snapshot: SessionSnapshot, roleId: string) {
@@ -1026,6 +1095,51 @@ function firstLine(text: string) {
 
 function runKey(sessionId: string, agentId: string) {
   return `${sessionId}:${agentId}`;
+}
+
+function unifiedDiff(relativePath: string, before: string, after: string) {
+  const beforeLines = before.split(/\r?\n/).filter((line, index, lines) => index < lines.length - 1 || line.length > 0);
+  const afterLines = after.split(/\r?\n/).filter((line, index, lines) => index < lines.length - 1 || line.length > 0);
+  let prefix = 0;
+  while (prefix < beforeLines.length && prefix < afterLines.length && beforeLines[prefix] === afterLines[prefix]) {
+    prefix += 1;
+  }
+  let suffix = 0;
+  while (
+    suffix < beforeLines.length - prefix
+    && suffix < afterLines.length - prefix
+    && beforeLines[beforeLines.length - 1 - suffix] === afterLines[afterLines.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+  const removed = beforeLines.slice(prefix, beforeLines.length - suffix);
+  const added = afterLines.slice(prefix, afterLines.length - suffix);
+  const contextBefore = beforeLines.slice(Math.max(0, prefix - 3), prefix);
+  const contextAfter = afterLines.slice(afterLines.length - suffix, Math.min(afterLines.length, afterLines.length - suffix + 3));
+  const oldStart = Math.max(1, prefix - contextBefore.length + 1);
+  const newStart = oldStart;
+  const oldCount = contextBefore.length + removed.length + contextAfter.length;
+  const newCount = contextBefore.length + added.length + contextAfter.length;
+  return [
+    `--- a/${relativePath}`,
+    `+++ b/${relativePath}`,
+    `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`,
+    ...contextBefore.map((line) => ` ${line}`),
+    ...removed.map((line) => `-${line}`),
+    ...added.map((line) => `+${line}`),
+    ...contextAfter.map((line) => ` ${line}`)
+  ].join("\n");
+}
+
+function diffStats(diff: string) {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) additions += 1;
+    if (line.startsWith("-")) deletions += 1;
+  }
+  return { additions, deletions };
 }
 
 function uniqueId(base: string, existing: Set<string>) {

@@ -135,6 +135,29 @@ export const DebugLogEntrySchema = z.object({
   correlationId: z.string().optional()
 });
 
+export const MCPServerCatalogItemSchema = z.object({
+  id: SafeIdSchema,
+  name: z.string(),
+  transport: z.enum(["stdio", "streamable_http", "sse", "unknown"]),
+  command: z.string().optional(),
+  args: z.array(z.string()).default([]),
+  url: z.string().optional(),
+  authenticationSupported: z.boolean().default(false),
+  authStatus: z.enum(["not_supported", "supported_unknown", "connected", "failed"]).default("not_supported"),
+  authUrl: z.string().optional(),
+  authInstructions: z.string().optional(),
+  status: z.enum(["configured", "connected", "failed"]).default("configured"),
+  error: z.string().optional()
+});
+
+export const SkillCatalogItemSchema = z.object({
+  id: SafeIdSchema,
+  name: z.string(),
+  description: z.string().default(""),
+  path: z.string(),
+  source: z.string().default("codex")
+});
+
 export const GraphNodeSchema = z.object({
   id: SafeIdSchema,
   roleId: SafeIdSchema,
@@ -195,6 +218,9 @@ export const DaemonRequestSchema = z.discriminatedUnion("method", [
   z.object({ id: z.string(), method: z.literal("upsertRole"), params: z.object({ role: RoleSpecSchema }) }),
   z.object({ id: z.string(), method: z.literal("deleteRole"), params: z.object({ roleId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("listWorkflows"), params: z.object({}).default({}) }),
+  z.object({ id: z.string(), method: z.literal("listIntegrations"), params: z.object({}).default({}) }),
+  z.object({ id: z.string(), method: z.literal("beginMCPAuth"), params: z.object({ serverId: SafeIdSchema }) }),
+  z.object({ id: z.string(), method: z.literal("reconnectMCPServers"), params: z.object({ serverId: SafeIdSchema.optional() }).default({}) }),
   z.object({ id: z.string(), method: z.literal("instantiateWorkflow"), params: z.object({ sessionId: SafeIdSchema, workflowId: SafeIdSchema, anchorNodeId: SafeIdSchema.optional() }) })
 ]);
 
@@ -226,6 +252,8 @@ export type PlanSpec = z.infer<typeof PlanSpecSchema>;
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
 export type DebugLogLevel = z.infer<typeof DebugLogLevelSchema>;
 export type DebugLogEntry = z.infer<typeof DebugLogEntrySchema>;
+export type MCPServerCatalogItem = z.infer<typeof MCPServerCatalogItemSchema>;
+export type SkillCatalogItem = z.infer<typeof SkillCatalogItemSchema>;
 export type GraphState = z.infer<typeof GraphStateSchema>;
 export type SessionSnapshot = z.infer<typeof SessionSnapshotSchema>;
 export type DaemonRequest = z.infer<typeof DaemonRequestSchema>;

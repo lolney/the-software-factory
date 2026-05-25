@@ -1,5 +1,7 @@
 import { Agent, run, setDefaultOpenAIKey, tool } from "@openai/agents";
-import type { SessionEvent } from "@multiagent/shared";
+import type { MCPServer } from "@openai/agents";
+import type { SessionEvent, SkillCatalogItem } from "@multiagent/shared";
+import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { makeEventId } from "./eventStore.js";
 
@@ -17,8 +19,11 @@ export interface AgentTurnInput {
     instantiatePlan?: (planId: string) => Promise<string>;
     inspectAgents?: () => unknown;
     readWorkspaceFile?: (relativePath: string) => Promise<string>;
+    writeWorkspaceFile?: (relativePath: string, content: string) => Promise<string>;
     sendAgentMessage?: (agentId: string, text: string) => Promise<string>;
   };
+  mcpServers?: MCPServer[];
+  skills?: SkillCatalogItem[];
   signal?: AbortSignal;
   causationId?: string;
 }
@@ -82,6 +87,14 @@ export class OpenAIAgentRuntime implements AgentRuntime {
         execute: async (args) => input.workflowTools?.readWorkspaceFile?.(args.path) ?? "Read tool unavailable."
       }));
     }
+    if (input.workflowTools?.writeWorkspaceFile) {
+      tools.push(tool({
+        name: "workspace_write_file",
+        description: "Write a file inside the session workspace through the engine. The engine records a durable diff in the session event log.",
+        parameters: z.object({ path: z.string(), content: z.string() }),
+        execute: async (args) => input.workflowTools?.writeWorkspaceFile?.(args.path, args.content) ?? "Write tool unavailable."
+      }));
+    }
     if (input.workflowTools?.sendAgentMessage) {
       tools.push(tool({
         name: "agent_message_send",
@@ -90,10 +103,34 @@ export class OpenAIAgentRuntime implements AgentRuntime {
         execute: async (args) => input.workflowTools?.sendAgentMessage?.(args.agentId, args.text) ?? "Messaging tool unavailable."
       }));
     }
+    if (input.skills?.length) {
+      const skills = input.skills;
+      tools.push(tool({
+        name: "codex_skill_catalog",
+        description: "List installed Codex skills available in this local environment, including names, descriptions, and SKILL.md paths.",
+        parameters: z.object({}),
+        execute: async () => JSON.stringify(skills)
+      }));
+      tools.push(tool({
+        name: "codex_skill_read",
+        description: "Read the SKILL.md instructions for an installed Codex skill by id. Use this before applying a skill.",
+        parameters: z.object({ skillId: z.string() }),
+        execute: async (args) => {
+          const skill = skills.find((candidate) => candidate.id === args.skillId);
+          if (!skill) return `Unknown skill ${args.skillId}.`;
+          return readFile(skill.path, "utf8");
+        }
+      }));
+    }
     const agent = new Agent({
       name: input.roleName ?? input.agentId,
       instructions: input.instructions ?? "You are a role-specific coding agent in a local multiagent coding workflow. Be concise, operational, and report concrete progress.",
-      tools
+      tools,
+      mcpServers: input.mcpServers ?? [],
+      mcpConfig: {
+        includeServerInToolNames: true,
+        convertSchemasToStrict: true
+      }
     });
     const result = await run(agent, input.prompt, {
       signal: input.signal,

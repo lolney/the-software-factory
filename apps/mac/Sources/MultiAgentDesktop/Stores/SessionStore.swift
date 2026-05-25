@@ -15,6 +15,7 @@ final class SessionStore {
     var roles: [RoleSpec] = []
     var workflows: [WorkflowSpec] = []
     var authStatus: AuthStatus?
+    var integrations = IntegrationCatalog(mcpServers: [], skills: [])
     var currentWorkspaceRoot: String?
     var currentSessionDebugMode: Bool?
     var presentNewSession = false
@@ -144,6 +145,7 @@ final class SessionStore {
         daemon.sendRequest(method: "listRoles", params: [:])
         daemon.sendRequest(method: "listWorkflows", params: [:])
         daemon.sendRequest(method: "getAuthStatus", params: [:])
+        daemon.sendRequest(method: "listIntegrations", params: [:])
     }
 
     func createSession(prompt: String) {
@@ -310,6 +312,24 @@ final class SessionStore {
         daemon.sendRequest(method: "disconnectOpenAIOAuth", params: [:])
     }
 
+    func refreshIntegrations() {
+        daemon.sendRequest(method: "listIntegrations", params: [:])
+    }
+
+    func reconnectMCPServers(serverId: String? = nil) {
+        lastError = nil
+        var params: [String: Any] = [:]
+        if let serverId {
+            params["serverId"] = serverId
+        }
+        daemon.sendRequest(method: "reconnectMCPServers", params: params)
+    }
+
+    func beginMCPAuth(serverId: String) {
+        lastError = nil
+        daemon.sendRequest(method: "beginMCPAuth", params: ["serverId": serverId])
+    }
+
     func openWorkspace(tool: WorkspaceOpenTool = .vsCode) {
         guard let currentWorkspaceRoot else {
             lastError = "This session does not have a workspace yet."
@@ -376,6 +396,7 @@ final class SessionStore {
            let authURL = resultDict["authorizationUrl"] as? String,
            let url = URL(string: authURL) {
             NSWorkspace.shared.open(url)
+            decodeIntegrations(from: resultDict)
             return
         }
 
@@ -393,6 +414,24 @@ final class SessionStore {
            let rolesData = try? JSONSerialization.data(withJSONObject: rolesValue),
            let decodedRoles = try? JSONDecoder().decode([RoleSpec].self, from: rolesData) {
             roles = decodedRoles
+            decodeIntegrations(from: resultDict)
+            return
+        }
+
+        if let resultDict = result as? [String: Any],
+           let integrationsValue = resultDict["integrations"],
+           let integrationsData = try? JSONSerialization.data(withJSONObject: integrationsValue),
+           let decodedIntegrations = try? JSONDecoder().decode(IntegrationCatalog.self, from: integrationsData) {
+            integrations = decodedIntegrations
+            return
+        }
+
+        if let resultDict = result as? [String: Any],
+           resultDict["mcpServers"] != nil,
+           resultDict["skills"] != nil,
+           let integrationsData = try? JSONSerialization.data(withJSONObject: resultDict),
+           let decodedIntegrations = try? JSONDecoder().decode(IntegrationCatalog.self, from: integrationsData) {
+            integrations = decodedIntegrations
             return
         }
 
@@ -411,6 +450,7 @@ final class SessionStore {
                let decodedAuth = try? JSONDecoder().decode(AuthStatus.self, from: authData) {
                 authStatus = decodedAuth
             }
+            decodeIntegrations(from: resultDict)
         }
 
         if let resultDict = result as? [String: Any],
@@ -539,6 +579,13 @@ final class SessionStore {
         let sender = event.payload["from"]?.stringValue ?? event.agentId ?? "system"
         let recipient = event.payload["to"]?.stringValue
         return TranscriptItem(id: event.eventId, agentId: event.agentId, sender: sender, recipient: recipient, type: event.type, text: displayText(for: event), timestamp: parseTimestamp(event.timestamp), payload: event.payload)
+    }
+
+    private func decodeIntegrations(from resultDict: [String: Any]) {
+        guard let integrationsValue = resultDict["integrations"],
+              let integrationsData = try? JSONSerialization.data(withJSONObject: integrationsValue),
+              let decodedIntegrations = try? JSONDecoder().decode(IntegrationCatalog.self, from: integrationsData) else { return }
+        integrations = decodedIntegrations
     }
 
     private func apply(debugLog entry: DebugLogItem) {

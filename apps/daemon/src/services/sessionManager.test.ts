@@ -126,6 +126,51 @@ describe("SessionManager deterministic debug sessions", () => {
     }
   });
 
+  it("exposes a live write_file tool that records durable diffs", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            if (input.agentId === "implementor") {
+              await input.workflowTools?.writeWorkspaceFile?.("hello.py", "print('hello from live tool')\n");
+            }
+            return [{
+              eventId: `evt_${crypto.randomUUID()}`,
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { text: "done" }
+            }];
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_live_write",
+        method: "createSession",
+        params: {
+          prompt: "write a hello script",
+          workspaceRoot: root,
+          workflowId: "implementor-reviewer",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      const replay = await manager.handle({
+        id: "req_live_write_replay",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
+
+      expect(replay.events.some((event) => event.type === "agent.tool_call" && event.agentId === "implementor" && event.payload.toolName === "workspace.write_file")).toBe(true);
+      expect(replay.events.some((event) => event.type === "agent.tool_result" && event.agentId === "implementor" && String(event.payload.diff).includes("+++ b/hello.py"))).toBe(true);
+      expect(replay.events.some((event) => event.type === "workspace.file_touched" && event.agentId === "implementor" && String(event.payload.diff).includes("print('hello from live tool')"))).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("records runtime failures durably instead of leaving silent partial sessions", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
     try {
@@ -192,7 +237,10 @@ describe("SessionManager deterministic debug sessions", () => {
       }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
       expect(replay.events.some((event) => event.type === "plan.created" && event.agentId === "planner")).toBe(true);
       expect(replay.events.some((event) => event.type === "plan.instantiated" && event.agentId === "orchestrator")).toBe(true);
+      expect(replay.events.some((event) => event.type === "agent.tool_call" && event.agentId === "planner" && String(JSON.stringify(event.payload)).includes("Build a Python CLI that converts temperatures"))).toBe(true);
       expect(replay.events.some((event) => event.type === "workspace.file_touched" && event.agentId?.includes("implementor") && String(event.payload.path).endsWith("temperature_converter.py"))).toBe(true);
+      expect(replay.events.some((event) => event.type === "workspace.file_touched" && event.agentId?.includes("implementor") && String(event.payload.diff).includes("+++ b/temperature_converter.py"))).toBe(true);
+      expect(replay.events.some((event) => event.type === "agent.tool_result" && event.agentId?.includes("implementor") && String(event.payload.diff).includes("def celsius_to_fahrenheit"))).toBe(true);
       expect(replay.events.some((event) => event.type === "agent.tool_result" && event.agentId?.includes("qa") && String(event.payload.output).includes("OK"))).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });

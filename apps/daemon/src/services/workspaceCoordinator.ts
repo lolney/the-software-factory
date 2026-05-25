@@ -40,14 +40,16 @@ export class WorkspaceCoordinator {
     return this.event(policy.sessionId, agentId, "workspace.file_claimed", { path: absolute });
   }
 
-  recordTouched(policy: WorkspacePolicy, agentId: string, candidatePath: string, operation: "read" | "write" | "delete" = "write"): SessionEvent {
+  recordTouched(policy: WorkspacePolicy, agentId: string, candidatePath: string, operation: "read" | "write" | "delete" = "write", diff?: string, diffStats?: { additions: number; deletions: number }): SessionEvent {
     const absolute = this.assertAllowed(policy, candidatePath);
     const sessionTouched = getOrCreate(this.touched, policy.sessionId, () => new Map<string, Set<string>>());
     const agentTouched = getOrCreate(sessionTouched, agentId, () => new Set<string>());
     agentTouched.add(absolute);
     return this.event(policy.sessionId, agentId, "workspace.file_touched", {
       path: absolute,
-      operation
+      operation,
+      diff,
+      diffStats
     });
   }
 

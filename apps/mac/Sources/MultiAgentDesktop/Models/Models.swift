@@ -90,6 +90,34 @@ struct AuthStatus: Hashable, Codable {
     var needsRefresh: Bool?
 }
 
+struct MCPServerCatalogItem: Identifiable, Hashable, Codable {
+    var id: String
+    var name: String
+    var transport: String
+    var command: String?
+    var args: [String]
+    var url: String?
+    var authenticationSupported: Bool
+    var authStatus: String
+    var authUrl: String?
+    var authInstructions: String?
+    var status: String
+    var error: String?
+}
+
+struct SkillCatalogItem: Identifiable, Hashable, Codable {
+    var id: String
+    var name: String
+    var description: String
+    var path: String
+    var source: String
+}
+
+struct IntegrationCatalog: Hashable, Codable {
+    var mcpServers: [MCPServerCatalogItem]
+    var skills: [SkillCatalogItem]
+}
+
 struct AgentNode: Identifiable, Hashable, Codable {
     let id: String
     var roleId: String
@@ -234,6 +262,11 @@ enum JSONValue: Codable, Hashable {
 
     var boolValue: Bool? {
         if case .bool(let value) = self { return value }
+        return nil
+    }
+
+    var numberValue: Double? {
+        if case .number(let value) = self { return value }
         return nil
     }
 
