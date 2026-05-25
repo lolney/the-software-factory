@@ -124,6 +124,7 @@ export const SessionEventTypeSchema = z.enum([
   "message.sent",
   "workspace.file_claimed",
   "workspace.file_touched",
+  "workspace.review_checkpoint",
   "workspace.conflict_detected",
   "control.pause",
   "control.resume",

@@ -1,5 +1,5 @@
 import { CompletionCriterionSchema, PlanSpecSchema, type CompletionCriterion, type DaemonRequest, type DebugLogEntry, type DebugLogLevel, type GraphState, type PlanSpec, type SessionEvent, type SessionSnapshot, type WorkflowSpec } from "@multiagent/shared";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -51,6 +51,7 @@ export class SessionManager {
   private readonly capabilities = new CapabilityBroker();
   private readonly integrations = new CodexIntegrationManager();
   private readonly activeRuns = new Map<string, AbortController>();
+  private readonly workspaceLocks = new Map<string, Promise<void>>();
   private readonly auth = new AuthManager();
   private roleOverridesLoaded = false;
   private recoveryComplete = false;
@@ -365,6 +366,26 @@ export class SessionManager {
     publish(appended);
     this.publish(appended, publish);
     return appended;
+  }
+
+  private async withWorkspacePathLock<T>(sessionId: string, absolutePath: string, work: () => Promise<T>): Promise<T> {
+    const key = `${sessionId}:${path.resolve(absolutePath)}`;
+    const previous = this.workspaceLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chained = previous.then(() => current, () => current);
+    this.workspaceLocks.set(key, chained);
+    await previous.catch(() => undefined);
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.workspaceLocks.get(key) === chained) {
+        this.workspaceLocks.delete(key);
+      }
+    }
   }
 
   private async appendDebugLog(
@@ -887,7 +908,6 @@ export class SessionManager {
     const policy = { sessionId: snapshot.sessionId, workspaceRoot: snapshot.workspaceRoot, allowedRoots: role.workspace.allowedRoots };
     const absolutePath = this.workspace.assertAllowed(policy, relativePath);
     const callId = `call_${crypto.randomUUID()}`;
-    const before = existsSync(absolutePath) ? await readFile(absolutePath, "utf8") : "";
     await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId: snapshot.sessionId,
@@ -897,26 +917,45 @@ export class SessionManager {
       payload: { callId, toolName: "workspace.write_file", input: { path: relativePath } },
       causationId
     }, publish);
-    await mkdir(path.dirname(absolutePath), { recursive: true });
-    await writeFile(absolutePath, content, "utf8");
-    const diff = unifiedDiff(relativePath, before, content);
-    const stats = diffStats(diff);
-    await this.appendAndPublish(this.workspace.claimFile(policy, agentId, relativePath), publish);
-    await this.appendAndPublish(this.workspace.recordTouched(policy, agentId, relativePath, "write", diff, stats), publish);
-    await this.appendAndPublish({
-      eventId: makeEventId(),
-      sessionId: snapshot.sessionId,
-      agentId,
-      timestamp: new Date().toISOString(),
-      type: "agent.tool_result",
-      payload: { callId, toolName: "workspace.write_file", output: `Wrote ${absolutePath}`, diff, diffStats: stats, path: relativePath },
-      causationId
-    }, publish);
-    return `Edited ${relativePath} +${stats.additions} -${stats.deletions}.`;
+    return this.withWorkspacePathLock(snapshot.sessionId, absolutePath, async () => {
+      this.workspace.reconstructLeases(snapshot.sessionId, await this.store.readEvents(snapshot.sessionId));
+      const claim = await this.appendAndPublish(this.workspace.claimFile(policy, agentId, relativePath), publish);
+      if (claim.type === "workspace.conflict_detected") {
+        const ownerAgentId = typeof claim.payload.ownerAgentId === "string" ? claim.payload.ownerAgentId : "another agent";
+        const output = `Blocked write to ${relativePath}: file is leased by ${ownerAgentId}.`;
+        await this.appendAndPublish({
+          eventId: makeEventId(),
+          sessionId: snapshot.sessionId,
+          agentId,
+          timestamp: new Date().toISOString(),
+          type: "agent.tool_result",
+          payload: { callId, toolName: "workspace.write_file", output, blocked: true, conflict: claim.payload, path: relativePath },
+          causationId
+        }, publish);
+        return output;
+      }
+      const before = existsSync(absolutePath) ? await readFile(absolutePath, "utf8") : "";
+      await mkdir(path.dirname(absolutePath), { recursive: true });
+      await writeFile(absolutePath, content, "utf8");
+      const diff = unifiedDiff(relativePath, before, content);
+      const stats = diffStats(diff);
+      await this.appendAndPublish(this.workspace.recordTouched(policy, agentId, relativePath, "write", diff, stats), publish);
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId,
+        timestamp: new Date().toISOString(),
+        type: "agent.tool_result",
+        payload: { callId, toolName: "workspace.write_file", output: `Wrote ${absolutePath}`, diff, diffStats: stats, path: relativePath },
+        causationId
+      }, publish);
+      return `Edited ${relativePath} +${stats.additions} -${stats.deletions}.`;
+    });
   }
 
   private async runWorkspaceCommand(snapshot: SessionSnapshot, agentId: string, command: string, args: string[] = [], cwd: string | undefined, publish: (event: SessionEvent) => void) {
-    await this.authorizeCapability(snapshot, agentId, "workspace.command", { command, args, cwd: cwd ?? "." }, publish);
+    const role = await this.authorizeCapability(snapshot, agentId, "workspace.command", { command, args, cwd: cwd ?? "." }, publish);
+    const policy = { sessionId: snapshot.sessionId, workspaceRoot: snapshot.workspaceRoot, allowedRoots: role.workspace.allowedRoots };
     const workingDirectory = cwd ? containedPath(snapshot.workspaceRoot, cwd) : snapshot.workspaceRoot;
     const callId = `call_${crypto.randomUUID()}`;
     const startedAt = Date.now();
@@ -928,6 +967,7 @@ export class SessionManager {
       type: "agent.tool_call",
       payload: { callId, toolName: "workspace.run_command", input: { command, args, cwd: cwd ?? "." } }
     }, publish);
+    const beforeFiles = await scanWorkspaceFiles(snapshot.workspaceRoot);
     try {
       const result = await execFileAsync(command, args, {
         cwd: workingDirectory,
@@ -939,24 +979,28 @@ export class SessionManager {
         result.stdout ? `stdout:\n${result.stdout}` : undefined,
         result.stderr ? `stderr:\n${result.stderr}` : undefined
       ].filter(Boolean).join("\n");
+      const workspaceSummary = await this.recordCommandWorkspaceChanges(snapshot, agentId, policy, beforeFiles, publish);
+      const finalOutput = [output, workspaceSummary].filter(Boolean).join("\n");
       await this.appendAndPublish({
         eventId: makeEventId(),
         sessionId: snapshot.sessionId,
         agentId,
         timestamp: new Date().toISOString(),
         type: "agent.tool_result",
-        payload: { callId, toolName: "workspace.run_command", output, exitCode: 0, durationMs: Date.now() - startedAt, cwd: workingDirectory }
+        payload: { callId, toolName: "workspace.run_command", output: finalOutput, exitCode: 0, durationMs: Date.now() - startedAt, cwd: workingDirectory }
       }, publish);
-      return output;
+      return finalOutput;
     } catch (error) {
       const processError = error as { code?: unknown; stdout?: string; stderr?: string; message?: string };
       const exitCode = typeof processError.code === "number" ? processError.code : 1;
-      const output = [
+      const commandOutput = [
         `exitCode: ${exitCode}`,
         processError.stdout ? `stdout:\n${processError.stdout}` : undefined,
         processError.stderr ? `stderr:\n${processError.stderr}` : undefined,
         processError.message ? `error:\n${processError.message}` : undefined
       ].filter(Boolean).join("\n");
+      const workspaceSummary = await this.recordCommandWorkspaceChanges(snapshot, agentId, policy, beforeFiles, publish);
+      const output = [commandOutput, workspaceSummary].filter(Boolean).join("\n");
       await this.appendAndPublish({
         eventId: makeEventId(),
         sessionId: snapshot.sessionId,
@@ -967,6 +1011,58 @@ export class SessionManager {
       }, publish);
       return output;
     }
+  }
+
+  private async recordCommandWorkspaceChanges(
+    snapshot: SessionSnapshot,
+    agentId: string,
+    policy: { sessionId: string; workspaceRoot: string; allowedRoots: string[] },
+    beforeFiles: Map<string, string>,
+    publish: (event: SessionEvent) => void
+  ) {
+    const afterFiles = await scanWorkspaceFiles(snapshot.workspaceRoot);
+    const changedFiles = changedWorkspaceFiles(beforeFiles, afterFiles);
+    if (changedFiles.length === 0) return "";
+
+    const events = await this.store.readEvents(snapshot.sessionId);
+    this.workspace.reconstructLeases(snapshot.sessionId, events);
+    const conflicts: SessionEvent[] = [];
+    for (const relativePath of changedFiles) {
+      await this.withWorkspacePathLock(snapshot.sessionId, containedPath(snapshot.workspaceRoot, relativePath), async () => {
+        this.workspace.reconstructLeases(snapshot.sessionId, await this.store.readEvents(snapshot.sessionId));
+        const owner = this.workspace.ownerOf(policy, relativePath);
+        if (owner && owner !== agentId) {
+          conflicts.push(await this.appendAndPublish(this.workspace.conflictEvent(policy, agentId, relativePath, owner), publish));
+        }
+      });
+    }
+    if (conflicts.length > 0) {
+      await restoreWorkspaceFiles(snapshot.workspaceRoot, beforeFiles, changedFiles);
+      return `workspace changes rolled back: ${conflicts.length} file lease conflict${conflicts.length === 1 ? "" : "s"}.`;
+    }
+
+    const touched: string[] = [];
+    for (const relativePath of changedFiles) {
+      await this.withWorkspacePathLock(snapshot.sessionId, containedPath(snapshot.workspaceRoot, relativePath), async () => {
+        this.workspace.reconstructLeases(snapshot.sessionId, await this.store.readEvents(snapshot.sessionId));
+        const claim = await this.appendAndPublish(this.workspace.claimFile(policy, agentId, relativePath), publish);
+        if (claim.type === "workspace.conflict_detected") {
+          conflicts.push(claim);
+          return;
+        }
+        const before = beforeFiles.get(relativePath) ?? "";
+        const after = afterFiles.get(relativePath) ?? "";
+        const diff = unifiedDiff(relativePath, before, after);
+        const stats = diffStats(diff);
+        await this.appendAndPublish(this.workspace.recordTouched(policy, agentId, relativePath, "write", diff, stats), publish);
+        touched.push(`${relativePath} +${stats.additions} -${stats.deletions}`);
+      });
+    }
+    if (conflicts.length > 0) {
+      await restoreWorkspaceFiles(snapshot.workspaceRoot, beforeFiles, changedFiles);
+      return `workspace changes rolled back: ${conflicts.length} file lease conflict${conflicts.length === 1 ? "" : "s"}.`;
+    }
+    return touched.length > 0 ? `workspace changes: ${touched.join(", ")}` : "";
   }
 
   private async runTemperatureConverterQA(snapshot: SessionSnapshot, agentId: string, causationId: string, publish: (event: SessionEvent) => void) {
@@ -1487,6 +1583,16 @@ export class SessionManager {
           causationId
         }, publish);
       }
+    }
+    const snapshot = await this.store.readSnapshot(sessionId);
+    const role = this.resolveRole(snapshot, agentId);
+    if (role) {
+      this.workspace.reconstructLeases(sessionId, await this.store.readEvents(sessionId));
+      await this.appendAndPublish(this.workspace.reviewCheckpoint({
+        sessionId,
+        workspaceRoot: snapshot.workspaceRoot,
+        allowedRoots: role.workspace.allowedRoots
+      }, agentId, input.reason), publish);
     }
     const stopped = await this.appendAndPublish({
       eventId: makeEventId(),
@@ -2286,6 +2392,49 @@ function diffStats(diff: string) {
 
 function objectPayload(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+async function scanWorkspaceFiles(root: string) {
+  const files = new Map<string, string>();
+  async function walk(directory: string) {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "__pycache__") continue;
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolute);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const relative = path.relative(root, absolute);
+      try {
+        files.set(relative, await readFile(absolute, "utf8"));
+      } catch {
+        // Binary or transient files are not diffed by the local alpha tracker.
+      }
+    }
+  }
+  if (existsSync(root)) {
+    await walk(root);
+  }
+  return files;
+}
+
+function changedWorkspaceFiles(before: Map<string, string>, after: Map<string, string>) {
+  const paths = new Set([...before.keys(), ...after.keys()]);
+  return [...paths].filter((relativePath) => before.get(relativePath) !== after.get(relativePath)).sort();
+}
+
+async function restoreWorkspaceFiles(root: string, before: Map<string, string>, changedFiles: string[]) {
+  for (const relativePath of changedFiles) {
+    const absolute = containedPath(root, relativePath);
+    if (before.has(relativePath)) {
+      await mkdir(path.dirname(absolute), { recursive: true });
+      await writeFile(absolute, before.get(relativePath) ?? "", "utf8");
+    } else if (existsSync(absolute)) {
+      await unlink(absolute);
+    }
+  }
 }
 
 function uniqueId(base: string, existing: Set<string>) {

@@ -281,6 +281,127 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "capability.checked" && event.agentId === "implementor" && event.payload.action === "workspace.write" && event.payload.allowed === true)).toBe(true);
       expect(replay.events.some((event) => event.type === "agent.tool_result" && event.agentId === "implementor" && String(event.payload.diff).includes("+++ b/hello.py"))).toBe(true);
       expect(replay.events.some((event) => event.type === "workspace.file_touched" && event.agentId === "implementor" && String(event.payload.diff).includes("print('hello from live tool')"))).toBe(true);
+      const claimIndex = replay.events.findIndex((event) => event.type === "workspace.file_claimed" && event.agentId === "implementor");
+      const touchedIndex = replay.events.findIndex((event) => event.type === "workspace.file_touched" && event.agentId === "implementor");
+      expect(claimIndex).toBeGreaterThan(-1);
+      expect(touchedIndex).toBeGreaterThan(claimIndex);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks cross-agent workspace writes before mutating leased files", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: { async runTurn() { return []; } }
+      });
+      const created = await manager.handle({
+        id: "req_workspace_conflict",
+        method: "createSession",
+        params: {
+          prompt: "workspace conflict",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      const snapshot = await manager.handle({
+        id: "req_workspace_conflict_snapshot",
+        method: "getSnapshot",
+        params: { sessionId: created.sessionId }
+      }) as { sessionId: string; workspaceRoot: string; graph: { nodes: Array<Record<string, unknown>> } };
+      snapshot.graph.nodes.push({
+        id: "implementor",
+        roleId: "implementor",
+        label: "Implementor",
+        color: "#1f9d55",
+        status: "idle",
+        unreadCount: 0,
+        errorCount: 0
+      });
+      snapshot.graph.nodes.push({
+        id: "second_implementor",
+        roleId: "implementor",
+        label: "Second Implementor",
+        color: "#4f7cff",
+        status: "idle",
+        unreadCount: 0,
+        errorCount: 0
+      });
+
+      await (manager as unknown as {
+        writeWorkspaceFile: (snapshot: unknown, agentId: string, relativePath: string, content: string, causationId: string | undefined, publish: (event: unknown) => void) => Promise<string>;
+      }).writeWorkspaceFile(snapshot, "implementor", "shared.txt", "owned\n", undefined, () => {});
+      const blocked = await (manager as unknown as {
+        writeWorkspaceFile: (snapshot: unknown, agentId: string, relativePath: string, content: string, causationId: string | undefined, publish: (event: unknown) => void) => Promise<string>;
+      }).writeWorkspaceFile(snapshot, "second_implementor", "shared.txt", "overwritten\n", undefined, () => {});
+
+      expect(blocked).toContain("Blocked write");
+      expect(await readFile(path.join(snapshot.workspaceRoot, "shared.txt"), "utf8")).toBe("owned\n");
+      const replay = await manager.handle({
+        id: "req_workspace_conflict_replay",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
+      expect(replay.events.some((event) => event.type === "workspace.conflict_detected" && event.agentId === "second_implementor")).toBe(true);
+      expect(replay.events.some((event) => event.type === "agent.tool_result" && event.agentId === "second_implementor" && event.payload.blocked === true)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rolls back command writes that conflict with another agent lease", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: { async runTurn() { return []; } }
+      });
+      const created = await manager.handle({
+        id: "req_command_conflict",
+        method: "createSession",
+        params: {
+          prompt: "command conflict",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      const snapshot = await manager.handle({
+        id: "req_command_conflict_snapshot",
+        method: "getSnapshot",
+        params: { sessionId: created.sessionId }
+      }) as { sessionId: string; workspaceRoot: string; graph: { nodes: Array<Record<string, unknown>> } };
+      snapshot.graph.nodes.push({
+        id: "implementor",
+        roleId: "implementor",
+        label: "Implementor",
+        color: "#1f9d55",
+        status: "idle",
+        unreadCount: 0,
+        errorCount: 0
+      });
+      snapshot.graph.nodes.push({
+        id: "second_implementor",
+        roleId: "implementor",
+        label: "Second Implementor",
+        color: "#4f7cff",
+        status: "idle",
+        unreadCount: 0,
+        errorCount: 0
+      });
+
+      await (manager as unknown as {
+        writeWorkspaceFile: (snapshot: unknown, agentId: string, relativePath: string, content: string, causationId: string | undefined, publish: (event: unknown) => void) => Promise<string>;
+      }).writeWorkspaceFile(snapshot, "implementor", "shared.txt", "owned\n", undefined, () => {});
+      const output = await (manager as unknown as {
+        runWorkspaceCommand: (snapshot: unknown, agentId: string, command: string, args: string[], cwd: string | undefined, publish: (event: unknown) => void) => Promise<string>;
+      }).runWorkspaceCommand(snapshot, "second_implementor", process.execPath, ["-e", "require('fs').writeFileSync('shared.txt', 'bad\\n')"], undefined, () => {});
+
+      expect(output).toContain("workspace changes rolled back");
+      expect(await readFile(path.join(snapshot.workspaceRoot, "shared.txt"), "utf8")).toBe("owned\n");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

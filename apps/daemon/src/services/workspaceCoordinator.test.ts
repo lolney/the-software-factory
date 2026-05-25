@@ -24,6 +24,20 @@ describe("WorkspaceCoordinator", () => {
     expect(second.payload.ownerAgentId).toBe("implementor");
   });
 
+  it("reconstructs file leases and touched files from durable events", () => {
+    const coordinator = new WorkspaceCoordinator();
+    const first = coordinator.claimFile(policy, "implementor", "src/app.ts");
+    const touched = coordinator.recordTouched(policy, "implementor", "src/app.ts");
+    const restarted = new WorkspaceCoordinator();
+
+    restarted.reconstructLeases(policy.sessionId, [first, touched]);
+    const conflict = restarted.claimFile(policy, "reviewer", "src/app.ts");
+
+    expect(conflict.type).toBe("workspace.conflict_detected");
+    expect(conflict.payload.ownerAgentId).toBe("implementor");
+    expect(restarted.touchedFiles(policy.sessionId, "implementor")).toEqual([String(touched.payload.path)]);
+  });
+
   it("attributes touched files to the writing agent", () => {
     const coordinator = new WorkspaceCoordinator();
     const event = coordinator.recordTouched(policy, "implementor", "src/app.ts");

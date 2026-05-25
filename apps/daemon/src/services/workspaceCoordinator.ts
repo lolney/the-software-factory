@@ -40,6 +40,49 @@ export class WorkspaceCoordinator {
     return this.event(policy.sessionId, agentId, "workspace.file_claimed", { path: absolute });
   }
 
+  ownerOf(policy: WorkspacePolicy, candidatePath: string) {
+    const absolute = this.assertAllowed(policy, candidatePath);
+    return this.leases.get(policy.sessionId)?.get(absolute);
+  }
+
+  conflictEvent(policy: WorkspacePolicy, agentId: string, candidatePath: string, ownerAgentId: string): SessionEvent {
+    const absolute = this.assertAllowed(policy, candidatePath);
+    return this.event(policy.sessionId, agentId, "workspace.conflict_detected", {
+      path: absolute,
+      ownerAgentId,
+      requestingAgentId: agentId
+    });
+  }
+
+  reviewCheckpoint(policy: WorkspacePolicy, agentId: string, reason: string): SessionEvent {
+    return this.event(policy.sessionId, agentId, "workspace.review_checkpoint", {
+      reason,
+      touchedFiles: this.touchedFiles(policy.sessionId, agentId)
+    });
+  }
+
+  reconstructLeases(sessionId: string, events: SessionEvent[]) {
+    const sessionLeases = new Map<string, string>();
+    const sessionTouched = new Map<string, Set<string>>();
+    for (const event of events) {
+      if (event.sessionId !== sessionId || !event.agentId) continue;
+      if (event.type === "workspace.file_claimed") {
+        const filePath = typeof event.payload.path === "string" ? event.payload.path : undefined;
+        if (filePath && !sessionLeases.has(filePath)) {
+          sessionLeases.set(filePath, event.agentId);
+        }
+      }
+      if (event.type === "workspace.file_touched") {
+        const filePath = typeof event.payload.path === "string" ? event.payload.path : undefined;
+        if (filePath) {
+          getOrCreate(sessionTouched, event.agentId, () => new Set<string>()).add(filePath);
+        }
+      }
+    }
+    this.leases.set(sessionId, sessionLeases);
+    this.touched.set(sessionId, sessionTouched);
+  }
+
   recordTouched(policy: WorkspacePolicy, agentId: string, candidatePath: string, operation: "read" | "write" | "delete" = "write", diff?: string, diffStats?: { additions: number; deletions: number }): SessionEvent {
     const absolute = this.assertAllowed(policy, candidatePath);
     const sessionTouched = getOrCreate(this.touched, policy.sessionId, () => new Map<string, Set<string>>());
