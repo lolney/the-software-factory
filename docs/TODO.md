@@ -26,3 +26,16 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 - **P1: Improve session information architecture.** Add a session dashboard/table with status, last activity, live/debug mode, workspace path, active agents, failure count, and quick actions.
 - **P2: Add a Workspace inspector.** Show root path, touched files, diffs, claims/conflicts, git status, open-file buttons, and copy/open workspace actions.
 - **P2: Move auth setup into the moment it is needed.** Add inline "Set up OpenAI" from new-session preflight, show OAuth progress, confirm account/source, and block Live creation with an actionable fix.
+
+## Codex App Comparison Follow-Ups
+
+Computer Use could inspect this app, but direct Computer Use access to `com.openai.codex` was blocked by the environment. These follow-ups are based on Codex-style coding-agent features visible from the current desktop context and prior screenshots in this project thread.
+
+- **P1: Add an explicit plan/checklist panel.** Show the orchestrator's current plan as editable/checkable steps with status, owner agent, and links to related transcript events.
+- **P1: Add a changed-files and diff review surface.** Summarize touched files in a dedicated panel, open inline diffs from `workspace.file_touched` events, show additions/deletions, and allow copying file paths or diff hunks.
+- **P1: Add transcript search and filters.** Search by text, file path, tool name, agent, workflow instance, error, and unread status; provide jump-to-next result and clear active filters.
+- **P1: Add command/tool execution details.** For tool calls, show duration, status, working directory, exit code when applicable, raw input/result, and a compact/expanded Codex-style rendering.
+- **P1: Add model and effort controls at session start.** Let the user choose a default model/reasoning effort for the session and show inherited role model settings before launch.
+- **P2: Add slash-command style composer actions.** Support quick actions such as `/plan`, `/workflow`, `/role`, `/debug`, `/open`, and `/status` that map to existing app panels or daemon requests.
+- **P2: Add lightweight approval prompts for risky actions.** Before command execution, MCP calls, or broad file writes, show an inline allow/deny prompt with the requesting agent, reason, and policy scope.
+- **P2: Add copy/share/export actions for session artifacts.** Export transcript, event log, debug log, workspace path, and selected diffs from the session UI.
