@@ -126,6 +126,7 @@ struct TranscriptItem: Identifiable, Hashable {
     var type: String
     var text: String
     var timestamp: Date
+    var payload: [String: JSONValue]
 }
 
 enum DebugLogLevel: String, Codable, CaseIterable {

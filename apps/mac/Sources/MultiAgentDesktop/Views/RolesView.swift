@@ -3,6 +3,8 @@ import SwiftUI
 struct RolesView: View {
     @Bindable var store: SessionStore
     @State private var selectedRoleId: String?
+    @State private var rolePendingDeletion: RoleSpec?
+    @State private var showDeleteConfirmation = false
 
     private var selectedIndex: Int? {
         guard let selectedRoleId else { return store.roles.indices.first }
@@ -16,6 +18,17 @@ struct RolesView: View {
                     Text("Roles")
                         .font(.title2.weight(.semibold))
                     Spacer()
+                    if let index = selectedIndex, store.roles.indices.contains(index) {
+                        let role = store.roles[index]
+                        Button(role: .destructive) {
+                            rolePendingDeletion = role
+                            showDeleteConfirmation = true
+                        } label: {
+                            Label("Delete Role", systemImage: "trash")
+                        }
+                        .disabled(!store.canDeleteRole(role))
+                        .help(store.canDeleteRole(role) ? "Delete this user-created role" : "Built-in roles cannot be deleted")
+                    }
                     Button {
                         store.addRole()
                         selectedRoleId = store.roles.last?.id
@@ -47,6 +60,24 @@ struct RolesView: View {
         .task {
             store.refreshCatalogs()
             selectedRoleId = selectedRoleId ?? store.roles.first?.id
+        }
+        .onChange(of: store.roles.map(\.id)) { _, ids in
+            if let selectedRoleId, ids.contains(selectedRoleId) {
+                return
+            }
+            selectedRoleId = ids.first
+        }
+        .confirmationDialog(
+            "Delete Role?",
+            isPresented: $showDeleteConfirmation,
+            presenting: rolePendingDeletion
+        ) { role in
+            Button("Delete \(role.name)", role: .destructive) {
+                store.deleteRole(role)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("This removes the user-created role from the local role catalog. Built-in roles are protected.")
         }
     }
 }

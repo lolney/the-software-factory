@@ -244,9 +244,22 @@ final class SessionStore {
         daemon.sendRequest(method: "upsertRole", params: ["role": payload])
     }
 
+    func deleteRole(_ role: RoleSpec) {
+        guard canDeleteRole(role) else {
+            lastError = "Built-in roles cannot be deleted."
+            return
+        }
+        lastError = nil
+        daemon.sendRequest(method: "deleteRole", params: ["roleId": role.id])
+    }
+
+    func canDeleteRole(_ role: RoleSpec) -> Bool {
+        !Self.builtInRoleIds.contains(role.id)
+    }
+
     func addRole() {
         let role = RoleSpec(
-            id: "custom_role_\(Int(Date().timeIntervalSince1970))",
+            id: "custom_role_\(UUID().uuidString.lowercased())",
             name: "New Role",
             color: "#7f8c8d",
             promptTemplate: "Describe this role's responsibilities.",
@@ -525,7 +538,7 @@ final class SessionStore {
     private func transcriptItem(_ event: SessionEvent) -> TranscriptItem {
         let sender = event.payload["from"]?.stringValue ?? event.agentId ?? "system"
         let recipient = event.payload["to"]?.stringValue
-        return TranscriptItem(id: event.eventId, agentId: event.agentId, sender: sender, recipient: recipient, type: event.type, text: displayText(for: event), timestamp: parseTimestamp(event.timestamp))
+        return TranscriptItem(id: event.eventId, agentId: event.agentId, sender: sender, recipient: recipient, type: event.type, text: displayText(for: event), timestamp: parseTimestamp(event.timestamp), payload: event.payload)
     }
 
     private func apply(debugLog entry: DebugLogItem) {
@@ -566,7 +579,7 @@ final class SessionStore {
             ]
         )
         transcript = [
-            TranscriptItem(id: UUID().uuidString, agentId: "orchestrator", sender: "orchestrator", recipient: nil, type: "message", text: "Create a new session to connect to the daemon and launch a workflow.", timestamp: Date())
+            TranscriptItem(id: UUID().uuidString, agentId: "orchestrator", sender: "orchestrator", recipient: nil, type: "message", text: "Create a new session to connect to the daemon and launch a workflow.", timestamp: Date(), payload: [:])
         ]
         debugLogs = []
     }
@@ -615,6 +628,8 @@ final class SessionStore {
             return event.type
         }
     }
+
+    private static let builtInRoleIds: Set<String> = ["orchestrator", "planner", "implementor", "reviewer", "qa", "researcher"]
 }
 
 enum WorkspaceOpenTool {

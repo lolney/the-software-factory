@@ -62,8 +62,19 @@ export class WorkflowEngine {
 
   upsertRole(role: RoleSpec) {
     const parsed = RoleSpecSchema.parse(role);
+    if (parsed.id === "orchestrator" || parsed.id === "planner") {
+      this.roleOverrides.set(parsed.id, enforceRoleCapabilities(parsed));
+      return enforceRoleCapabilities(parsed);
+    }
     this.roleOverrides.set(parsed.id, parsed);
     return parsed;
+  }
+
+  deleteRole(roleId: string) {
+    if (baseRoleIds.has(roleId)) {
+      throw new Error(`Built-in role ${roleId} cannot be deleted.`);
+    }
+    this.roleOverrides.delete(roleId);
   }
 
   setRoleOverrides(roles: RoleSpec[]) {
@@ -237,6 +248,8 @@ const baseRoles: WorkflowSpec["roles"] = [
     reviewResponsibilities: ["External context", "API correctness", "Dependency risk"]
   }
 ];
+
+const baseRoleIds = new Set(baseRoles.map((role) => role.id));
 
 const builtInWorkflows: WorkflowSpec[] = [
   {

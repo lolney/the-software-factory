@@ -62,6 +62,10 @@ export class SessionManager {
         this.workflows.upsertRole(request.params.role);
         await this.saveRoleOverrides();
         return { roles: this.workflows.listRoles() };
+      case "deleteRole":
+        this.workflows.deleteRole(request.params.roleId);
+        await this.saveRoleOverrides();
+        return { roles: this.workflows.listRoles() };
       case "listWorkflows":
         return { workflows: this.workflows.list() };
       case "createSession": {

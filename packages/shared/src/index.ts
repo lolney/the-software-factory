@@ -193,6 +193,7 @@ export const DaemonRequestSchema = z.discriminatedUnion("method", [
   z.object({ id: z.string(), method: z.literal("disconnectOpenAIOAuth"), params: z.object({}).default({}) }),
   z.object({ id: z.string(), method: z.literal("listRoles"), params: z.object({}).default({}) }),
   z.object({ id: z.string(), method: z.literal("upsertRole"), params: z.object({ role: RoleSpecSchema }) }),
+  z.object({ id: z.string(), method: z.literal("deleteRole"), params: z.object({ roleId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("listWorkflows"), params: z.object({}).default({}) }),
   z.object({ id: z.string(), method: z.literal("instantiateWorkflow"), params: z.object({ sessionId: SafeIdSchema, workflowId: SafeIdSchema, anchorNodeId: SafeIdSchema.optional() }) })
 ]);
