@@ -917,9 +917,6 @@ export class SessionManager {
     causationId: string | undefined,
     publish: (event: SessionEvent) => void
   ) {
-    const role = await this.authorizeCapability(snapshot, agentId, "workspace.write", { path: relativePath }, publish, causationId);
-    const policy = { sessionId: snapshot.sessionId, workspaceRoot: snapshot.workspaceRoot, allowedRoots: role.workspace.allowedRoots };
-    const absolutePath = this.workspace.assertAllowed(policy, relativePath);
     const callId = `call_${crypto.randomUUID()}`;
     await this.appendAndPublish({
       eventId: makeEventId(),
@@ -930,6 +927,25 @@ export class SessionManager {
       payload: { callId, toolName: "workspace.write_file", input: { path: relativePath } },
       causationId
     }, publish);
+    let policy: { sessionId: string; workspaceRoot: string; allowedRoots: string[] };
+    let absolutePath: string;
+    try {
+      const role = await this.authorizeCapability(snapshot, agentId, "workspace.write", { path: relativePath }, publish, causationId);
+      policy = { sessionId: snapshot.sessionId, workspaceRoot: snapshot.workspaceRoot, allowedRoots: role.workspace.allowedRoots };
+      absolutePath = this.workspace.assertAllowed(policy, relativePath);
+    } catch (error) {
+      const output = error instanceof Error ? error.message : String(error);
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId,
+        timestamp: new Date().toISOString(),
+        type: "agent.tool_result",
+        payload: { callId, toolName: "workspace.write_file", output, blocked: true, path: relativePath },
+        causationId
+      }, publish);
+      throw error;
+    }
     return this.withWorkspacePathLock(snapshot.sessionId, absolutePath, async () => {
       this.workspace.reconstructLeases(snapshot.sessionId, await this.store.readEvents(snapshot.sessionId));
       const claim = await this.appendAndPublish(this.workspace.claimFile(policy, agentId, relativePath), publish);
@@ -967,9 +983,6 @@ export class SessionManager {
   }
 
   private async runWorkspaceCommand(snapshot: SessionSnapshot, agentId: string, command: string, args: string[] = [], cwd: string | undefined, publish: (event: SessionEvent) => void) {
-    const role = await this.authorizeCapability(snapshot, agentId, "workspace.command", { command, args, cwd: cwd ?? "." }, publish);
-    const policy = { sessionId: snapshot.sessionId, workspaceRoot: snapshot.workspaceRoot, allowedRoots: role.workspace.allowedRoots };
-    const workingDirectory = cwd ? containedPath(snapshot.workspaceRoot, cwd) : snapshot.workspaceRoot;
     const callId = `call_${crypto.randomUUID()}`;
     const startedAt = Date.now();
     await this.appendAndPublish({
@@ -980,6 +993,24 @@ export class SessionManager {
       type: "agent.tool_call",
       payload: { callId, toolName: "workspace.run_command", input: { command, args, cwd: cwd ?? "." } }
     }, publish);
+    let policy: { sessionId: string; workspaceRoot: string; allowedRoots: string[] };
+    let workingDirectory: string;
+    try {
+      const role = await this.authorizeCapability(snapshot, agentId, "workspace.command", { command, args, cwd: cwd ?? "." }, publish);
+      policy = { sessionId: snapshot.sessionId, workspaceRoot: snapshot.workspaceRoot, allowedRoots: role.workspace.allowedRoots };
+      workingDirectory = cwd ? containedPath(snapshot.workspaceRoot, cwd) : snapshot.workspaceRoot;
+    } catch (error) {
+      const output = error instanceof Error ? error.message : String(error);
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId,
+        timestamp: new Date().toISOString(),
+        type: "agent.tool_result",
+        payload: { callId, toolName: "workspace.run_command", output, blocked: true, durationMs: Date.now() - startedAt, cwd: cwd ?? "." }
+      }, publish);
+      throw error;
+    }
     const beforeFiles = await scanWorkspaceFiles(snapshot.workspaceRoot);
     try {
       const result = await execFileAsync(command, args, {

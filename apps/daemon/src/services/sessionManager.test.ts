@@ -397,6 +397,47 @@ describe("SessionManager deterministic debug sessions", () => {
     }
   });
 
+  it("records workspace tool rows even when policy blocks execution", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: { async runTurn() { return []; } }
+      });
+      const created = await manager.handle({
+        id: "req_workspace_policy_block",
+        method: "createSession",
+        params: {
+          prompt: "workspace policy block",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      const snapshot = await manager.handle({
+        id: "req_workspace_policy_block_snapshot",
+        method: "getSnapshot",
+        params: { sessionId: created.sessionId }
+      }) as { sessionId: string };
+
+      await expect((manager as unknown as {
+        writeWorkspaceFile: (snapshot: unknown, agentId: string, relativePath: string, content: string, causationId: string | undefined, publish: (event: unknown) => void) => Promise<string>;
+      }).writeWorkspaceFile(snapshot, "orchestrator", "blocked.txt", "blocked\n", undefined, () => {})).rejects.toThrow();
+
+      const replay = await manager.handle({
+        id: "req_workspace_policy_block_replay",
+        method: "subscribeEvents",
+        params: { sessionId: created.sessionId }
+      }) as { events: ReplayEvent[] };
+      const callIndex = replay.events.findIndex((event) => event.type === "agent.tool_call" && event.agentId === "orchestrator" && event.payload.toolName === "workspace.write_file");
+      const resultIndex = replay.events.findIndex((event) => event.type === "agent.tool_result" && event.agentId === "orchestrator" && event.payload.toolName === "workspace.write_file" && event.payload.blocked === true);
+      expect(callIndex).toBeGreaterThan(-1);
+      expect(resultIndex).toBeGreaterThan(callIndex);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   it("rolls back command writes that conflict with another agent lease", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
     try {
@@ -647,6 +688,7 @@ describe("SessionManager deterministic debug sessions", () => {
       await waitForEvents(manager, snapshot.sessionId, (events) =>
         events.some((event) => event.type === "workflow.completed" && event.payload.workflowId === "implementation-review-qa")
       );
+      await waitForSchedulerIdle(manager, snapshot.sessionId);
 
       const program = await readFile(path.join(snapshot.workspaceRoot, "temperature_converter.py"), "utf8");
       expect(program).toContain("def celsius_to_fahrenheit");
@@ -673,7 +715,6 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "workflow.completed" && String(event.payload.workflowId) === "implementation-review-qa")).toBe(true);
       expect(replay.events.some((event) => event.type === "workflow.completed" && event.payload.completedCriteria instanceof Array && event.payload.completedCriteria.includes("qa_acceptance"))).toBe(true);
       expect(replay.events.some((event) => event.type === "message.sent" && String(event.payload.text).includes("Workflow implementation-review-qa completed"))).toBe(true);
-      await waitForSchedulerIdle(manager, snapshot.sessionId);
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }

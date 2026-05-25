@@ -48,6 +48,14 @@ export interface AgentRuntime {
 
 type RuntimeTool = any;
 
+function engineTranscriptTool(definition: any) {
+  const runtimeTool = tool(definition);
+  // SessionManager implementations for these tools append canonical durable
+  // agent.tool_call/result rows with diffs, command metadata, and policy errors.
+  (runtimeTool as RuntimeTool).emitsTranscriptEvents = true;
+  return runtimeTool;
+}
+
 interface RuntimeAdapter {
   readonly runtimeName: string;
   runTurn(input: AgentTurnInput, connection: NonNullable<AgentTurnInput["openAI"]>, tools: RuntimeTool[]): Promise<SessionEvent[]>;
@@ -143,19 +151,19 @@ export class OpenAIAgentRuntime implements AgentRuntime {
       }));
     }
     if (input.workflowTools?.writeWorkspaceFile) {
-      tools.push(tool({
+      tools.push(engineTranscriptTool({
         name: "workspace_write_file",
         description: "Write a file inside the session workspace through the engine. The engine records a durable diff in the session event log.",
         parameters: z.object({ path: z.string(), content: z.string() }),
-        execute: async (args) => input.workflowTools?.writeWorkspaceFile?.(args.path, args.content) ?? "Write tool unavailable."
+        execute: async (args: any) => input.workflowTools?.writeWorkspaceFile?.(args.path, args.content) ?? "Write tool unavailable."
       }));
     }
     if (input.workflowTools?.runWorkspaceCommand) {
-      tools.push(tool({
+      tools.push(engineTranscriptTool({
         name: "workspace_run_command",
         description: "Run a command inside the session workspace. Provide the executable as command and arguments as args. Use this for tests, linters, and local verification.",
         parameters: z.object({ command: z.string(), args: z.array(z.string()).default([]), cwd: z.string().nullable() }),
-        execute: async (args) => input.workflowTools?.runWorkspaceCommand?.(args.command, args.args, args.cwd ?? undefined) ?? "Command tool unavailable."
+        execute: async (args: any) => input.workflowTools?.runWorkspaceCommand?.(args.command, args.args, args.cwd ?? undefined) ?? "Command tool unavailable."
       }));
     }
     if (input.workflowTools?.sendAgentMessage) {
@@ -425,27 +433,32 @@ async function runWhamTurn(
       const toolName = stringValue(call.name) ?? "";
       const args = stringValue(call.arguments) ?? "{}";
       const localTool = toolByName.get(toolName);
-      await emitOrCollect(input, events, {
-        eventId: makeEventId(),
-        sessionId: input.sessionId,
-        agentId: input.agentId,
-        timestamp: new Date().toISOString(),
-        type: "agent.tool_call",
-        payload: { callId, toolName, input: safeJson(args) },
-        causationId: input.causationId
-      });
+      const emitsTranscriptEvents = Boolean(localTool?.emitsTranscriptEvents);
+      if (!emitsTranscriptEvents) {
+        await emitOrCollect(input, events, {
+          eventId: makeEventId(),
+          sessionId: input.sessionId,
+          agentId: input.agentId,
+          timestamp: new Date().toISOString(),
+          type: "agent.tool_call",
+          payload: { callId, toolName, input: safeJson(args) },
+          causationId: input.causationId
+        });
+      }
       const output = localTool
         ? String(await localTool.invoke(new RunContext(), args, { toolCall: call as never, signal: input.signal }))
         : `Unknown tool: ${toolName}`;
-      await emitOrCollect(input, events, {
-        eventId: makeEventId(),
-        sessionId: input.sessionId,
-        agentId: input.agentId,
-        timestamp: new Date().toISOString(),
-        type: "agent.tool_result",
-        payload: { callId, toolName, output },
-        causationId: input.causationId
-      });
+      if (!emitsTranscriptEvents) {
+        await emitOrCollect(input, events, {
+          eventId: makeEventId(),
+          sessionId: input.sessionId,
+          agentId: input.agentId,
+          timestamp: new Date().toISOString(),
+          type: "agent.tool_result",
+          payload: { callId, toolName, output },
+          causationId: input.causationId
+        });
+      }
       conversation.push(call);
       conversation.push({ type: "function_call_output", call_id: callId, output });
     }

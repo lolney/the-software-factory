@@ -208,4 +208,122 @@ describe("OpenAIAgentRuntime", () => {
     expect(events.map((event) => event.type)).not.toContain("agent.tool_result");
     expect(emittedEvents).toEqual(["agent.tool_call", "agent.tool_result"]);
   });
+
+  it("does not emit duplicate WHAM transcript rows for engine-logged workspace tools", async () => {
+    const { OpenAIAgentRuntime } = await import("./agentRuntime.js");
+    let requestIndex = 0;
+    const fetchMock = async () => {
+      requestIndex += 1;
+      if (requestIndex === 1) {
+        return new Response([
+          `data: ${JSON.stringify({
+            type: "response.output_item.done",
+            item: {
+              type: "function_call",
+              call_id: "call_write",
+              name: "workspace_write_file",
+              arguments: JSON.stringify({ path: "hello.txt", content: "hello" })
+            }
+          })}`,
+          "",
+          "data: [DONE]",
+          ""
+        ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response([
+        `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "done" })}`,
+        "",
+        "data: [DONE]",
+        ""
+      ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+
+    const emittedEvents: string[] = [];
+    const sideEffects: string[] = [];
+    const events = await new OpenAIAgentRuntime({ fetch: fetchMock as unknown as typeof fetch, timeoutMs: 1_000 }).runTurn({
+      sessionId: "sess_wham_dedupe",
+      agentId: "implementor",
+      prompt: "write a file",
+      debugMode: false,
+      openAI: {
+        apiKey: "test-token",
+        baseURL: "https://chatgpt.com/backend-api/wham"
+      },
+      workflowTools: {
+        writeWorkspaceFile: async (relativePath, content) => {
+          sideEffects.push(`${relativePath}:${content}`);
+          return "Edited hello.txt +1 -0.";
+        }
+      },
+      emitEvent: async (event) => {
+        if (event.type === "agent.tool_call" || event.type === "agent.tool_result") {
+          emittedEvents.push(`${event.type}:${String(event.payload.toolName ?? "")}`);
+        }
+      }
+    });
+
+    expect(sideEffects).toEqual(["hello.txt:hello"]);
+    expect(emittedEvents).toEqual([]);
+    expect(events.map((event) => event.type)).not.toContain("agent.tool_call");
+    expect(events.map((event) => event.type)).not.toContain("agent.tool_result");
+  });
+
+  it("does not emit duplicate WHAM transcript rows for engine-logged command tools", async () => {
+    const { OpenAIAgentRuntime } = await import("./agentRuntime.js");
+    let requestIndex = 0;
+    const fetchMock = async () => {
+      requestIndex += 1;
+      if (requestIndex === 1) {
+        return new Response([
+          `data: ${JSON.stringify({
+            type: "response.output_item.done",
+            item: {
+              type: "function_call",
+              call_id: "call_command",
+              name: "workspace_run_command",
+              arguments: JSON.stringify({ command: "node", args: ["--version"], cwd: null })
+            }
+          })}`,
+          "",
+          "data: [DONE]",
+          ""
+        ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response([
+        `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "done" })}`,
+        "",
+        "data: [DONE]",
+        ""
+      ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+
+    const emittedEvents: string[] = [];
+    const sideEffects: string[] = [];
+    const events = await new OpenAIAgentRuntime({ fetch: fetchMock as unknown as typeof fetch, timeoutMs: 1_000 }).runTurn({
+      sessionId: "sess_wham_command_dedupe",
+      agentId: "qa",
+      prompt: "run tests",
+      debugMode: false,
+      openAI: {
+        apiKey: "test-token",
+        baseURL: "https://chatgpt.com/backend-api/wham"
+      },
+      workflowTools: {
+        runWorkspaceCommand: async (command, args = [], cwd) => {
+          sideEffects.push(`${command} ${args.join(" ")} ${cwd ?? "."}`);
+          return "exitCode: 0";
+        }
+      },
+      emitEvent: async (event) => {
+        if (event.type === "agent.tool_call" || event.type === "agent.tool_result") {
+          emittedEvents.push(`${event.type}:${String(event.payload.toolName ?? "")}`);
+        }
+      }
+    });
+
+    expect(sideEffects).toEqual(["node --version ."]);
+    expect(emittedEvents).toEqual([]);
+    expect(events.map((event) => event.type)).not.toContain("agent.tool_call");
+    expect(events.map((event) => event.type)).not.toContain("agent.tool_result");
+  });
 });
