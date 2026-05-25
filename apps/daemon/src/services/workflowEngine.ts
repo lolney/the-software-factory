@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
@@ -7,9 +7,14 @@ import { GraphStateSchema, RoleSpecSchema, WorkflowSpecSchema, type GraphState, 
 export class WorkflowEngine {
   private specs = new Map<string, WorkflowSpec>();
   private roleOverrides = new Map<string, RoleSpec>();
+  private personalWorkflows = new Map<string, WorkflowSpec>();
+  private personalRoles = new Map<string, RoleSpec>();
   private loaded = false;
 
-  constructor(private readonly workflowDir = path.join(process.cwd(), "apps/daemon/src/workflows")) {
+  constructor(
+    private readonly workflowDir = path.join(process.cwd(), "apps/daemon/src/workflows"),
+    private readonly personalCatalogRoot = path.join(process.cwd(), "sessions/config")
+  ) {
     for (const spec of builtInWorkflows) {
       this.specs.set(spec.id, WorkflowSpecSchema.parse(spec));
     }
@@ -29,14 +34,86 @@ export class WorkflowEngine {
     }
   }
 
+  async reloadPersonalCatalog() {
+    await this.ensurePersonalDirs();
+    this.personalRoles.clear();
+    this.personalWorkflows.clear();
+    await this.loadPersonalRoles();
+    await this.loadPersonalWorkflows();
+  }
+
+  async createBlankRoleFile() {
+    await this.ensurePersonalDirs();
+    const role = RoleSpecSchema.parse({
+      id: `role_${crypto.randomUUID()}`,
+      name: "",
+      color: "#7f8c8d",
+      promptTemplate: "",
+      model: "",
+      toolPolicy: { canRead: false, canWrite: false, canRunCommands: false, canCreatePlans: false },
+      workspace: { allowedRoots: [] },
+      expectedOutputs: [],
+      reviewResponsibilities: []
+    });
+    const filePath = this.personalRolePath(role.id);
+    await writeJson(filePath, role);
+    this.personalRoles.set(role.id, role);
+    return { path: filePath, role };
+  }
+
+  async createBlankWorkflowFile() {
+    await this.ensurePersonalDirs();
+    const workflow = WorkflowSpecSchema.parse({
+      version: 1,
+      id: `workflow_${crypto.randomUUID()}`,
+      name: "",
+      description: "",
+      roles: [],
+      nodes: [],
+      edges: [],
+      concurrency: { maxActiveAgents: 1 },
+      lifecycle: { orchestratorNodeId: "orchestrator" },
+      completionCriteria: [],
+      stopCriteria: []
+    });
+    const filePath = this.personalWorkflowPath(workflow.id);
+    await writeJson(filePath, workflow);
+    this.personalWorkflows.set(workflow.id, workflow);
+    return { path: filePath, workflow };
+  }
+
+  async writePersonalRole(role: RoleSpec) {
+    await this.ensurePersonalDirs();
+    const parsed = this.upsertRole(role);
+    await writeJson(this.personalRolePath(parsed.id), parsed);
+    this.personalRoles.set(parsed.id, parsed);
+    return parsed;
+  }
+
+  async deletePersonalRole(roleId: string) {
+    this.deleteRole(roleId);
+    const filePath = this.personalRolePath(roleId);
+    if (existsSync(filePath)) {
+      await unlink(filePath);
+    }
+    this.personalRoles.delete(roleId);
+  }
+
+  catalogPaths() {
+    return {
+      personalRolesPath: this.personalRolesDir(),
+      personalWorkflowsPath: this.personalWorkflowsDir()
+    };
+  }
+
   validate(spec: unknown) {
     const parsed = WorkflowSpecSchema.parse(spec);
-    assertGraphReferences(parsed);
+    assertGraphReferences(parsed, new Set(this.listRoles().map((role) => role.id)));
     return parsed;
   }
 
   get(id = "planner-orchestrator") {
-    const spec = this.specs.get(id);
+    const spec = this.personalWorkflows.get(id) ?? this.specs.get(id);
     if (!spec) {
       throw new Error(`Unknown workflow spec: ${id}`);
     }
@@ -44,20 +121,23 @@ export class WorkflowEngine {
   }
 
   list() {
-    return [...this.specs.values()].map((spec) => this.withRoleOverrides(spec));
+    return [...this.specs.values(), ...this.personalWorkflows.values()].map((spec) => this.withRoleOverrides(spec));
   }
 
   listRoles() {
     const roles = new Map<string, RoleSpec>();
-    for (const spec of this.specs.values()) {
+    for (const spec of [...this.specs.values(), ...this.personalWorkflows.values()]) {
       for (const role of spec.roles) {
-        roles.set(role.id, enforceRoleCapabilities(this.roleOverrides.get(role.id) ?? role));
+        roles.set(role.id, enforceRoleCapabilities(this.roleOverrides.get(role.id) ?? this.personalRoles.get(role.id) ?? role));
       }
+    }
+    for (const [id, role] of this.personalRoles) {
+      roles.set(id, enforceRoleCapabilities(this.roleOverrides.get(id) ?? role));
     }
     for (const [id, role] of this.roleOverrides) {
       roles.set(id, enforceRoleCapabilities(role));
     }
-    return [...roles.values()].sort((a, b) => a.name.localeCompare(b.name));
+    return [...roles.values()].sort((a, b) => displayName(a).localeCompare(displayName(b)));
   }
 
   upsertRole(role: RoleSpec) {
@@ -75,6 +155,7 @@ export class WorkflowEngine {
       throw new Error(`Built-in role ${roleId} cannot be deleted.`);
     }
     this.roleOverrides.delete(roleId);
+    this.personalRoles.delete(roleId);
   }
 
   setRoleOverrides(roles: RoleSpec[]) {
@@ -85,7 +166,7 @@ export class WorkflowEngine {
   }
 
   graphForSession(sessionId: string, spec: WorkflowSpec): GraphState {
-    const rolesById = new Map(spec.roles.map((role) => [role.id, role]));
+    const rolesById = new Map([...this.listRoles(), ...spec.roles].map((role) => [role.id, role]));
     return GraphStateSchema.parse({
       sessionId,
       workflowId: spec.id,
@@ -126,9 +207,71 @@ export class WorkflowEngine {
   private withRoleOverrides(spec: WorkflowSpec): WorkflowSpec {
     return {
       ...spec,
-      roles: spec.roles.map((role) => enforceRoleCapabilities(this.roleOverrides.get(role.id) ?? role))
+      roles: spec.roles.map((role) => enforceRoleCapabilities(this.roleOverrides.get(role.id) ?? this.personalRoles.get(role.id) ?? role))
     };
   }
+
+  private async loadPersonalRoles() {
+    for (const filePath of await catalogFiles(this.personalRolesDir())) {
+      try {
+        const raw = JSON.parse(await readFile(filePath, "utf8"));
+        const parsed = RoleSpecSchema.parse(raw);
+        this.personalRoles.set(parsed.id, enforceRoleCapabilities(parsed));
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  private async loadPersonalWorkflows() {
+    for (const filePath of await catalogFiles(this.personalWorkflowsDir())) {
+      try {
+        const raw = JSON.parse(await readFile(filePath, "utf8"));
+        const parsed = WorkflowSpecSchema.parse(raw);
+        this.personalWorkflows.set(parsed.id, parsed);
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  private async ensurePersonalDirs() {
+    await mkdir(this.personalRolesDir(), { recursive: true });
+    await mkdir(this.personalWorkflowsDir(), { recursive: true });
+  }
+
+  private personalRolesDir() {
+    return path.join(this.personalCatalogRoot, "roles");
+  }
+
+  private personalWorkflowsDir() {
+    return path.join(this.personalCatalogRoot, "workflows");
+  }
+
+  private personalRolePath(roleId: string) {
+    return path.join(this.personalRolesDir(), `${roleId}.json`);
+  }
+
+  private personalWorkflowPath(workflowId: string) {
+    return path.join(this.personalWorkflowsDir(), `${workflowId}.json`);
+  }
+}
+
+async function catalogFiles(dir: string) {
+  if (!existsSync(dir)) return [];
+  const entries = await readdir(dir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile() && /\.json$/.test(entry.name))
+    .map((entry) => path.join(dir, entry.name));
+}
+
+async function writeJson(filePath: string, value: unknown) {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function displayName(role: RoleSpec) {
+  return role.name.trim() || role.id;
 }
 
 function enforceRoleCapabilities(role: RoleSpec): RoleSpec {
@@ -158,8 +301,8 @@ function enforceRoleCapabilities(role: RoleSpec): RoleSpec {
   return role;
 }
 
-function assertGraphReferences(spec: WorkflowSpec) {
-  const roleIds = new Set(spec.roles.map((role) => role.id));
+function assertGraphReferences(spec: WorkflowSpec, extraRoleIds = new Set<string>()) {
+  const roleIds = new Set([...spec.roles.map((role) => role.id), ...extraRoleIds]);
   const nodeIds = new Set(spec.nodes.map((node) => node.id));
   if (!nodeIds.has(spec.lifecycle.orchestratorNodeId)) {
     throw new Error(`Workflow ${spec.id} lifecycle references missing orchestrator node ${spec.lifecycle.orchestratorNodeId}`);

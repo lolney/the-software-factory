@@ -79,6 +79,32 @@ describe("SessionManager deterministic debug sessions", () => {
     }
   });
 
+  it("creates personal role and workflow JSON files through the daemon protocol", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      const roleResult = await manager.handle({
+        id: "req_create_role_file",
+        method: "createRoleFile",
+        params: {}
+      }) as { path: string; roles: Array<{ id: string; name: string }>; personalRolesPath: string };
+      const workflowResult = await manager.handle({
+        id: "req_create_workflow_file",
+        method: "createWorkflowFile",
+        params: {}
+      }) as { path: string; workflows: Array<{ id: string; name: string }>; personalWorkflowsPath: string };
+
+      expect(roleResult.personalRolesPath).toBe(path.join(root, "config", "roles"));
+      expect(workflowResult.personalWorkflowsPath).toBe(path.join(root, "config", "workflows"));
+      expect(roleResult.path.startsWith(roleResult.personalRolesPath)).toBe(true);
+      expect(workflowResult.path.startsWith(workflowResult.personalWorkflowsPath)).toBe(true);
+      expect(roleResult.roles.some((role) => role.name === "")).toBe(true);
+      expect(workflowResult.workflows.some((workflow) => workflow.name === "")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("preserves non-debug runtime mode for follow-up messages", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
     try {

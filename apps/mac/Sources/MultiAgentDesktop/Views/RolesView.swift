@@ -18,6 +18,12 @@ struct RolesView: View {
                     Text("Roles")
                         .font(.title2.weight(.semibold))
                     Spacer()
+                    Button {
+                        store.copyPersonalRolesPath()
+                    } label: {
+                        Label("Copy Path", systemImage: "doc.on.doc")
+                    }
+                    .help(store.personalRolesPath ?? "Personal roles directory")
                     if let index = selectedIndex, store.roles.indices.contains(index) {
                         let role = store.roles[index]
                         Button(role: .destructive) {
@@ -31,7 +37,6 @@ struct RolesView: View {
                     }
                     Button {
                         store.addRole()
-                        selectedRoleId = store.roles.last?.id
                     } label: {
                         Label("Add Role", systemImage: "plus")
                     }
@@ -40,7 +45,7 @@ struct RolesView: View {
 
                 List(selection: $selectedRoleId) {
                     ForEach(store.roles) { role in
-                        Label(role.name, systemImage: "person.crop.circle")
+                        Label(role.name.isEmpty ? role.id : role.name, systemImage: "person.crop.circle")
                             .tag(role.id)
                     }
                 }

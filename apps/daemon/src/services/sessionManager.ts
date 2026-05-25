@@ -38,7 +38,7 @@ export class SessionManager {
   private readonly logSubscribers = new Map<string, Set<(entry: DebugLogEntry) => void>>();
   private readonly store: EventStore;
   private readonly runtime: AgentRuntime;
-  private readonly workflows = new WorkflowEngine();
+  private readonly workflows: WorkflowEngine;
   private readonly workspace = new WorkspaceCoordinator();
   private readonly integrations = new CodexIntegrationManager();
   private readonly activeRuns = new Map<string, AbortController>();
@@ -48,6 +48,7 @@ export class SessionManager {
   constructor(private readonly options: { sessionsRoot: string; runtime?: AgentRuntime }) {
     this.store = new EventStore(options.sessionsRoot);
     this.runtime = options.runtime ?? new OpenAIAgentRuntime();
+    this.workflows = new WorkflowEngine(undefined, path.join(options.sessionsRoot, "config"));
   }
 
   setPublisher(publish: (event: SessionEvent) => void) {
@@ -60,11 +61,13 @@ export class SessionManager {
     publishLog: (entry: DebugLogEntry) => void = () => {}
   ): Promise<unknown> {
     await this.workflows.loadPredefined();
+    await this.workflows.reloadPersonalCatalog();
     await this.loadRoleOverrides();
     switch (request.method) {
       case "listSessions":
         return {
           sessionsRoot: this.options.sessionsRoot,
+          ...this.workflows.catalogPaths(),
           workflows: this.workflows.list(),
           roles: this.workflows.listRoles(),
           codexOAuth: await this.auth.status(),
@@ -79,17 +82,23 @@ export class SessionManager {
         await this.auth.deleteTokens();
         return this.auth.status();
       case "listRoles":
-        return { roles: this.workflows.listRoles() };
+        return { roles: this.workflows.listRoles(), ...this.workflows.catalogPaths() };
       case "upsertRole":
-        this.workflows.upsertRole(request.params.role);
-        await this.saveRoleOverrides();
-        return { roles: this.workflows.listRoles() };
+        await this.workflows.writePersonalRole(request.params.role);
+        return { roles: this.workflows.listRoles(), ...this.workflows.catalogPaths() };
       case "deleteRole":
-        this.workflows.deleteRole(request.params.roleId);
-        await this.saveRoleOverrides();
-        return { roles: this.workflows.listRoles() };
+        await this.workflows.deletePersonalRole(request.params.roleId);
+        return { roles: this.workflows.listRoles(), ...this.workflows.catalogPaths() };
       case "listWorkflows":
-        return { workflows: this.workflows.list() };
+        return { workflows: this.workflows.list(), ...this.workflows.catalogPaths() };
+      case "createRoleFile": {
+        const created = await this.workflows.createBlankRoleFile();
+        return { ...created, roles: this.workflows.listRoles(), ...this.workflows.catalogPaths() };
+      }
+      case "createWorkflowFile": {
+        const created = await this.workflows.createBlankWorkflowFile();
+        return { ...created, workflows: this.workflows.list(), ...this.workflows.catalogPaths() };
+      }
       case "listIntegrations":
         return this.integrations.listCatalog();
       case "beginMCPAuth":

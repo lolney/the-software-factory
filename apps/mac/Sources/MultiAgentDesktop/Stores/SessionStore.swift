@@ -14,6 +14,8 @@ final class SessionStore {
     var inspectorPanel: InspectorPanel = .graph
     var roles: [RoleSpec] = []
     var workflows: [WorkflowSpec] = []
+    var personalRolesPath: String?
+    var personalWorkflowsPath: String?
     var authStatus: AuthStatus?
     var integrations = IntegrationCatalog(mcpServers: [], skills: [])
     var currentWorkspaceRoot: String?
@@ -260,19 +262,21 @@ final class SessionStore {
     }
 
     func addRole() {
-        let role = RoleSpec(
-            id: "custom_role_\(UUID().uuidString.lowercased())",
-            name: "New Role",
-            color: "#7f8c8d",
-            promptTemplate: "Describe this role's responsibilities.",
-            model: "gpt-5.4",
-            toolPolicy: ToolPolicy(canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: false),
-            workspace: RoleWorkspace(allowedRoots: ["."]),
-            expectedOutputs: [],
-            reviewResponsibilities: []
-        )
-        roles.append(role)
-        saveRole(role)
+        lastError = nil
+        daemon.sendRequest(method: "createRoleFile", params: [:])
+    }
+
+    func addWorkflowFile() {
+        lastError = nil
+        daemon.sendRequest(method: "createWorkflowFile", params: [:])
+    }
+
+    func copyPersonalRolesPath() {
+        copyPath(personalRolesPath, fallback: "Roles directory has not been reported by the daemon yet.")
+    }
+
+    func copyPersonalWorkflowsPath() {
+        copyPath(personalWorkflowsPath, fallback: "Workflows directory has not been reported by the daemon yet.")
     }
 
     func instantiateWorkflow(_ workflowId: String) {
@@ -414,6 +418,11 @@ final class SessionStore {
            let rolesData = try? JSONSerialization.data(withJSONObject: rolesValue),
            let decodedRoles = try? JSONDecoder().decode([RoleSpec].self, from: rolesData) {
             roles = decodedRoles
+            decodeCatalogPaths(from: resultDict)
+            if let path = resultDict["path"] as? String {
+                copyPath(path, fallback: "")
+                lastError = "Created role JSON and copied its path: \(path)"
+            }
             decodeIntegrations(from: resultDict)
             return
         }
@@ -440,6 +449,11 @@ final class SessionStore {
            let workflowsData = try? JSONSerialization.data(withJSONObject: workflowsValue),
            let decodedWorkflows = try? JSONDecoder().decode([WorkflowSpec].self, from: workflowsData) {
             workflows = decodedWorkflows
+            decodeCatalogPaths(from: resultDict)
+            if let path = resultDict["path"] as? String {
+                copyPath(path, fallback: "")
+                lastError = "Created workflow JSON and copied its path: \(path)"
+            }
             if let rolesValue = resultDict["roles"],
                let rolesData = try? JSONSerialization.data(withJSONObject: rolesValue),
                let decodedRoles = try? JSONDecoder().decode([RoleSpec].self, from: rolesData) {
@@ -586,6 +600,26 @@ final class SessionStore {
               let integrationsData = try? JSONSerialization.data(withJSONObject: integrationsValue),
               let decodedIntegrations = try? JSONDecoder().decode(IntegrationCatalog.self, from: integrationsData) else { return }
         integrations = decodedIntegrations
+    }
+
+    private func decodeCatalogPaths(from resultDict: [String: Any]) {
+        if let path = resultDict["personalRolesPath"] as? String {
+            personalRolesPath = path
+        }
+        if let path = resultDict["personalWorkflowsPath"] as? String {
+            personalWorkflowsPath = path
+        }
+    }
+
+    private func copyPath(_ path: String?, fallback: String) {
+        guard let path, !path.isEmpty else {
+            if !fallback.isEmpty {
+                lastError = fallback
+            }
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
     }
 
     private func apply(debugLog entry: DebugLogItem) {

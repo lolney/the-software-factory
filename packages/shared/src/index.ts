@@ -23,9 +23,9 @@ export const CompletionCriterionSchema = z.object({
 
 export const RoleSpecSchema = z.object({
   id: SafeIdSchema,
-  name: z.string().min(1),
+  name: z.string(),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
-  promptTemplate: z.string().min(1),
+  promptTemplate: z.string(),
   model: z.string().default("gpt-5.4"),
   toolPolicy: z.object({
     canRead: z.boolean().default(true),
@@ -59,10 +59,10 @@ export const WorkflowEdgeSchema = z.object({
 export const WorkflowSpecSchema = z.object({
   version: z.literal(1),
   id: SafeIdSchema,
-  name: z.string().min(1),
+  name: z.string(),
   description: z.string().default(""),
-  roles: z.array(RoleSpecSchema).min(1),
-  nodes: z.array(WorkflowNodeSchema).min(1),
+  roles: z.array(RoleSpecSchema).default([]),
+  nodes: z.array(WorkflowNodeSchema).default([]),
   edges: z.array(WorkflowEdgeSchema).default([]),
   concurrency: z.object({
     maxActiveAgents: z.number().int().positive().default(4)
@@ -232,6 +232,8 @@ export const DaemonRequestSchema = z.discriminatedUnion("method", [
   z.object({ id: z.string(), method: z.literal("upsertRole"), params: z.object({ role: RoleSpecSchema }) }),
   z.object({ id: z.string(), method: z.literal("deleteRole"), params: z.object({ roleId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("listWorkflows"), params: z.object({}).default({}) }),
+  z.object({ id: z.string(), method: z.literal("createRoleFile"), params: z.object({}).default({}) }),
+  z.object({ id: z.string(), method: z.literal("createWorkflowFile"), params: z.object({}).default({}) }),
   z.object({ id: z.string(), method: z.literal("listIntegrations"), params: z.object({}).default({}) }),
   z.object({ id: z.string(), method: z.literal("beginMCPAuth"), params: z.object({ serverId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("reconnectMCPServers"), params: z.object({ serverId: SafeIdSchema.optional() }).default({}) }),

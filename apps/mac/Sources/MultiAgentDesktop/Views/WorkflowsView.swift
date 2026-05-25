@@ -12,16 +12,30 @@ struct WorkflowsView: View {
     var body: some View {
         HSplitView {
             VStack(alignment: .leading, spacing: 0) {
-                Text("Workflows")
-                    .font(.title2.weight(.semibold))
-                    .padding()
+                HStack {
+                    Text("Workflows")
+                        .font(.title2.weight(.semibold))
+                    Spacer()
+                    Button {
+                        store.copyPersonalWorkflowsPath()
+                    } label: {
+                        Label("Copy Path", systemImage: "doc.on.doc")
+                    }
+                    .help(store.personalWorkflowsPath ?? "Personal workflows directory")
+                    Button {
+                        store.addWorkflowFile()
+                    } label: {
+                        Label("Add Workflow", systemImage: "plus")
+                    }
+                }
+                .padding()
 
                 List(selection: $selectedWorkflowId) {
                     ForEach(store.workflows) { workflow in
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(workflow.name)
+                            Text(workflow.name.isEmpty ? workflow.id : workflow.name)
                                 .lineLimit(1)
-                            Text(workflow.description)
+                            Text(workflow.description.isEmpty ? "Draft workflow JSON" : workflow.description)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(2)
@@ -33,7 +47,7 @@ struct WorkflowsView: View {
             .frame(minWidth: 280, idealWidth: 340)
 
             if let workflow = selectedWorkflow {
-                WorkflowDetail(workflow: workflow, targetSessionTitle: store.sessions.first(where: { $0.id == store.selectedSessionId })?.title, canInstantiate: store.hasActiveSession) {
+                WorkflowDetail(workflow: workflow, targetSessionTitle: store.sessions.first(where: { $0.id == store.selectedSessionId })?.title, canInstantiate: store.hasActiveSession && workflow.isInstantiable) {
                     store.instantiateWorkflow(workflow.id)
                 }
                 .frame(minWidth: 560)
@@ -62,7 +76,7 @@ private struct WorkflowDetail: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(workflow.name)
                             .font(.title2.weight(.semibold))
-                        Text(workflow.description)
+                        Text(workflow.description.isEmpty ? workflow.id : workflow.description)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -74,7 +88,7 @@ private struct WorkflowDetail: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(!canInstantiate)
-                        Text(targetSessionTitle.map { "Target: \($0)" } ?? "Select a session target")
+                        Text(instantiateHint)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -164,6 +178,13 @@ private struct WorkflowDetail: View {
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var instantiateHint: String {
+        if !workflow.isInstantiable {
+            return "Complete the workflow JSON before instantiating"
+        }
+        return targetSessionTitle.map { "Target: \($0)" } ?? "Select a session target"
     }
 }
 
@@ -276,5 +297,11 @@ private struct WorkflowSpecGraphView: View {
 
     private func shortLabel(_ label: String) -> String {
         label.count > 18 ? "\(label.prefix(17))..." : label
+    }
+}
+
+private extension WorkflowSpec {
+    var isInstantiable: Bool {
+        !nodes.isEmpty && nodes.contains { $0.id == "orchestrator" || $0.roleId == "orchestrator" }
     }
 }
