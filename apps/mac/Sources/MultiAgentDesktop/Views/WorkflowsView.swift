@@ -27,6 +27,7 @@ struct WorkflowsView: View {
                     } label: {
                         Label("Add Workflow", systemImage: "plus")
                     }
+                    .help("Add a blank workflow JSON file")
                 }
                 .padding()
 

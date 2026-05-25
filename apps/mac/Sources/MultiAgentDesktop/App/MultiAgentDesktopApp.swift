@@ -8,7 +8,7 @@ struct MultiAgentDesktopApp: App {
     @State private var store = SessionStore()
 
     var body: some Scene {
-        WindowGroup("Multiagent Coding", id: "main") {
+        WindowGroup("Sessions", id: "main") {
             ContentView(store: store)
                 .frame(minWidth: 1100, minHeight: 720)
                 .task {
@@ -25,7 +25,7 @@ struct MultiAgentDesktopApp: App {
         }
         .commands {
             CommandGroup(after: .newItem) {
-                Button("New Session") {
+                Button("New Session…") {
                     store.beginNewSession()
                 }
                 .keyboardShortcut("n", modifiers: [.command])

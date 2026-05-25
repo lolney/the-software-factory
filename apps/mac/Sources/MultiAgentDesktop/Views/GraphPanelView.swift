@@ -70,7 +70,7 @@ struct GraphPanelView: View {
                                     .contentShape(RoundedRectangle(cornerRadius: 8))
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel("Select \(node.label)")
+                            .accessibilityLabel(accessibilityLabel(for: node))
                             .frame(width: 144, height: 68)
                             .position(point)
                         }
@@ -146,5 +146,19 @@ struct GraphPanelView: View {
 
     private func shortLabel(_ label: String) -> String {
         label.count > 18 ? "\(label.prefix(17))..." : label
+    }
+
+    private func accessibilityLabel(for node: AgentNode) -> String {
+        var parts = ["Select \(node.label)", "status \(node.status.rawValue)"]
+        if node.unreadCount > 0 {
+            parts.append("\(node.unreadCount) unread")
+        }
+        if node.errorCount > 0 {
+            parts.append("\(node.errorCount) errors")
+        }
+        if node.id == store.selectedControlAgentId {
+            parts.append("control agent")
+        }
+        return parts.joined(separator: ", ")
     }
 }

@@ -14,7 +14,7 @@ struct SidebarView: View {
 
             Section("Sessions") {
                 if store.isComposingNewSession {
-                    Label("New Session", systemImage: "plus.message")
+                    Label("New Session…", systemImage: "plus.message")
                         .tag(SessionStore.newSessionDraftId)
                 }
                 ForEach(store.sessions) { session in
@@ -44,10 +44,11 @@ struct SidebarView: View {
             Button {
                 store.beginNewSession()
             } label: {
-                Label("New Session", systemImage: "plus")
+                Label("New Session…", systemImage: "plus")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
+            .help("Create a session from an initial prompt")
             .padding()
         }
         .task {

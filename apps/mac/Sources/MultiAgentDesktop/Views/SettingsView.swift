@@ -73,6 +73,7 @@ private struct AuthSettingsPane: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(store.openAIApiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .help("Store this API key in macOS Keychain")
 
                     Button(role: .destructive) {
                         store.disconnectOpenAIAPIKey()
@@ -80,6 +81,7 @@ private struct AuthSettingsPane: View {
                         Label("Remove API Key", systemImage: "xmark.circle")
                     }
                     .disabled(store.authStatus?.apiKeyConfigured != true || store.authStatus?.apiKeySource == "environment")
+                    .help("Remove the stored API key")
                 }
                 Text("Live agent runs prefer Codex OAuth. This API key is a fallback or developer override and is stored in macOS Keychain.")
                     .font(.caption)
@@ -123,15 +125,17 @@ private struct AuthSettingsPane: View {
                     Button {
                         store.beginOpenAIOAuth()
                     } label: {
-                        Label("Set Up", systemImage: "person.badge.key")
+                        Label("Set Up…", systemImage: "person.badge.key")
                     }
                     .buttonStyle(.borderedProminent)
+                    .help("Start the OpenAI OAuth setup flow")
 
                     Button {
                         store.refreshAuthStatus()
                     } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
+                    .help("Refresh OpenAI authentication status")
 
                     Button(role: .destructive) {
                         store.disconnectOpenAIOAuth()
@@ -139,6 +143,7 @@ private struct AuthSettingsPane: View {
                         Label("Disconnect", systemImage: "xmark.circle")
                     }
                     .disabled(store.authStatus?.connected != true)
+                    .help("Disconnect the stored OpenAI OAuth credentials")
                 }
                 if let liveReadinessError = store.authStatus?.liveReadinessError {
                     Text(liveReadinessError)
@@ -166,6 +171,7 @@ private struct AuthSettingsPane: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(store.chatGPTAccountIdInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .help("Store this ChatGPT account id in macOS Keychain")
 
                     Button(role: .destructive) {
                         store.disconnectChatGPTAccountId()
@@ -173,6 +179,7 @@ private struct AuthSettingsPane: View {
                         Label("Forget Account ID", systemImage: "xmark.circle")
                     }
                     .disabled(store.authStatus?.chatGPTAccountIdSource != "keychain")
+                    .help("Remove the stored ChatGPT account id")
                 }
                 Text("Usually this is discovered from the OAuth token or ~/.codex/auth.json. Configure it here only when live runs report a missing account id.")
                     .font(.caption)
@@ -209,11 +216,13 @@ private struct MCPServersSettingsPane: View {
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
+                .help("Refresh MCP server status from Codex configuration")
                 Button {
                     store.reconnectMCPServers()
                 } label: {
                     Label("Reconnect All", systemImage: "point.3.connected.trianglepath.dotted")
                 }
+                .help("Reconnect all configured MCP servers")
             }
 
             if store.integrations.mcpServers.isEmpty {
@@ -266,12 +275,14 @@ private struct MCPServerRow: View {
                 } label: {
                     Label("Reconnect", systemImage: "arrow.triangle.2.circlepath")
                 }
+                .help("Reconnect this MCP server")
                 Button {
                     store.beginMCPAuth(serverId: server.id)
                 } label: {
-                    Label("Authenticate", systemImage: "person.badge.key")
+                    Label("Authenticate…", systemImage: "person.badge.key")
                 }
                 .disabled(!server.authenticationSupported)
+                .help("Start authentication for this MCP server")
                 Text(server.authInstructions ?? "Reconnect retries the configured transport.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)

@@ -39,6 +39,7 @@ struct SessionDetailView: View {
                     Label("Open", systemImage: "chevron.left.forwardslash.chevron.right")
                 }
                 .disabled(store.currentWorkspaceRoot == nil || store.isLoadingSelection)
+                .help("Open the current session workspace")
 
                 Button {
                     store.connectAndRefresh()
@@ -46,6 +47,7 @@ struct SessionDetailView: View {
                     Label("Connect", systemImage: "bolt.horizontal.circle")
                 }
                 .disabled(store.daemon.isConnecting)
+                .help("Connect or refresh the local daemon connection")
 
                 Menu {
                     ForEach(store.graph.nodes) { node in
@@ -59,6 +61,7 @@ struct SessionDetailView: View {
                     Label("Control: \(store.selectedControlAgentLabel)", systemImage: "scope")
                 }
                 .disabled(store.graph.nodes.isEmpty || store.isLoadingSelection)
+                .help("Choose which agent the toolbar controls target")
 
                 Button {
                     store.pauseOrchestrator()
@@ -66,6 +69,7 @@ struct SessionDetailView: View {
                     Label("Pause Scheduling", systemImage: "pause.circle")
                 }
                 .disabled(!store.canPauseOrchestrator)
+                .help("Pause scheduling for the selected agent")
 
                 Button {
                     store.resumeOrchestrator()
@@ -73,13 +77,15 @@ struct SessionDetailView: View {
                     Label("Resume Agent", systemImage: "play.circle")
                 }
                 .disabled(!store.canResumeOrchestrator)
+                .help("Resume the selected agent")
 
                 Button(role: .destructive) {
                     confirmCancel = true
                 } label: {
-                    Label("Cancel Agent", systemImage: "xmark.circle")
+                    Label("Stop Agent", systemImage: "xmark.octagon")
                 }
                 .disabled(!store.canCancelOrchestrator)
+                .help("Stop the selected agent")
             }
 
             ToolbarItem(placement: .status) {
@@ -89,10 +95,11 @@ struct SessionDetailView: View {
                 }
             }
         }
-        .confirmationDialog("Cancel \(store.selectedControlAgentLabel) for this session?", isPresented: $confirmCancel) {
-            Button("Cancel \(store.selectedControlAgentLabel)", role: .destructive) {
+        .confirmationDialog("Stop \(store.selectedControlAgentLabel)?", isPresented: $confirmCancel) {
+            Button("Stop \(store.selectedControlAgentLabel)", role: .destructive) {
                 store.cancelOrchestrator()
             }
+            Button("Cancel", role: .cancel) {}
         }
     }
 }

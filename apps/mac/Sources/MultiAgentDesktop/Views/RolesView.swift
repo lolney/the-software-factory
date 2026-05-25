@@ -40,6 +40,7 @@ struct RolesView: View {
                     } label: {
                         Label("Add Role", systemImage: "plus")
                     }
+                    .help("Add a blank role JSON file")
                 }
                 .padding()
 
