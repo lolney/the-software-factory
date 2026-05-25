@@ -1,4 +1,4 @@
-import { PlanSpecSchema, type DaemonRequest, type DebugLogEntry, type DebugLogLevel, type GraphState, type PlanSpec, type SessionEvent, type SessionSnapshot, type WorkflowSpec } from "@multiagent/shared";
+import { CompletionCriterionSchema, PlanSpecSchema, type CompletionCriterion, type DaemonRequest, type DebugLogEntry, type DebugLogLevel, type GraphState, type PlanSpec, type SessionEvent, type SessionSnapshot, type WorkflowSpec } from "@multiagent/shared";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
@@ -25,7 +25,7 @@ interface WorkflowInstance {
   callerAgentId: string;
   nodeMap: Map<string, string>;
   agentIds: string[];
-  completionCriteria: unknown;
+  completionCriteria: CompletionCriterion[];
 }
 
 interface StopAgentResult {
@@ -653,10 +653,13 @@ export class SessionManager {
       || (roleId === "qa" && /\b(pass|passed|acceptance checks completed|acceptance status:\s*pass)\b/i.test(text))
       || (roleId === "implementor" && /\b(implemented|complete|approved|ready for qa|tests pass|tests passed)\b/i.test(text));
     if (!satisfied) return;
+    const completedCriteria = instance.completionCriteria
+      .filter((criterion) => criterion.ownerNodeId === agentId)
+      .map((criterion) => criterion.id);
     await this.stopCurrentAgent(sessionId, agentId, {
       reason: `Engine inferred ${roleId} completion from final message.`,
       artifact: text,
-      completedCriteria: [`${roleId} reported completion`],
+      completedCriteria,
       workflowInstanceId
     }, publish, causationId);
   }
@@ -772,7 +775,7 @@ export class SessionManager {
         await this.stopCurrentAgent(snapshot.sessionId, agentId, {
           reason: "Implementation artifact created.",
           artifact: { files: ["temperature_converter.py", "test_temperature_converter.py"] },
-          completedCriteria: ["implementation_ready_for_qa", "implementation_artifact"],
+          completedCriteria: await this.ownedRequiredCriterionIds(snapshot.sessionId, context.workflowInstanceId, agentId, ["implementation_ready_for_qa", "implementation_artifact"]),
           workflowInstanceId: context.workflowInstanceId
         }, publish, causationId);
       }
@@ -794,7 +797,7 @@ export class SessionManager {
         await this.stopCurrentAgent(snapshot.sessionId, agentId, {
           reason: "Review complete with no blocking findings.",
           artifact: { summary: "No blocking findings." },
-          completedCriteria: ["review_no_blockers", "review_complete"],
+          completedCriteria: await this.ownedRequiredCriterionIds(snapshot.sessionId, context.workflowInstanceId, agentId, ["review_no_blockers", "review_complete"]),
           workflowInstanceId: context.workflowInstanceId
         }, publish, causationId);
       }
@@ -804,7 +807,7 @@ export class SessionManager {
         await this.stopCurrentAgent(snapshot.sessionId, agentId, {
           reason: "QA acceptance passed.",
           artifact: { command: "python3 -m unittest test_temperature_converter.py", result: "passed" },
-          completedCriteria: ["qa_acceptance"],
+          completedCriteria: await this.ownedRequiredCriterionIds(snapshot.sessionId, context.workflowInstanceId, agentId, ["qa_acceptance"]),
           workflowInstanceId: context.workflowInstanceId
         }, publish, causationId);
       }
@@ -961,7 +964,8 @@ export class SessionManager {
     workflowId: string,
     anchorNodeId: string,
     publish: (event: SessionEvent) => void,
-    causationId?: string
+    causationId?: string,
+    planWorkflow?: PlanSpec["workflows"][number]
   ) {
     await this.store.assertSessionExists(sessionId);
     const snapshot = await this.store.readSnapshot(sessionId);
@@ -998,6 +1002,7 @@ export class SessionManager {
       edges: [...snapshot.graph.edges, ...newEdges]
     };
     const workflowInstanceId = `wf_${crypto.randomUUID()}`;
+    const completionCriteria = this.completionCriteriaForInstance(spec, nodeMap, planWorkflow);
     const instantiated = await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId,
@@ -1010,11 +1015,29 @@ export class SessionManager {
         callerAgentId: anchorNodeId,
         anchorNodeId,
         nodeMap: Object.fromEntries(nodeMap),
-        completionCriteria: spec.completionCriteria,
+        completionCriteria,
         stopCriteria: spec.stopCriteria
       },
       causationId
     }, publish);
+    for (const criterion of completionCriteria) {
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId,
+        agentId: criterion.ownerNodeId,
+        timestamp: new Date().toISOString(),
+        type: "completion.criterion.updated",
+        payload: {
+          workflowInstanceId,
+          workflowId,
+          criterionId: criterion.id,
+          criterion,
+          status: "pending",
+          ownerAgentId: criterion.ownerNodeId
+        },
+        causationId: instantiated.eventId
+      }, publish);
+    }
     for (const node of newNodes) {
       await this.appendAndPublish({
         eventId: makeEventId(),
@@ -1068,7 +1091,8 @@ export class SessionManager {
         workflow.workflowId,
         workflow.anchorNodeId ?? anchorNodeId,
         publish,
-        instantiated.eventId
+        instantiated.eventId,
+        workflow
       );
       await this.executeMappedWorkflow(graphResult.snapshot, graphResult.spec, graphResult.nodeMap, workflow, graphResult.eventId, publish, graphResult.workflowInstanceId);
     }
@@ -1108,7 +1132,10 @@ export class SessionManager {
         const from = nodeMap.get(readyHandoff.from) ?? readyHandoff.from;
         const to = nodeMap.get(readyHandoff.to) ?? readyHandoff.to;
         const originalGoal = await this.sessionGoal(snapshot.sessionId, snapshot.title);
-        const prompt = this.promptForPlanAgent(planWorkflow, readyHandoff.to, originalGoal, readyHandoff.description, this.latestAgentMessage(snapshot, from));
+        const prompt = [
+          this.promptForPlanAgent(planWorkflow, readyHandoff.to, originalGoal, readyHandoff.description, this.latestAgentMessage(snapshot, from)),
+          await this.criteriaPromptForAgent(snapshot.sessionId, workflowInstanceId, to)
+        ].filter(Boolean).join("\n\n");
         const handoff = await this.appendAndPublish({
           eventId: makeEventId(),
           sessionId: snapshot.sessionId,
@@ -1155,7 +1182,10 @@ export class SessionManager {
       const from = nodeMap.get(readyMessage.from) ?? readyMessage.from;
       const to = nodeMap.get(readyMessage.to) ?? readyMessage.to;
       const originalGoal = await this.sessionGoal(snapshot.sessionId, snapshot.title);
-      const prompt = this.promptForPlanAgent(planWorkflow, readyMessage.to, originalGoal, readyMessage.description, this.latestAgentMessage(snapshot, from));
+      const prompt = [
+        this.promptForPlanAgent(planWorkflow, readyMessage.to, originalGoal, readyMessage.description, this.latestAgentMessage(snapshot, from)),
+        await this.criteriaPromptForAgent(snapshot.sessionId, workflowInstanceId, to)
+      ].filter(Boolean).join("\n\n");
       const message = await this.appendAndPublish({
         eventId: makeEventId(),
         sessionId: snapshot.sessionId,
@@ -1330,6 +1360,30 @@ export class SessionManager {
       ? (await this.workflowInstancesForSession(sessionId)).find((instance) => instance.workflowInstanceId === input.workflowInstanceId)
       : await this.inferActiveWorkflowForAgent(sessionId, agentId);
     const workflowInstanceId = workflowInstance?.workflowInstanceId ?? input.workflowInstanceId;
+    const criteria = workflowInstance
+      ? await this.validateCompletedCriteria(sessionId, workflowInstance, agentId, input.completedCriteria ?? [])
+      : undefined;
+    if (workflowInstance && criteria && (criteria.invalid.length > 0 || criteria.missingRequired.length > 0)) {
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId,
+        agentId,
+        timestamp: new Date().toISOString(),
+        type: "agent.stop_blocked",
+        payload: {
+          reason: input.reason,
+          workflowInstanceId,
+          invalidCompletedCriteria: criteria.invalid,
+          missingRequiredCriteria: criteria.missingRequired
+        },
+        causationId
+      }, publish);
+      const blockers = [
+        criteria.invalid.length > 0 ? `unknown or unowned criteria ${criteria.invalid.join(", ")}` : undefined,
+        criteria.missingRequired.length > 0 ? `pending criteria ${criteria.missingRequired.join(", ")}` : undefined
+      ].filter(Boolean).join("; ");
+      return { stopped: false, reason: blockers || "completion criteria are incomplete" };
+    }
     if (workflowInstance && !(await this.canAgentStop(sessionId, workflowInstance, agentId))) {
       const unresolved = await this.unresolvedStopDependencies(sessionId, workflowInstance, agentId);
       await this.appendAndPublish({
@@ -1351,6 +1405,28 @@ export class SessionManager {
         unresolved.activeChildWorkflows.length > 0 ? `child workflows ${unresolved.activeChildWorkflows.join(", ")}` : undefined
       ].filter(Boolean).join("; ");
       return { stopped: false, reason: blockers || "completion gates are still open" };
+    }
+    if (workflowInstance && criteria) {
+      for (const criterionId of criteria.accepted) {
+        const criterion = workflowInstance.completionCriteria.find((candidate) => candidate.id === criterionId);
+        await this.appendAndPublish({
+          eventId: makeEventId(),
+          sessionId,
+          agentId,
+          timestamp: new Date().toISOString(),
+          type: "completion.criterion.updated",
+          payload: {
+            workflowInstanceId,
+            workflowId: workflowInstance.workflowId,
+            criterionId,
+            criterion,
+            status: "completed",
+            ownerAgentId: criterion?.ownerNodeId,
+            artifact: input.artifact
+          },
+          causationId
+        }, publish);
+      }
     }
     const stopped = await this.appendAndPublish({
       eventId: makeEventId(),
@@ -1440,6 +1516,9 @@ export class SessionManager {
       .map((event) => event.agentId as string));
     const pendingAgentIds = instance.agentIds.filter((candidate) => !stoppedAgentIds.has(candidate));
     if (pendingAgentIds.length > 0) return;
+    const pendingCriteria = await this.pendingRequiredCriteria(sessionId, instance);
+    if (pendingCriteria.length > 0) return;
+    const ledger = await this.criteriaLedger(sessionId, workflowInstanceId);
     const completed = await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId,
@@ -1452,6 +1531,7 @@ export class SessionManager {
         callerAgentId: instance.callerAgentId,
         completedAgentIds: instance.agentIds,
         completionCriteria: instance.completionCriteria,
+        completedCriteria: [...ledger.completed],
         message: `Workflow ${instance.workflowId} completed: all agents stopped.`
       },
       causationId
@@ -1489,6 +1569,65 @@ export class SessionManager {
       return snapshot.transcript.some((event) => event.type === "agent.stopped" && event.agentId === mappedDependency && event.payload.workflowInstanceId === workflowInstanceId)
         || snapshot.transcript.some((event) => event.type === "handoff.created" && event.payload.from === mappedDependency && (!event.payload.workflowInstanceId || event.payload.workflowInstanceId === workflowInstanceId));
     });
+  }
+
+  private async validateCompletedCriteria(sessionId: string, instance: WorkflowInstance, agentId: string, submittedCriteria: string[]) {
+    const ledger = await this.criteriaLedger(sessionId, instance.workflowInstanceId);
+    const submitted = [...new Set(submittedCriteria.map((criterion) => criterion.trim()).filter(Boolean))];
+    const owned = new Set(instance.completionCriteria
+      .filter((criterion) => criterion.ownerNodeId === agentId)
+      .map((criterion) => criterion.id));
+    const ownedRequired = instance.completionCriteria
+      .filter((criterion) => criterion.required !== false && criterion.ownerNodeId === agentId)
+      .map((criterion) => criterion.id);
+    const invalid = submitted.filter((criterionId) => !owned.has(criterionId));
+    const accepted = submitted.filter((criterionId) => owned.has(criterionId));
+    const satisfied = new Set([...ledger.completed, ...accepted]);
+    const missingRequired = ownedRequired.filter((criterionId) => !satisfied.has(criterionId));
+    return { accepted, invalid, missingRequired };
+  }
+
+  private async ownedRequiredCriterionIds(sessionId: string, workflowInstanceId: string, agentId: string, fallback: string[] = []) {
+    const instance = (await this.workflowInstancesForSession(sessionId)).find((candidate) => candidate.workflowInstanceId === workflowInstanceId);
+    const owned = instance?.completionCriteria
+      .filter((criterion) => criterion.required !== false && criterion.ownerNodeId === agentId)
+      .map((criterion) => criterion.id) ?? [];
+    return owned.length > 0 ? owned : fallback;
+  }
+
+  private async criteriaLedger(sessionId: string, workflowInstanceId: string) {
+    const completed = new Set<string>();
+    const pending = new Set<string>();
+    for (const event of await this.store.readEvents(sessionId)) {
+      if (event.type !== "completion.criterion.updated" || event.payload.workflowInstanceId !== workflowInstanceId) continue;
+      const criterionId = String(event.payload.criterionId ?? "");
+      if (!criterionId) continue;
+      if (event.payload.status === "completed") {
+        completed.add(criterionId);
+        pending.delete(criterionId);
+      } else if (event.payload.status === "pending") {
+        pending.add(criterionId);
+      }
+    }
+    return { completed, pending };
+  }
+
+  private async pendingRequiredCriteria(sessionId: string, instance: WorkflowInstance) {
+    const ledger = await this.criteriaLedger(sessionId, instance.workflowInstanceId);
+    return instance.completionCriteria
+      .filter((criterion) => criterion.required !== false)
+      .filter((criterion) => !ledger.completed.has(criterion.id))
+      .map((criterion) => criterion.id);
+  }
+
+  private async criteriaPromptForAgent(sessionId: string, workflowInstanceId: string, agentId: string) {
+    const instance = (await this.workflowInstancesForSession(sessionId)).find((candidate) => candidate.workflowInstanceId === workflowInstanceId);
+    const criteria = instance?.completionCriteria
+      .filter((criterion) => criterion.ownerNodeId === agentId)
+      .map((criterion) => `- ${criterion.id}: ${criterion.description}${criterion.required === false ? " (optional)" : ""}`) ?? [];
+    return criteria.length > 0
+      ? `Completion criteria ids for workflow_stop_self:\n${criteria.join("\n")}\nPass exactly these ids in completedCriteria when you have satisfied them.`
+      : "";
   }
 
   private async canAgentStop(sessionId: string, instance: WorkflowInstance, agentId: string) {
@@ -1537,13 +1676,19 @@ export class SessionManager {
         const workflowId = String(event.payload.workflowId ?? "");
         const callerAgentId = String(event.payload.callerAgentId ?? event.payload.anchorNodeId ?? event.agentId ?? "orchestrator");
         const agentIds = [...new Set([...nodeMap.values()].filter((value) => value !== callerAgentId))];
+        const completionCriteria = Array.isArray(event.payload.completionCriteria)
+          ? event.payload.completionCriteria
+            .map((criterion) => CompletionCriterionSchema.safeParse(criterion))
+            .filter((parsed) => parsed.success)
+            .map((parsed) => parsed.data)
+          : [];
         return {
           workflowInstanceId,
           workflowId,
           callerAgentId,
           nodeMap,
           agentIds,
-          completionCriteria: event.payload.completionCriteria
+          completionCriteria
         };
       });
   }
@@ -1566,6 +1711,56 @@ export class SessionManager {
 
   private workflowSpecsForPlan(plan: PlanSpec) {
     return plan.workflows.map((workflow) => this.workflows.get(workflow.workflowId));
+  }
+
+  private completionCriteriaForInstance(spec: WorkflowSpec, nodeMap: Map<string, string>, planWorkflow?: PlanSpec["workflows"][number]) {
+    const criteria = new Map<string, CompletionCriterion>();
+    const addCriterion = (criterion: CompletionCriterion, ownerNodeId?: string) => {
+      const mappedOwner = ownerNodeId ? nodeMap.get(ownerNodeId) ?? ownerNodeId : criterion.ownerNodeId;
+      if (criterion.required !== false && !mappedOwner) {
+        throw new Error(`Required completion criterion ${criterion.id} must have an ownerNodeId.`);
+      }
+      let id = criterion.id;
+      let suffix = 2;
+      while (criteria.has(id)) {
+        id = safeCriterionId(`${criterion.id}_${suffix}`);
+        suffix += 1;
+      }
+      criteria.set(id, { ...criterion, id, ownerNodeId: mappedOwner });
+    };
+
+    for (const criterion of spec.completionCriteria) {
+      addCriterion(criterion, criterion.ownerNodeId);
+    }
+
+    if (planWorkflow) {
+      for (const [ownerKey, ownerCriteria] of Object.entries(planWorkflow.completionCriteria)) {
+        const ownerNodeId = this.resolvePlanCriterionOwner(spec, ownerKey);
+        for (const criterion of ownerCriteria) {
+          addCriterion(criterion, ownerNodeId);
+        }
+      }
+      for (const [ownerKey, doneCriteria] of Object.entries(planWorkflow.doneCriteria)) {
+        const ownerNodeId = this.resolvePlanCriterionOwner(spec, ownerKey);
+        const owner = ownerNodeId ?? ownerKey;
+        doneCriteria.forEach((description, index) => {
+          addCriterion({
+            id: safeCriterionId(`done_${owner}_${index + 1}_${description}`),
+            description,
+            ownerNodeId,
+            required: true
+          }, ownerNodeId);
+        });
+      }
+    }
+
+    return [...criteria.values()];
+  }
+
+  private resolvePlanCriterionOwner(spec: WorkflowSpec, ownerKey: string) {
+    return spec.nodes.find((node) => node.id === ownerKey)?.id
+      ?? spec.nodes.find((node) => node.roleId === ownerKey)?.id
+      ?? ownerKey;
   }
 
   private async latestUninstantiatedPlan(sessionId: string) {
@@ -1615,8 +1810,6 @@ export class SessionManager {
   private promptForPlanAgent(planWorkflow: PlanSpec["workflows"][number], nodeId: string, originalGoal: string, edgeDescription = "", incomingMessage?: string) {
     const roleKey = nodeId.split("_").at(-1) ?? nodeId;
     const explicitPrompt = planWorkflow.agentPrompts[nodeId] ?? planWorkflow.agentPrompts[roleKey];
-    const doneCriteria = planWorkflow.doneCriteria[nodeId] ?? planWorkflow.doneCriteria[roleKey] ?? [];
-    const completionCriteria = planWorkflow.completionCriteria[nodeId] ?? planWorkflow.completionCriteria[roleKey] ?? [];
     const defaultTask = defaultTaskForRole(roleKey, planWorkflow.workflowId);
     return [
       explicitPrompt,
@@ -1626,8 +1819,6 @@ export class SessionManager {
       edgeDescription ? `Transition instruction: ${edgeDescription}` : undefined,
       incomingMessage ? `Incoming message or artifact from the previous agent:\n${incomingMessage}` : undefined,
       `Task: ${defaultTask}`,
-      doneCriteria.length > 0 ? `Done criteria:\n${doneCriteria.map((criterion) => `- ${criterion}`).join("\n")}` : undefined,
-      completionCriteria.length > 0 ? `Completion criteria:\n${completionCriteria.map((criterion) => `- ${criterion.description}`).join("\n")}` : undefined,
       "Use the available workflow/workspace tools. Report concrete files, commands, findings, and acceptance status instead of asking for context already present here."
     ].filter(Boolean).join("\n\n");
   }
@@ -2035,6 +2226,15 @@ function uniqueId(base: string, existing: Set<string>) {
     suffix += 1;
   }
   return candidate;
+}
+
+function safeCriterionId(value: string) {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+  return normalized || `criterion_${crypto.randomUUID().slice(0, 8)}`;
 }
 
 function containedPath(root: string, relativePath: string) {

@@ -428,9 +428,65 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "agent.tool_result" && event.agentId?.includes("implementor") && String(event.payload.diff).includes("def celsius_to_fahrenheit"))).toBe(true);
       expect(replay.events.some((event) => event.type === "agent.tool_result" && event.agentId?.includes("qa") && String(event.payload.output).includes("OK"))).toBe(true);
       expect(replay.events.some((event) => event.type === "agent.stop_blocked" && event.agentId?.includes("implementor"))).toBe(true);
+      const blockedImplementorIndex = replay.events.findIndex((event) => event.type === "agent.stop_blocked" && event.agentId?.includes("implementor"));
+      const completedImplementorCriterionIndex = replay.events.findIndex((event) => event.type === "completion.criterion.updated" && event.agentId?.includes("implementor") && event.payload.status === "completed");
+      expect(completedImplementorCriterionIndex).toBeGreaterThan(blockedImplementorIndex);
       expect(replay.events.some((event) => event.type === "agent.stopped" && event.agentId?.includes("qa") && event.payload.completedCriteria instanceof Array && event.payload.completedCriteria.includes("qa_acceptance"))).toBe(true);
+      expect(replay.events.some((event) => event.type === "completion.criterion.updated" && event.payload.criterionId === "qa_acceptance" && event.payload.status === "completed")).toBe(true);
       expect(replay.events.some((event) => event.type === "workflow.completed" && String(event.payload.workflowId) === "implementation-review-qa")).toBe(true);
+      expect(replay.events.some((event) => event.type === "workflow.completed" && event.payload.completedCriteria instanceof Array && event.payload.completedCriteria.includes("qa_acceptance"))).toBe(true);
       expect(replay.events.some((event) => event.type === "message.sent" && String(event.payload.text).includes("Workflow implementation-review-qa completed"))).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks agent stop when required completion criteria are missing", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            if (input.agentId === "orchestrator") {
+              await input.workflowTools?.startWorkflow?.("implementor-qa-loop");
+            }
+            if (input.agentId === "implementor" || input.agentId.endsWith("_implementor")) {
+              await input.workflowTools?.stopSelf?.("done with another agent criterion", undefined, ["qa_acceptance"]);
+            }
+            return [{
+              eventId: `evt_${crypto.randomUUID()}`,
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { text: "ok" }
+            }];
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_missing_criteria",
+        method: "createSession",
+        params: {
+          prompt: "Implement but omit completion criteria",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      const replay = await manager.handle({
+        id: "req_missing_criteria_replay",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
+
+      expect(replay.events.some((event) => event.type === "completion.criterion.updated" && event.payload.status === "pending" && event.payload.criterionId === "implementation_ready_for_qa")).toBe(true);
+      expect(replay.events.some((event) => event.type === "agent.stop_blocked" && event.agentId?.endsWith("_implementor") && Array.isArray(event.payload.missingRequiredCriteria) && event.payload.missingRequiredCriteria.includes("implementation_ready_for_qa"))).toBe(true);
+      expect(replay.events.some((event) => event.type === "agent.stop_blocked" && event.agentId?.endsWith("_implementor") && Array.isArray(event.payload.invalidCompletedCriteria) && event.payload.invalidCompletedCriteria.includes("qa_acceptance"))).toBe(true);
+      expect(replay.events.some((event) => event.type === "completion.criterion.updated" && event.payload.status === "completed" && event.payload.criterionId === "qa_acceptance" && event.agentId?.endsWith("_implementor"))).toBe(false);
+      expect(replay.events.some((event) => event.type === "agent.stopped" && event.agentId?.endsWith("_implementor"))).toBe(false);
+      expect(replay.events.some((event) => event.type === "workflow.completed")).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -110,6 +110,7 @@ export const SessionEventTypeSchema = z.enum([
   "workflow.instantiated",
   "workflow.completed",
   "workflow.stopped",
+  "completion.criterion.updated",
   "agent.created",
   "agent.status",
   "agent.stopped",
