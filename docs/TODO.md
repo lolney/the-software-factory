@@ -7,12 +7,16 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 - **P1: Harden workspace management for multi-agent coding.** Add pre-write file leases, conflict blocking, merge/review checkpoints, and durable lease reconstruction.
 - **P1: Make the event store operationally robust.** Add monotonic sequence IDs, append serialization per session, checksummed frames, snapshot compaction, indexes for sessions/agents/tool calls, and corruption recovery tests.
 - **P1: Isolate OpenAI/WHAM runtime integration.** Move to per-run clients, honor role model/settings, add retries/backoff/timeouts/usage telemetry, and isolate WHAM behind a compatibility adapter with explicit compliance review.
+- **P1: Harden daemon ownership proof before sending the local auth token.** Replace the unauthenticated health-string check with a challenge or token-authenticated ownership probe so a spoofed loopback listener cannot receive the daemon token.
 - **P1: Fix transcript/event causality ordering.** Tool-side effects such as `agent.stopped`, `workflow.completed`, and workspace file events can appear before the `agent.tool_call`/`agent.tool_result` transcript items that caused them; normalize event buffering so the timeline reads in causal order.
 - **P1: Make child workflow execution resumable outside a single model turn.** The orchestrator currently executes long child workflows inside one WHAM tool-call loop, which can still exhaust the model turn budget. Move child workflows to durable scheduler jobs and notify the caller asynchronously.
 - **P1: De-duplicate tool transcript events.** Engine tools such as `workspace_write_file` currently emit both runtime-level tool call/result events and internal engine tool events, creating duplicate rows and inconsistent tool names.
 - **P2: Expand UI control and observability for autonomous workflows.** Add a first-class workflow/run inspector, criteria checklist, diff/artifact browser, per-agent control panel, reconnect/resume UI.
+- **P2: Add retry/resume UI for recovered scheduler jobs.** Recovery currently marks interrupted jobs failed; persist enough job input and expose a retry action so users can resume work after daemon restarts.
 
 ## UX And Product Review Follow-Ups
+
+- **P2: Improve dense workflow graph layout.** Reduce edge overlap and node crowding for multi-agent workflows, add pan/zoom or fit controls, and consider grouped workflow lanes for instantiated subgraphs.
 
 
 ## Codex App Comparison Follow-Ups

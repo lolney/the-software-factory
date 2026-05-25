@@ -124,9 +124,18 @@ struct SessionDashboardView: View {
 
     private func dateLabel(_ timestamp: String?) -> String {
         guard let timestamp,
-              let date = ISO8601DateFormatter().date(from: timestamp) else {
+              let date = parseISO8601(timestamp) else {
             return "Unknown"
         }
         return date.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private func parseISO8601(_ timestamp: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: timestamp) {
+            return date
+        }
+        return ISO8601DateFormatter().date(from: timestamp)
     }
 }

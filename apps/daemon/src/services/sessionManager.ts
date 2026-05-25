@@ -918,25 +918,54 @@ export class SessionManager {
   private async runWorkspaceCommand(snapshot: SessionSnapshot, agentId: string, command: string, args: string[] = [], cwd: string | undefined, publish: (event: SessionEvent) => void) {
     await this.authorizeCapability(snapshot, agentId, "workspace.command", { command, args, cwd: cwd ?? "." }, publish);
     const workingDirectory = cwd ? containedPath(snapshot.workspaceRoot, cwd) : snapshot.workspaceRoot;
+    const callId = `call_${crypto.randomUUID()}`;
+    const startedAt = Date.now();
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.tool_call",
+      payload: { callId, toolName: "workspace.run_command", input: { command, args, cwd: cwd ?? "." } }
+    }, publish);
     try {
       const result = await execFileAsync(command, args, {
         cwd: workingDirectory,
         timeout: 60_000,
         maxBuffer: 1024 * 1024
       });
-      return [
+      const output = [
         `exitCode: 0`,
         result.stdout ? `stdout:\n${result.stdout}` : undefined,
         result.stderr ? `stderr:\n${result.stderr}` : undefined
       ].filter(Boolean).join("\n");
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId,
+        timestamp: new Date().toISOString(),
+        type: "agent.tool_result",
+        payload: { callId, toolName: "workspace.run_command", output, exitCode: 0, durationMs: Date.now() - startedAt, cwd: workingDirectory }
+      }, publish);
+      return output;
     } catch (error) {
       const processError = error as { code?: unknown; stdout?: string; stderr?: string; message?: string };
-      return [
-        `exitCode: ${typeof processError.code === "number" ? processError.code : 1}`,
+      const exitCode = typeof processError.code === "number" ? processError.code : 1;
+      const output = [
+        `exitCode: ${exitCode}`,
         processError.stdout ? `stdout:\n${processError.stdout}` : undefined,
         processError.stderr ? `stderr:\n${processError.stderr}` : undefined,
         processError.message ? `error:\n${processError.message}` : undefined
       ].filter(Boolean).join("\n");
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId,
+        timestamp: new Date().toISOString(),
+        type: "agent.tool_result",
+        payload: { callId, toolName: "workspace.run_command", output, exitCode, durationMs: Date.now() - startedAt, cwd: workingDirectory }
+      }, publish);
+      return output;
     }
   }
 
@@ -1767,12 +1796,18 @@ export class SessionManager {
     if (planWorkflow) {
       for (const [ownerKey, ownerCriteria] of Object.entries(planWorkflow.completionCriteria)) {
         const ownerNodeId = this.resolvePlanCriterionOwner(spec, ownerKey);
+        if (!ownerNodeId) {
+          throw new Error(`Plan workflow ${planWorkflow.workflowId} completion criteria reference unknown owner ${ownerKey}.`);
+        }
         for (const criterion of ownerCriteria) {
           addCriterion(criterion, ownerNodeId);
         }
       }
       for (const [ownerKey, doneCriteria] of Object.entries(planWorkflow.doneCriteria)) {
         const ownerNodeId = this.resolvePlanCriterionOwner(spec, ownerKey);
+        if (!ownerNodeId) {
+          throw new Error(`Plan workflow ${planWorkflow.workflowId} done criteria reference unknown owner ${ownerKey}.`);
+        }
         const owner = ownerNodeId ?? ownerKey;
         doneCriteria.forEach((description, index) => {
           addCriterion({
@@ -1791,7 +1826,7 @@ export class SessionManager {
   private resolvePlanCriterionOwner(spec: WorkflowSpec, ownerKey: string) {
     return spec.nodes.find((node) => node.id === ownerKey)?.id
       ?? spec.nodes.find((node) => node.roleId === ownerKey)?.id
-      ?? ownerKey;
+      ?? undefined;
   }
 
   private async latestUninstantiatedPlan(sessionId: string) {

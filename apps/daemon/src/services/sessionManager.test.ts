@@ -739,6 +739,12 @@ describe("SessionManager deterministic debug sessions", () => {
         && event.payload.allowed === true
       )).toBe(true);
       expect(replay.events.some((event) =>
+        event.type === "agent.tool_result"
+        && event.agentId?.includes("qa")
+        && event.payload.toolName === "workspace.run_command"
+        && event.payload.exitCode === 0
+      )).toBe(true);
+      expect(replay.events.some((event) =>
         event.type === "agent.message"
         && event.agentId?.includes("qa")
         && String(event.payload.text).includes(snapshot.workspaceRoot)
