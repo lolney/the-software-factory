@@ -4,7 +4,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 ## Architecture And Code Review Follow-Ups
 
-- **P0: Add durable scheduling and restart recovery.** Add a persistent run queue/state machine with resumable workflow instance records, idempotent transition execution, heartbeat/lease expiry, and startup reconciliation.
 - **P0: Remove demo-hardcoded planning from production paths.** Require planner output through `plan_create`, validate it, and execute only model/user-authored workflow specs.
 - **P0: Enforce completion criteria as first-class state.** Build a criterion ledger keyed by workflow instance, validate `completedCriteria` against spec/owner, block completion until required criteria pass, and expose pending blockers.
     - This should be implemented according to the "Completion Criteria" below
@@ -38,6 +37,7 @@ Computer Use could inspect this app, but direct Computer Use access to `com.open
 - **2026-05-25: Improve new-session prompt reliability.** Preserved draft prompts across failed creation attempts, restored explicit focus behavior, and used a larger dedicated prompt editor for new sessions.
 - **2026-05-25: Move OpenAI setup into session start.** Added inline `Set Up OpenAI...` and refresh actions, credential checking state, and Live creation blocking until credentials are ready.
 - **2026-05-25: Add session model and effort controls.** Session creation now records model/reasoning effort and passes them through the daemon to live Agents SDK/WHAM runs.
+- **2026-05-25: Add durable scheduler recovery.** Added append-only scheduler job lifecycle events, per-run heartbeat records, startup recovery for interrupted jobs, stale tool-call cleanup on failed/cancelled/completed agents, and daemon tests for restart recovery.
 - **2026-05-25: Surface failures prominently.** Added a session-level status banner with a Debug shortcut and dismissible transient errors.
 - **2026-05-25: Clarify agent controls.** Split transcript viewing from the control target, added a `Control` toolbar menu, exposed `Controlling: <agent>` in the graph panel, and renamed pause to "Pause Scheduling."
 - **2026-05-25: Add a Workspace inspector.** Added a Workspace inspector tab with root path, copy/open actions, touched files, diff stats, conflict counts, and empty states.

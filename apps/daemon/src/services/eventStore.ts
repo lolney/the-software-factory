@@ -36,6 +36,16 @@ export class EventStore {
     return containedPath(this.sessionsRoot, sessionId);
   }
 
+  async listSessionIds() {
+    await this.ensureRoot();
+    const entries = await readdir(this.sessionsRoot, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .filter((name) => /^[A-Za-z0-9_-]+$/.test(name))
+      .filter((name) => existsSync(path.join(this.sessionDir(name), "events.jsonl")));
+  }
+
   async assertSessionExists(sessionId: string) {
     const dir = this.sessionDir(sessionId);
     if (!existsSync(path.join(dir, "events.jsonl"))) {
@@ -328,6 +338,13 @@ export class EventStore {
             if (call.agentId === event.agentId && call.toolName === event.payload.toolName) {
               activeToolCalls.delete(key);
             }
+          }
+        }
+      }
+      if (event.type === "agent.status" && ["cancelled", "failed", "completed"].includes(String(event.payload.status ?? ""))) {
+        for (const [key, call] of activeToolCalls) {
+          if (call.agentId === event.agentId) {
+            activeToolCalls.delete(key);
           }
         }
       }

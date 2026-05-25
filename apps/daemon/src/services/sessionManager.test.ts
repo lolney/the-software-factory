@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { SessionManager } from "./sessionManager.js";
+import { EventStore, makeEventId } from "./eventStore.js";
 
 describe("SessionManager deterministic debug sessions", () => {
   it("creates a replayable multiagent debug session", async () => {
@@ -319,6 +320,77 @@ describe("SessionManager deterministic debug sessions", () => {
         params: { sessionId: snapshot.sessionId }
       }) as { logs: Array<{ level: string; message: string }> };
       expect(logs.logs.some((entry) => entry.level === "error" && entry.message === "model unavailable")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("records scheduler jobs and recovers interrupted runs on daemon restart", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      const snapshot = await manager.handle({
+        id: "req_scheduler_session",
+        method: "createSession",
+        params: {
+          prompt: "scheduler recovery",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: true
+        }
+      }) as { sessionId: string };
+      const firstReplay = await manager.handle({
+        id: "req_scheduler_replay",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string; payload: Record<string, unknown> }> };
+      expect(firstReplay.events.some((event) => event.type === "scheduler.job.created")).toBe(true);
+      expect(firstReplay.events.some((event) => event.type === "scheduler.job.completed")).toBe(true);
+      const firstRuntimeOutputIndex = firstReplay.events.findIndex((event) => event.type === "agent.message");
+      const firstTerminalJobIndex = firstReplay.events.findIndex((event) => event.type === "scheduler.job.completed");
+      expect(firstTerminalJobIndex).toBeGreaterThan(firstRuntimeOutputIndex);
+
+      const store = new EventStore(root);
+      const openJobId = `job_${crypto.randomUUID()}`;
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: "orchestrator",
+        timestamp: new Date().toISOString(),
+        type: "scheduler.job.started",
+        payload: { jobId: openJobId, kind: "agent-turn", agentId: "orchestrator" },
+        correlationId: openJobId
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: "orchestrator",
+        timestamp: new Date().toISOString(),
+        type: "agent.tool_call",
+        payload: { callId: "call_interrupted", toolName: "workspace_read_file" },
+        correlationId: openJobId
+      });
+
+      const restarted = new SessionManager({ sessionsRoot: root });
+      await restarted.handle({
+        id: "req_recover",
+        method: "listSessions",
+        params: { includeArchived: true }
+      });
+      const replay = await restarted.handle({
+        id: "req_recovered_replay",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
+      expect(replay.events.some((event) => event.type === "scheduler.job.recovered" && event.payload.jobId === openJobId)).toBe(true);
+      expect(replay.events.some((event) => event.type === "error" && event.payload.jobId === openJobId)).toBe(true);
+      expect(replay.events.some((event) => event.type === "agent.status" && event.agentId === "orchestrator" && event.payload.status === "failed" && event.payload.jobId === openJobId)).toBe(true);
+      const recoveredSnapshot = await restarted.handle({
+        id: "req_recovered_snapshot",
+        method: "getSnapshot",
+        params: { sessionId: snapshot.sessionId }
+      }) as { graph: { activeToolCalls: unknown[] } };
+      expect(recoveredSnapshot.graph.activeToolCalls).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

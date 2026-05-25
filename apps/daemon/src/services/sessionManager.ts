@@ -33,6 +33,13 @@ interface StopAgentResult {
   reason: string;
 }
 
+interface ScheduledJob {
+  jobId: string;
+  kind: string;
+  createdEventId: string;
+  heartbeat: ReturnType<typeof setInterval>;
+}
+
 export class SessionManager {
   private readonly subscribers = new Map<string, Set<(event: SessionEvent) => void>>();
   private readonly logSubscribers = new Map<string, Set<(entry: DebugLogEntry) => void>>();
@@ -44,6 +51,7 @@ export class SessionManager {
   private readonly activeRuns = new Map<string, AbortController>();
   private readonly auth = new AuthManager();
   private roleOverridesLoaded = false;
+  private recoveryComplete = false;
 
   constructor(private readonly options: { sessionsRoot: string; runtime?: AgentRuntime }) {
     this.store = new EventStore(options.sessionsRoot);
@@ -63,6 +71,7 @@ export class SessionManager {
     await this.workflows.loadPredefined();
     await this.workflows.reloadPersonalCatalog();
     await this.loadRoleOverrides();
+    await this.recoverInterruptedRuns(publish, publishLog);
     switch (request.method) {
       case "listSessions":
         return {
@@ -287,24 +296,35 @@ export class SessionManager {
     const role = this.resolveRole(snapshot, agentId);
     const integrationCatalog = await this.integrations.listCatalog();
     const openAI = await this.openAIConnection(debugMode);
-    const events = await this.runControlledTurn(snapshot.sessionId, agentId, {
-      sessionId: snapshot.sessionId,
-      agentId,
+    const job = await this.startScheduledTurn(snapshot.sessionId, agentId, publish, {
+      kind: "agent-turn",
       prompt: userText,
-      debugMode,
-      roleName: role?.name,
-      instructions: role?.promptTemplate,
-      model: modelForRun(snapshot, role),
-      reasoningEffort: reasoningEffortForRun(snapshot),
-      apiKey: openAI?.apiKey,
-      openAI,
-      workflowTools: this.workflowTools(snapshot, agentId, publish),
-      mcpServers: debugMode || this.options.runtime ? [] : await this.mcpServersForRole(role),
-      skills: integrationCatalog.skills,
       causationId: promptEvent.eventId
     });
-    await this.appendRuntimeEvents(snapshot.sessionId, agentId, events, publish);
-    await this.store.rebuildSnapshot(snapshot.sessionId);
+    try {
+      const events = await this.runControlledTurn(snapshot.sessionId, agentId, {
+        sessionId: snapshot.sessionId,
+        agentId,
+        prompt: userText,
+        debugMode,
+        roleName: role?.name,
+        instructions: role?.promptTemplate,
+        model: modelForRun(snapshot, role),
+        reasoningEffort: reasoningEffortForRun(snapshot),
+        apiKey: openAI?.apiKey,
+        openAI,
+        workflowTools: this.workflowTools(snapshot, agentId, publish),
+        mcpServers: debugMode || this.options.runtime ? [] : await this.mcpServersForRole(role),
+        skills: integrationCatalog.skills,
+        causationId: promptEvent.eventId
+      });
+      await this.appendRuntimeEvents(snapshot.sessionId, agentId, events, publish);
+      await this.store.rebuildSnapshot(snapshot.sessionId);
+      const error = events.find((event) => event.type === "error");
+      await this.finishScheduledTurn(snapshot.sessionId, agentId, job, publish, error ? "failed" : "completed", events.length, error?.payload.message);
+    } catch (error) {
+      await this.failScheduledSideEffect(snapshot.sessionId, agentId, job, publish, error, promptEvent.eventId);
+    }
   }
 
   private async controlEvent(
@@ -521,37 +541,51 @@ export class SessionManager {
     const role = this.resolveRole(snapshot, agentId);
     const integrationCatalog = await this.integrations.listCatalog();
     const openAI = await this.openAIConnection(snapshot.debugMode);
-    const events = await this.runControlledTurn(snapshot.sessionId, agentId, {
-      sessionId: snapshot.sessionId,
-      agentId,
+    const job = await this.startScheduledTurn(snapshot.sessionId, agentId, publish, {
+      kind: "workflow-agent-turn",
       prompt,
-      debugMode: snapshot.debugMode,
-      roleName: role?.name,
-      instructions: role?.promptTemplate,
-      model: modelForRun(snapshot, role),
-      reasoningEffort: reasoningEffortForRun(snapshot),
-      apiKey: openAI?.apiKey,
-      openAI,
-      workflowTools: this.workflowTools(snapshot, agentId, publish, context),
-      mcpServers: snapshot.debugMode || this.options.runtime ? [] : await this.mcpServersForRole(role),
-      skills: integrationCatalog.skills,
+      workflowInstanceId: context.workflowInstanceId,
+      workflowId: context.workflowId,
+      callerAgentId: context.callerAgentId,
       causationId
     });
-    await this.appendRuntimeEvents(snapshot.sessionId, agentId, events, publish);
-    if (role?.toolPolicy.canCreatePlans) {
-      await this.createPlanForSession(snapshot, agentId, causationId, publish);
-    } else if (snapshot.debugMode) {
-      await this.applyDeterministicRoleWork(snapshot, agentId, causationId, publish, context);
+    try {
+      const events = await this.runControlledTurn(snapshot.sessionId, agentId, {
+        sessionId: snapshot.sessionId,
+        agentId,
+        prompt,
+        debugMode: snapshot.debugMode,
+        roleName: role?.name,
+        instructions: role?.promptTemplate,
+        model: modelForRun(snapshot, role),
+        reasoningEffort: reasoningEffortForRun(snapshot),
+        apiKey: openAI?.apiKey,
+        openAI,
+        workflowTools: this.workflowTools(snapshot, agentId, publish, context),
+        mcpServers: snapshot.debugMode || this.options.runtime ? [] : await this.mcpServersForRole(role),
+        skills: integrationCatalog.skills,
+        causationId
+      });
+      await this.appendRuntimeEvents(snapshot.sessionId, agentId, events, publish);
+      if (role?.toolPolicy.canCreatePlans) {
+        await this.createPlanForSession(snapshot, agentId, causationId, publish);
+      } else if (snapshot.debugMode) {
+        await this.applyDeterministicRoleWork(snapshot, agentId, causationId, publish, context);
+      }
+      await this.maybeAutoStopSatisfiedAgent(
+        snapshot.sessionId,
+        agentId,
+        role?.id ?? snapshot.graph.nodes.find((node) => node.id === agentId)?.roleId ?? agentId,
+        context.workflowInstanceId,
+        publish,
+        causationId
+      );
+      await this.store.rebuildSnapshot(snapshot.sessionId);
+      const error = events.find((event) => event.type === "error");
+      await this.finishScheduledTurn(snapshot.sessionId, agentId, job, publish, error ? "failed" : "completed", events.length, error?.payload.message);
+    } catch (error) {
+      await this.failScheduledSideEffect(snapshot.sessionId, agentId, job, publish, error, causationId);
     }
-    await this.maybeAutoStopSatisfiedAgent(
-      snapshot.sessionId,
-      agentId,
-      role?.id ?? snapshot.graph.nodes.find((node) => node.id === agentId)?.roleId ?? agentId,
-      context.workflowInstanceId,
-      publish,
-      causationId
-    );
-    await this.store.rebuildSnapshot(snapshot.sessionId);
   }
 
   private assertAgentCanReceive(snapshot: SessionSnapshot, agentId: string) {
@@ -1662,6 +1696,205 @@ export class SessionManager {
     const subscribers = this.logSubscribers.get(sessionId) ?? new Set<(entry: DebugLogEntry) => void>();
     subscribers.add(publish);
     this.logSubscribers.set(sessionId, subscribers);
+  }
+
+  private async recoverInterruptedRuns(
+    publish: (event: SessionEvent) => void = () => {},
+    publishLog: (entry: DebugLogEntry) => void = () => {}
+  ) {
+    if (this.recoveryComplete) return;
+    try {
+      for (const sessionId of await this.store.listSessionIds()) {
+        const events = await this.store.readEvents(sessionId);
+        const closedJobIds = new Set(events
+          .filter((event) => ["scheduler.job.completed", "scheduler.job.failed", "scheduler.job.recovered"].includes(event.type))
+          .map((event) => String(event.payload.jobId ?? ""))
+          .filter(Boolean));
+        const openJobs = new Map<string, SessionEvent>();
+        for (const event of events) {
+          if (!["scheduler.job.created", "scheduler.job.started", "scheduler.job.heartbeat"].includes(event.type)) continue;
+          const jobId = String(event.payload.jobId ?? "");
+          if (!jobId || closedJobIds.has(jobId)) continue;
+          openJobs.set(jobId, event);
+        }
+        for (const [jobId, event] of openJobs) {
+          const agentId = event.agentId ?? String(event.payload.agentId ?? "");
+          if (!agentId || this.activeRuns.has(runKey(sessionId, agentId))) continue;
+          const recovered = await this.appendAndPublish({
+            eventId: makeEventId(),
+            sessionId,
+            agentId,
+            timestamp: new Date().toISOString(),
+            type: "scheduler.job.recovered",
+            payload: {
+              jobId,
+              reason: "Daemon restarted before this scheduler job reached a terminal event.",
+              recoveredFromEventId: event.eventId
+            },
+            causationId: event.eventId,
+            correlationId: jobId
+          }, publish);
+          await this.appendAndPublish({
+            eventId: makeEventId(),
+            sessionId,
+            agentId,
+            timestamp: new Date().toISOString(),
+            type: "error",
+            payload: {
+              message: "Daemon restarted while this agent turn was in progress; the run was marked interrupted.",
+              jobId
+            },
+            causationId: recovered.eventId,
+            correlationId: jobId
+          }, publish);
+          await this.appendAndPublish({
+            eventId: makeEventId(),
+            sessionId,
+            agentId,
+            timestamp: new Date().toISOString(),
+            type: "agent.status",
+            payload: { status: "failed", reason: "interrupted by daemon restart", jobId },
+            causationId: recovered.eventId,
+            correlationId: jobId
+          }, publish);
+          await this.appendDebugLog(
+            sessionId,
+            "warn",
+            "scheduler",
+            `Recovered interrupted scheduler job ${jobId}.`,
+            { jobId, agentId, recoveredFromEventId: event.eventId },
+            publishLog,
+            agentId,
+            recovered.eventId
+          );
+        }
+        if (openJobs.size > 0) {
+          await this.store.rebuildSnapshot(sessionId);
+        }
+      }
+      this.recoveryComplete = true;
+    } catch (error) {
+      this.recoveryComplete = false;
+      throw error;
+    }
+  }
+
+  private async startScheduledTurn(
+    sessionId: string,
+    agentId: string,
+    publish: (event: SessionEvent) => void,
+    metadata: {
+      kind: string;
+      prompt: string;
+      workflowInstanceId?: string;
+      workflowId?: string;
+      callerAgentId?: string;
+      causationId?: string;
+    }
+  ): Promise<ScheduledJob> {
+    const jobId = `job_${crypto.randomUUID()}`;
+    const created = await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "scheduler.job.created",
+      payload: {
+        jobId,
+        kind: metadata.kind,
+        agentId,
+        prompt: metadata.prompt,
+        workflowInstanceId: metadata.workflowInstanceId,
+        workflowId: metadata.workflowId,
+        callerAgentId: metadata.callerAgentId
+      },
+      causationId: metadata.causationId,
+      correlationId: jobId
+    }, publish);
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "scheduler.job.started",
+      payload: { jobId, kind: metadata.kind, agentId },
+      causationId: created.eventId,
+      correlationId: jobId
+    }, publish);
+    const heartbeat = setInterval(() => {
+      void this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId,
+        agentId,
+        timestamp: new Date().toISOString(),
+        type: "scheduler.job.heartbeat",
+        payload: { jobId, kind: metadata.kind, agentId },
+        causationId: created.eventId,
+        correlationId: jobId
+      }, publish).catch(() => {});
+    }, 30_000);
+    return { jobId, kind: metadata.kind, createdEventId: created.eventId, heartbeat };
+  }
+
+  private async finishScheduledTurn(
+    sessionId: string,
+    agentId: string,
+    job: ScheduledJob,
+    publish: (event: SessionEvent) => void,
+    status: "completed" | "failed",
+    eventCount: number,
+    message?: unknown
+  ) {
+    clearInterval(job.heartbeat);
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: status === "failed" ? "scheduler.job.failed" : "scheduler.job.completed",
+      payload: {
+        jobId: job.jobId,
+        kind: job.kind,
+        agentId,
+        eventCount,
+        message
+      },
+      causationId: job.createdEventId,
+      correlationId: job.jobId
+    }, publish);
+  }
+
+  private async failScheduledSideEffect(
+    sessionId: string,
+    agentId: string,
+    job: ScheduledJob,
+    publish: (event: SessionEvent) => void,
+    error: unknown,
+    causationId?: string
+  ) {
+    const message = error instanceof Error ? error.message : String(error);
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "error",
+      payload: { message, jobId: job.jobId },
+      causationId,
+      correlationId: job.jobId
+    }, publish);
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.status",
+      payload: { status: "failed", jobId: job.jobId },
+      causationId,
+      correlationId: job.jobId
+    }, publish);
+    await this.store.rebuildSnapshot(sessionId);
+    await this.finishScheduledTurn(sessionId, agentId, job, publish, "failed", 2, message);
   }
 
   private async runControlledTurn(sessionId: string, agentId: string, input: Parameters<AgentRuntime["runTurn"]>[0]): Promise<SessionEvent[]> {
