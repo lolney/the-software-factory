@@ -1,0 +1,128 @@
+digraph DaemonArchitecture {
+  graph [
+    label="Multiagent Daemon Code Architecture",
+    labelloc="t",
+    fontsize=22,
+    fontname="Helvetica",
+    rankdir=LR,
+    compound=true,
+    bgcolor="white",
+    pad=0.35,
+    nodesep=0.55,
+    ranksep=0.85
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Helvetica",
+    fontsize=11,
+    color="#c8ccd0",
+    fillcolor="#f7f8fa",
+    margin="0.12,0.08"
+  ];
+
+  edge [
+    fontname="Helvetica",
+    fontsize=10,
+    color="#6b7280",
+    arrowsize=0.8
+  ];
+
+  subgraph cluster_entry {
+    label="Process and Transport";
+    color="#d6e4ff";
+    style="rounded,filled";
+    fillcolor="#f7fbff";
+
+    nodeMain [label="nodeMain.ts\nNode/Bun entrypoint"];
+    main [label="main.ts\nCLI/server bootstrap"];
+    server [label="server.ts\nBun HTTP + WebSocket server"];
+    router [label="protocol/router.ts\nJSON-RPC validation + dispatch"];
+  }
+
+  subgraph cluster_session {
+    label="Session Orchestration";
+    color="#d8f3dc";
+    style="rounded,filled";
+    fillcolor="#f8fff9";
+
+    sessionManager [label="SessionManager\nrequest handling, runs, graph activation"];
+    workflowEngine [label="WorkflowEngine\nroles, workflows, plans, graph projection"];
+    agentRuntime [label="OpenAIAgentRuntime\nAgents SDK + deterministic runtime"];
+    workspaceCoordinator [label="WorkspaceCoordinator\nleases, conflicts, file attribution"];
+  }
+
+  subgraph cluster_state {
+    label="Durable State";
+    color="#ffe5b4";
+    style="rounded,filled";
+    fillcolor="#fffaf2";
+
+    eventStore [label="EventStore\nJSONL events, debug logs, snapshots"];
+    sessionsRoot [shape=folder, label="sessions/<sessionId>/\nevents.jsonl\ndebug.jsonl\nsnapshot.json\n<agentId>/transcript.jsonl\nworkspace/"];
+    personalCatalog [shape=folder, label="sessions/config/\nroles/*.json\nworkflows/*.json"];
+    builtInWorkflows [shape=folder, label="apps/daemon/src/workflows\npredefined workflow specs"];
+  }
+
+  subgraph cluster_integrations {
+    label="Auth and Integrations";
+    color="#eadcff";
+    style="rounded,filled";
+    fillcolor="#fbf7ff";
+
+    authManager [label="AuthManager\nCodex OAuth, API key, account id"];
+    codexIntegrationManager [label="CodexIntegrationManager\nCodex skills + MCP catalog"];
+    keychain [shape=cylinder, label="macOS Keychain\nOAuth/API/account secrets"];
+    codexConfig [shape=folder, label="~/.codex\nconfig.toml\nauth.json\nskills/plugins"];
+  }
+
+  subgraph cluster_shared {
+    label="Shared Contracts";
+    color="#e5e7eb";
+    style="rounded,filled";
+    fillcolor="#fcfcfd";
+
+    sharedSchemas [label="@multiagent/shared\nZod schemas + protocol types"];
+  }
+
+  openaiAgents [shape=component, label="@openai/agents\nAgent, tools, MCP servers"];
+  openaiClient [shape=component, label="OpenAI / Codex WHAM\nlive model backend"];
+  bunRuntime [shape=component, label="Bun runtime\nHTTP/WebSocket"];
+  swiftApp [shape=component, label="SwiftUI app\nWebSocket client"];
+
+  nodeMain -> main [label="starts"];
+  main -> server [label="creates"];
+  server -> bunRuntime [label="serves on port"];
+  server -> router [label="raw WebSocket messages"];
+  router -> sharedSchemas [label="validates DaemonRequest"];
+  router -> sessionManager [label="dispatches"];
+  server -> sessionManager [label="OAuth callback"];
+  swiftApp -> server [label="JSON-RPC over WebSocket", dir=both];
+
+  sessionManager -> eventStore [label="append/replay events"];
+  sessionManager -> workflowEngine [label="load catalogs, validate graph"];
+  sessionManager -> agentRuntime [label="run agent turns"];
+  sessionManager -> workspaceCoordinator [label="coordinate workspace writes"];
+  sessionManager -> authManager [label="credential status + live config"];
+  sessionManager -> codexIntegrationManager [label="skills/MCP list + reconnect"];
+  sessionManager -> sharedSchemas [label="uses protocol/session types"];
+
+  workflowEngine -> builtInWorkflows [label="loads"];
+  workflowEngine -> personalCatalog [label="loads/writes"];
+  workflowEngine -> sharedSchemas [label="validates specs"];
+
+  eventStore -> sessionsRoot [label="writes"];
+  eventStore -> sharedSchemas [label="validates event/log/snapshot"];
+
+  authManager -> keychain [label="stores secrets"];
+  authManager -> codexConfig [label="discovers Codex auth"];
+  codexIntegrationManager -> codexConfig [label="discovers MCP + skills"];
+
+  agentRuntime -> openaiAgents [label="constructs agents/tools"];
+  agentRuntime -> openaiClient [label="live runs"];
+  agentRuntime -> sharedSchemas [label="emits SessionEvent"];
+  agentRuntime -> sessionManager [label="workflow tools callbacks", style=dashed];
+
+  workspaceCoordinator -> sessionsRoot [label="workspace file effects"];
+}

@@ -1,0 +1,132 @@
+digraph MacAppArchitecture {
+  graph [
+    label="MultiAgentDesktop SwiftUI App Code Architecture",
+    labelloc="t",
+    fontsize=22,
+    fontname="Helvetica",
+    rankdir=LR,
+    compound=true,
+    bgcolor="white",
+    pad=0.35,
+    nodesep=0.55,
+    ranksep=0.85
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Helvetica",
+    fontsize=11,
+    color="#c8ccd0",
+    fillcolor="#f7f8fa",
+    margin="0.12,0.08"
+  ];
+
+  edge [
+    fontname="Helvetica",
+    fontsize=10,
+    color="#6b7280",
+    arrowsize=0.8
+  ];
+
+  subgraph cluster_scene {
+    label="App Scenes";
+    color="#d6e4ff";
+    style="rounded,filled";
+    fillcolor="#f7fbff";
+
+    app [label="MultiAgentDesktopApp\nWindowGroup, Commands, Settings"];
+    appDelegate [label="AppDelegate\nactivation + termination hook"];
+    contentView [label="ContentView\nNavigationSplitView root"];
+    settingsView [label="SettingsView\nDaemon/Auth/MCP/Skills panes"];
+  }
+
+  subgraph cluster_state {
+    label="State and Models";
+    color="#d8f3dc";
+    style="rounded,filled";
+    fillcolor="#f8fff9";
+
+    sessionStore [label="SessionStore\nobservable app/session state"];
+    models [label="Models.swift\nprotocol, graph, session, transcript models"];
+    userDefaults [shape=cylinder, label="UserDefaults\ndaemon port"];
+  }
+
+  subgraph cluster_services {
+    label="Services";
+    color="#ffe5b4";
+    style="rounded,filled";
+    fillcolor="#fffaf2";
+
+    daemonClient [label="DaemonClient\nURLSessionWebSocketTask JSON-RPC"];
+    localDaemonLauncher [label="LocalDaemonLauncher\nstarts/stops packaged daemon"];
+    daemonProcess [shape=component, label="Daemon process\nNode/Bun server"];
+    appSupport [shape=folder, label="Application Support/MultiAgentDesktop\nsessions/\nlogs/app-daemon.log\nBuild/"];
+  }
+
+  subgraph cluster_navigation {
+    label="Main Window Views";
+    color="#eadcff";
+    style="rounded,filled";
+    fillcolor="#fbf7ff";
+
+    sidebar [label="SidebarView\nmenu + stable session list"];
+    sessionDetail [label="SessionDetailView\nchat/inspector split + toolbar"];
+    rolesView [label="RolesView\nrole catalog editor"];
+    workflowsView [label="WorkflowsView\nworkflow catalog + spec graph"];
+  }
+
+  subgraph cluster_session_ui {
+    label="Session Workspace UI";
+    color="#fbcfe8";
+    style="rounded,filled";
+    fillcolor="#fff7fb";
+
+    chatView [label="OrchestratorChatView\ntranscript timeline"];
+    composer [label="ComposerView\nnew-session prompt + nudges"];
+    inspector [label="InspectorPanelView\ninspector/graph/debug panels"];
+    graphPanel [label="GraphPanelView\nlive workflow graph"];
+  }
+
+  externalTools [shape=component, label="External tools\nVS Code, Finder, iTerm"];
+  keychain [shape=cylinder, label="macOS Keychain\nmanaged by daemon/auth"];
+  codexConfig [shape=folder, label="~/.codex\nskills + MCP config"];
+
+  app -> appDelegate [label="termination callback"];
+  app -> sessionStore [label="owns @State store"];
+  app -> contentView [label="main scene"];
+  app -> settingsView [label="settings scene"];
+
+  contentView -> sidebar [label="sidebar"];
+  contentView -> sessionDetail [label="session destination"];
+  contentView -> rolesView [label="roles destination"];
+  contentView -> workflowsView [label="workflows destination"];
+
+  sessionDetail -> chatView [label="center timeline"];
+  sessionDetail -> composer [label="bottom input"];
+  sessionDetail -> inspector [label="right inspector"];
+  inspector -> graphPanel [label="graph panel"];
+
+  sidebar -> sessionStore [label="selection + new session"];
+  sessionDetail -> sessionStore [label="toolbar/control actions"];
+  chatView -> sessionStore [label="filtered transcript"];
+  composer -> sessionStore [label="create/send messages"];
+  inspector -> sessionStore [label="panel state + debug logs"];
+  graphPanel -> sessionStore [label="select/control agents"];
+  rolesView -> sessionStore [label="list/edit/delete roles"];
+  workflowsView -> sessionStore [label="list/instantiate workflows"];
+  settingsView -> sessionStore [label="auth/integration settings"];
+
+  sessionStore -> models [label="decodes/holds typed state"];
+  sessionStore -> daemonClient [label="sends JSON-RPC"];
+  sessionStore -> localDaemonLauncher [label="ensureStarted/shutdown"];
+  sessionStore -> userDefaults [label="daemonPort"];
+  sessionStore -> externalTools [label="open workspace"];
+
+  daemonClient -> daemonProcess [label="ws://127.0.0.1:<port>", dir=both];
+  localDaemonLauncher -> daemonProcess [label="launches process"];
+  localDaemonLauncher -> appSupport [label="stable sessions root + logs"];
+  daemonProcess -> appSupport [label="persists sessions"];
+  daemonProcess -> keychain [label="auth storage"];
+  daemonProcess -> codexConfig [label="MCP/skills discovery"];
+}
