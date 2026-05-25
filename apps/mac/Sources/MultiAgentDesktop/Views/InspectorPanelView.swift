@@ -718,20 +718,24 @@ private struct WorkspaceDiffBlock: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(previewLines.enumerated()), id: \.offset) { _, line in
-                Text(String(line))
-                    .font(.caption.monospaced())
-                    .foregroundStyle(color(for: String(line)))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(previewLines.enumerated()), id: \.offset) { _, line in
+                    Text(String(line))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(color(for: String(line)))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if omittedLineCount > 0 {
+                    Text("Diff preview truncated. Copy Diff includes \(omittedLineCount) more line\(omittedLineCount == 1 ? "" : "s").")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 6)
+                }
             }
-            if omittedLineCount > 0 {
-                Text("Diff preview truncated. Copy Diff includes \(omittedLineCount) more line\(omittedLineCount == 1 ? "" : "s").")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 6)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxHeight: 280)
         .textSelection(.enabled)
         .padding(8)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
