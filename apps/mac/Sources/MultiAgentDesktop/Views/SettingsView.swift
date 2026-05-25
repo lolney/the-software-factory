@@ -55,15 +55,52 @@ private struct AuthSettingsPane: View {
 
     var body: some View {
         Form {
+            Section("OpenAI API Key") {
+                LabeledContent("Status") {
+                    Text(store.authStatus?.apiKeyConfigured == true ? "Configured" : "Not Configured")
+                        .foregroundStyle(store.authStatus?.apiKeyConfigured == true ? .green : .secondary)
+                }
+                if let source = store.authStatus?.apiKeySource {
+                    LabeledContent("Source", value: source)
+                }
+                SecureField("OpenAI API key", text: $store.openAIApiKeyInput)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Button {
+                        store.saveOpenAIAPIKey()
+                    } label: {
+                        Label("Save API Key", systemImage: "key")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.openAIApiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    Button(role: .destructive) {
+                        store.disconnectOpenAIAPIKey()
+                    } label: {
+                        Label("Remove API Key", systemImage: "xmark.circle")
+                    }
+                    .disabled(store.authStatus?.apiKeyConfigured != true || store.authStatus?.apiKeySource == "environment")
+                }
+                Text("Live agent runs prefer Codex OAuth. This API key is a fallback or developer override and is stored in macOS Keychain.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("OpenAI OAuth") {
                 LabeledContent("Status") {
-                    Text(store.authStatus?.connected == true ? "Connected" : "Not Connected")
+                    Text(authStatusLabel)
                         .foregroundStyle(store.authStatus?.connected == true ? .green : .secondary)
                 }
                 if let email = store.authStatus?.email {
                     LabeledContent("Account", value: email)
                 }
                 LabeledContent("Client ID", value: store.authStatus?.clientId ?? "app_EMoamEEZ73f0CkXaXp7hrann")
+                if store.authStatus?.liveCredentialSource == "codex-oauth" {
+                    LabeledContent("Live Runs", value: "Codex OAuth via WHAM")
+                }
+                if let whamBaseURL = store.authStatus?.whamBaseURL {
+                    LabeledContent("WHAM Base URL", value: whamBaseURL)
+                }
 
                 HStack {
                     Button {
@@ -91,9 +128,17 @@ private struct AuthSettingsPane: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
+                Text("Codex OAuth is used for live agent runs through the Codex WHAM backend. API keys remain available as a fallback.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var authStatusLabel: String {
+        if store.authStatus?.connected == true { return "Connected" }
+        return "Not Connected"
     }
 }
 

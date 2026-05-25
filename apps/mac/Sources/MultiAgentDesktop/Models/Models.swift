@@ -97,6 +97,12 @@ struct AuthStatus: Hashable, Codable {
     var email: String?
     var expiresAt: String?
     var needsRefresh: Bool?
+    var scopes: [String]?
+    var apiKeyConfigured: Bool?
+    var apiKeySource: String?
+    var liveCredentialConfigured: Bool?
+    var liveCredentialSource: String?
+    var whamBaseURL: String?
 }
 
 struct MCPServerCatalogItem: Identifiable, Hashable, Codable {

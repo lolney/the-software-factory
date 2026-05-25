@@ -81,6 +81,12 @@ export class SessionManager {
       case "disconnectOpenAIOAuth":
         await this.auth.deleteTokens();
         return this.auth.status();
+      case "setOpenAIAPIKey":
+        await this.auth.saveApiKey(request.params.apiKey);
+        return this.auth.status();
+      case "disconnectOpenAIAPIKey":
+        await this.auth.deleteApiKey();
+        return this.auth.status();
       case "listRoles":
         return { roles: this.workflows.listRoles(), ...this.workflows.catalogPaths() };
       case "upsertRole":
@@ -228,6 +234,7 @@ export class SessionManager {
     }, publish);
     const role = this.resolveRole(snapshot, agentId);
     const integrationCatalog = await this.integrations.listCatalog();
+    const openAI = await this.openAIConnection(debugMode);
     const events = await this.runControlledTurn(snapshot.sessionId, agentId, {
       sessionId: snapshot.sessionId,
       agentId,
@@ -235,7 +242,8 @@ export class SessionManager {
       debugMode,
       roleName: role?.name,
       instructions: role?.promptTemplate,
-      apiKey: await this.openAIApiKey(debugMode),
+      apiKey: openAI?.apiKey,
+      openAI,
       workflowTools: this.workflowTools(snapshot, agentId, publish),
       mcpServers: debugMode || this.options.runtime ? [] : await this.mcpServersForRole(role),
       skills: integrationCatalog.skills,
@@ -457,6 +465,7 @@ export class SessionManager {
   ) {
     const role = this.resolveRole(snapshot, agentId);
     const integrationCatalog = await this.integrations.listCatalog();
+    const openAI = await this.openAIConnection(snapshot.debugMode);
     const events = await this.runControlledTurn(snapshot.sessionId, agentId, {
       sessionId: snapshot.sessionId,
       agentId,
@@ -464,7 +473,8 @@ export class SessionManager {
       debugMode: snapshot.debugMode,
       roleName: role?.name,
       instructions: role?.promptTemplate,
-      apiKey: await this.openAIApiKey(snapshot.debugMode),
+      apiKey: openAI?.apiKey,
+      openAI,
       workflowTools: this.workflowTools(snapshot, agentId, publish, context),
       mcpServers: snapshot.debugMode || this.options.runtime ? [] : await this.mcpServersForRole(role),
       skills: integrationCatalog.skills,
@@ -1255,10 +1265,8 @@ export class SessionManager {
 
   private async assertLiveCredentialAvailable() {
     if (this.options.runtime) return;
-    if (process.env.OPENAI_API_KEY) return;
-    const tokens = await this.auth.loadTokens();
-    if (tokens?.accessToken && !(await this.auth.needsRefresh())) return;
-    throw new Error("OpenAI authentication is required for non-debug sessions. Connect OpenAI OAuth in Settings or set OPENAI_API_KEY.");
+    if (await this.auth.loadLiveConnection()) return;
+    throw new Error("OpenAI authentication is required for non-debug sessions. Connect OpenAI OAuth in Settings or add an API key.");
   }
 
   private async plansForSession(sessionId: string) {
@@ -1325,13 +1333,10 @@ export class SessionManager {
       ?? `Execute plan workflow ${planWorkflow.workflowId} as ${nodeId}.`;
   }
 
-  private async openAIApiKey(debugMode: boolean) {
+  private async openAIConnection(debugMode: boolean) {
     if (debugMode) return undefined;
-    if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
-    if (await this.auth.needsRefresh()) {
-      throw new Error("OpenAI OAuth token needs refresh. Reconnect OpenAI in Settings before starting a live run.");
-    }
-    return (await this.auth.loadTokens())?.accessToken;
+    if (this.options.runtime) return undefined;
+    return this.auth.loadLiveConnection();
   }
 
   private resolveRole(snapshot: SessionSnapshot, agentId: string) {

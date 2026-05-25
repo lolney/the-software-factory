@@ -24,7 +24,7 @@ struct ComposerView: View {
                     .frame(width: 180)
                     .disabled(store.isCreatingSession)
 
-                    Text(store.debugMode ? "Debug uses deterministic pre-programmed agent I/O." : "Live uses OpenAI authentication from Settings or OPENAI_API_KEY.")
+                    Text(store.debugMode ? "Debug uses deterministic pre-programmed agent I/O." : "Live uses OpenAI OAuth or an API key from Settings.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -34,8 +34,8 @@ struct ComposerView: View {
                 .padding(.horizontal)
                 .padding(.top, store.daemon.isConnected ? 8 : 0)
 
-                if !store.debugMode && store.authStatus?.connected != true {
-                    Label("Live mode needs OpenAI OAuth in Settings or OPENAI_API_KEY on the daemon.", systemImage: "person.badge.key")
+                if !store.debugMode && store.authStatus?.liveCredentialConfigured != true {
+                    Label("Live mode needs OpenAI OAuth or an API key in Settings.", systemImage: "person.badge.key")
                         .font(.caption)
                         .foregroundStyle(.orange)
                         .frame(maxWidth: .infinity, alignment: .leading)

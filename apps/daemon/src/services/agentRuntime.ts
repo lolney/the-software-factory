@@ -1,6 +1,7 @@
-import { Agent, run, setDefaultOpenAIKey, tool } from "@openai/agents";
+import { Agent, RunContext, run, setDefaultOpenAIClient, tool } from "@openai/agents";
 import type { MCPServer } from "@openai/agents";
 import type { SessionEvent, SkillCatalogItem } from "@multiagent/shared";
+import OpenAI from "openai";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { makeEventId } from "./eventStore.js";
@@ -13,6 +14,11 @@ export interface AgentTurnInput {
   roleName?: string;
   instructions?: string;
   apiKey?: string;
+  openAI?: {
+    apiKey: string;
+    baseURL?: string;
+    defaultHeaders?: Record<string, string>;
+  };
   workflowTools?: {
     listWorkflows?: () => unknown;
     createPlan?: (plan: unknown) => Promise<string>;
@@ -42,11 +48,16 @@ export class OpenAIAgentRuntime implements AgentRuntime {
     if (input.debugMode) {
       return new DeterministicAgentRuntime().runTurn(input);
     }
-    const apiKey = input.apiKey ?? process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      throw new Error("OpenAI authentication is required for non-debug sessions. Connect OpenAI OAuth in Settings or set OPENAI_API_KEY.");
+    const connection = input.openAI ?? (input.apiKey || process.env.OPENAI_API_KEY ? { apiKey: input.apiKey ?? process.env.OPENAI_API_KEY! } : undefined);
+    if (!connection?.apiKey) {
+      throw new Error("OpenAI authentication is required for non-debug sessions. Connect OpenAI OAuth in Settings or add an API key.");
     }
-    setDefaultOpenAIKey(apiKey);
+    const client = new OpenAI({
+      apiKey: connection.apiKey,
+      baseURL: connection.baseURL,
+      defaultHeaders: connection.defaultHeaders
+    }) as unknown as Parameters<typeof setDefaultOpenAIClient>[0];
+    setDefaultOpenAIClient(client);
 
     const startedAt = new Date().toISOString();
     const tools = [];
@@ -62,9 +73,9 @@ export class OpenAIAgentRuntime implements AgentRuntime {
     if (input.workflowTools?.createPlan) {
       tools.push(tool({
         name: "plan_create",
-        description: "Create a plan made of workflows, agent prompts, and done criteria.",
-        parameters: z.object({ plan: z.unknown() }),
-        execute: async (args) => input.workflowTools?.createPlan?.(args.plan) ?? "Plan tools unavailable."
+        description: "Create a plan made of workflows, agent prompts, and done criteria. Provide planJson as a JSON string matching the workflow engine PlanSpec shape.",
+        parameters: z.object({ planJson: z.string() }),
+        execute: async (args) => input.workflowTools?.createPlan?.(JSON.parse(args.planJson)) ?? "Plan tools unavailable."
       }));
     }
     if (input.workflowTools?.instantiatePlan) {
@@ -79,8 +90,8 @@ export class OpenAIAgentRuntime implements AgentRuntime {
       tools.push(tool({
         name: "workflow_start",
         description: "Start a predefined workflow in the current session graph. Returns a workflow instance id that must complete before you can stop.",
-        parameters: z.object({ workflowId: z.string(), anchorNodeId: z.string().optional() }),
-        execute: async (args) => input.workflowTools?.startWorkflow?.(args.workflowId, args.anchorNodeId) ?? "Workflow start tool unavailable."
+        parameters: z.object({ workflowId: z.string(), anchorNodeId: z.string().nullable() }),
+        execute: async (args) => input.workflowTools?.startWorkflow?.(args.workflowId, args.anchorNodeId ?? undefined) ?? "Workflow start tool unavailable."
       }));
     }
     if (input.workflowTools?.stopWorkflow) {
@@ -95,16 +106,16 @@ export class OpenAIAgentRuntime implements AgentRuntime {
       tools.push(tool({
         name: "agent_stop",
         description: "Stop an individual agent in the current session graph.",
-        parameters: z.object({ agentId: z.string(), reason: z.string(), artifact: z.unknown().optional() }),
-        execute: async (args) => input.workflowTools?.stopAgent?.(args.agentId, args.reason, args.artifact) ?? "Agent stop tool unavailable."
+        parameters: z.object({ agentId: z.string(), reason: z.string(), artifact: z.string().nullable() }),
+        execute: async (args) => input.workflowTools?.stopAgent?.(args.agentId, args.reason, args.artifact ?? undefined) ?? "Agent stop tool unavailable."
       }));
     }
     if (input.workflowTools?.stopSelf) {
       tools.push(tool({
         name: "workflow_stop_self",
         description: "Call this when your workflow responsibilities are complete. Include the artifact or summary you are handing back and the completion criteria you satisfied.",
-        parameters: z.object({ reason: z.string(), artifact: z.unknown().optional(), completedCriteria: z.array(z.string()).default([]) }),
-        execute: async (args) => input.workflowTools?.stopSelf?.(args.reason, args.artifact, args.completedCriteria) ?? "Stop tool unavailable."
+        parameters: z.object({ reason: z.string(), artifact: z.string().nullable(), completedCriteria: z.array(z.string()) }),
+        execute: async (args) => input.workflowTools?.stopSelf?.(args.reason, args.artifact ?? undefined, args.completedCriteria) ?? "Stop tool unavailable."
       }));
     }
     if (input.workflowTools?.inspectAgents) {
@@ -139,6 +150,9 @@ export class OpenAIAgentRuntime implements AgentRuntime {
         execute: async (args) => input.workflowTools?.sendAgentMessage?.(args.agentId, args.text) ?? "Messaging tool unavailable."
       }));
     }
+    if (connection.baseURL?.includes("/wham")) {
+      return runWhamTurn(input, connection, tools);
+    }
     if (input.skills?.length) {
       const skills = input.skills;
       tools.push(tool({
@@ -161,6 +175,8 @@ export class OpenAIAgentRuntime implements AgentRuntime {
     const agent = new Agent({
       name: input.roleName ?? input.agentId,
       instructions: input.instructions ?? "You are a role-specific coding agent in a local multiagent coding workflow. Be concise, operational, and report concrete progress.",
+      modelSettings: { store: false },
+      toolUseBehavior: input.agentId === "orchestrator" ? "stop_on_first_tool" : "run_llm_again",
       tools,
       mcpServers: input.mcpServers ?? [],
       mcpConfig: {
@@ -170,9 +186,14 @@ export class OpenAIAgentRuntime implements AgentRuntime {
     });
     const result = await run(agent, input.prompt, {
       signal: input.signal,
-      maxTurns: 6,
-      toolNotFoundBehavior: "return_error_to_model"
+      maxTurns: 16,
+      toolNotFoundBehavior: "return_error_to_model",
+      stream: true
     });
+    await result.completed;
+    if (result.error) {
+      throw result.error;
+    }
     const output = String(result.finalOutput ?? "");
 
     return [
@@ -263,6 +284,141 @@ function statusEvent(input: AgentTurnInput, status: string, timestamp = new Date
     payload: { status },
     causationId: input.causationId
   };
+}
+
+async function runWhamTurn(
+  input: AgentTurnInput,
+  connection: NonNullable<AgentTurnInput["openAI"]>,
+  tools: Array<Record<string, any>>
+): Promise<SessionEvent[]> {
+  const events: SessionEvent[] = [statusEvent(input, "working")];
+  const callableTools = tools.filter((candidate) => candidate.type === "function" && typeof candidate.invoke === "function");
+  const toolByName = new Map(callableTools.map((candidate) => [candidate.name, candidate]));
+  const responseTools = callableTools.map((candidate) => ({
+    type: "function",
+    name: candidate.name,
+    description: candidate.description,
+    parameters: candidate.parameters,
+    strict: candidate.strict
+  }));
+  const conversation: Array<Record<string, unknown>> = [{
+    role: "user",
+    content: [{ type: "input_text", text: input.prompt }]
+  }];
+  const maxTurns = 12;
+  for (let turn = 0; turn < maxTurns; turn += 1) {
+    const { outputText, functionCalls } = await whamResponsesRequest(connection, {
+      model: process.env.MULTIAGENT_WHAM_MODEL ?? "gpt-5.4",
+      instructions: input.instructions ?? "You are a role-specific coding agent in a local multiagent coding workflow. Be concise, operational, and report concrete progress.",
+      input: conversation,
+      tools: responseTools,
+      tool_choice: responseTools.length ? "auto" : "none",
+      parallel_tool_calls: true,
+      store: false,
+      stream: true
+    });
+    if (!functionCalls.length) {
+      events.push({
+        eventId: makeEventId(),
+        sessionId: input.sessionId,
+        agentId: input.agentId,
+        timestamp: new Date().toISOString(),
+        type: "agent.message",
+        payload: { text: outputText || "Completed.", runtime: "openai-wham" },
+        causationId: input.causationId
+      });
+      events.push(statusEvent(input, "idle"));
+      return events;
+    }
+    for (const call of functionCalls) {
+      const callId = stringValue(call.call_id) ?? stringValue(call.callId) ?? stringValue(call.id) ?? `call_${crypto.randomUUID()}`;
+      const toolName = stringValue(call.name) ?? "";
+      const args = stringValue(call.arguments) ?? "{}";
+      const localTool = toolByName.get(toolName);
+      events.push({
+        eventId: makeEventId(),
+        sessionId: input.sessionId,
+        agentId: input.agentId,
+        timestamp: new Date().toISOString(),
+        type: "agent.tool_call",
+        payload: { callId, toolName, input: safeJson(args) },
+        causationId: input.causationId
+      });
+      const output = localTool
+        ? String(await localTool.invoke(new RunContext(), args, { toolCall: call as never, signal: input.signal }))
+        : `Unknown tool: ${toolName}`;
+      events.push({
+        eventId: makeEventId(),
+        sessionId: input.sessionId,
+        agentId: input.agentId,
+        timestamp: new Date().toISOString(),
+        type: "agent.tool_result",
+        payload: { callId, toolName, output },
+        causationId: input.causationId
+      });
+      conversation.push(call);
+      conversation.push({ type: "function_call_output", call_id: callId, output });
+    }
+  }
+  throw new Error(`WHAM run exceeded ${maxTurns} turns.`);
+}
+
+async function whamResponsesRequest(connection: NonNullable<AgentTurnInput["openAI"]>, body: Record<string, unknown>) {
+  const response = await fetch(`${connection.baseURL}/responses`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${connection.apiKey}`,
+      "content-type": "application/json",
+      ...(connection.defaultHeaders ?? {}),
+      session_id: crypto.randomUUID()
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`WHAM Responses request failed with HTTP ${response.status}: ${await response.text()}`);
+  }
+  const output: string[] = [];
+  const functionCalls: Array<Record<string, unknown>> = [];
+  let buffer = "";
+  const decoder = new TextDecoder();
+  for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+    buffer += decoder.decode(chunk, { stream: true });
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const frame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const data = frame.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
+      if (data && data !== "[DONE]") {
+        const event = safeJson(data);
+        if (isRecord(event)) {
+          if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
+            output.push(event.delta);
+          }
+          if (event.type === "response.output_item.done" && isRecord(event.item) && event.item.type === "function_call") {
+            functionCalls.push(event.item);
+          }
+        }
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+  return { outputText: output.join(""), functionCalls };
+}
+
+function safeJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function deterministicPlan(prompt: string, agentId: string, roleName = agentId) {

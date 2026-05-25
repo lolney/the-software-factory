@@ -24,6 +24,7 @@ final class SessionStore {
     var currentSessionDebugMode: Bool?
     var isComposingNewSession = false
     var composerText = ""
+    var openAIApiKeyInput = ""
     var connectionStatus = "Disconnected"
     var debugMode = false
     var isCreatingSession = false
@@ -347,6 +348,21 @@ final class SessionStore {
 
     func disconnectOpenAIOAuth() {
         daemon.sendRequest(method: "disconnectOpenAIOAuth", params: [:])
+    }
+
+    func saveOpenAIAPIKey() {
+        let trimmed = openAIApiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            lastError = "Paste an OpenAI API key before saving."
+            return
+        }
+        lastError = nil
+        daemon.sendRequest(method: "setOpenAIAPIKey", params: ["apiKey": trimmed])
+        openAIApiKeyInput = ""
+    }
+
+    func disconnectOpenAIAPIKey() {
+        daemon.sendRequest(method: "disconnectOpenAIAPIKey", params: [:])
     }
 
     func refreshIntegrations() {
@@ -749,6 +765,7 @@ final class SessionStore {
 
     private func displayText(for event: SessionEvent) -> String {
         if let text = event.payload["text"]?.stringValue { return text }
+        if let message = event.payload["message"]?.stringValue { return message }
         if let summary = event.payload["summary"]?.stringValue { return summary }
         if let output = event.payload["output"]?.stringValue { return output }
         if let reason = event.payload["reason"]?.stringValue { return reason }
