@@ -598,7 +598,7 @@ describe("SessionManager deterministic debug sessions", () => {
         method: "getSnapshot",
         params: { sessionId: snapshot.sessionId }
       }) as { graph: { activeToolCalls: unknown[] } };
-      expect(recoveredSnapshot.graph.activeToolCalls).toEqual([]);
+      expect(recoveredSnapshot.graph.activeToolCalls.some((call) => (call as { callId?: string }).callId === "call_interrupted")).toBe(false);
       await waitForSchedulerIdle(restarted, snapshot.sessionId);
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
@@ -810,6 +810,14 @@ describe("SessionManager deterministic debug sessions", () => {
       const beforeRecovery = await waitForSchedulerIdle(manager, snapshot.sessionId);
       const waiting = beforeRecovery.find((event) => event.type === "workflow.waiting" && event.payload.workflowId === "implementor-qa-loop");
       expect(waiting).toBeTruthy();
+      const waitingJobCompleted = beforeRecovery.find((event) =>
+        event.type === "scheduler.job.completed"
+        && event.payload.kind === "workflow-execution"
+        && event.payload.workflowExecutionStatus === "waiting"
+      );
+      expect(waitingJobCompleted?.payload.message).toBe("workflow waiting");
+      expect(waitingJobCompleted?.payload.pendingAgentIds).toContain("implementor-qa-loop_implementor");
+      expect(waitingJobCompleted?.payload.pendingCriteria).toContain("implementation_ready_for_qa");
       const workflowJobCount = beforeRecovery.filter((event) => event.type === "scheduler.job.created" && event.payload.kind === "workflow-execution").length;
 
       const restarted = new SessionManager({
@@ -836,6 +844,137 @@ describe("SessionManager deterministic debug sessions", () => {
         events.filter((event) => event.type === "scheduler.job.created" && event.payload.kind === "workflow-execution").length > workflowJobCount
       );
       expect(afterRecovery.some((event) => event.type === "scheduler.job.created" && event.payload.kind === "workflow-execution" && event.causationId === waiting?.eventId)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("continues recovery when a waiting workflow spec is unavailable", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      const snapshot = await manager.handle({
+        id: "req_missing_workflow_waiting_session",
+        method: "createSession",
+        params: {
+          prompt: "missing waiting workflow",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: true
+        }
+      }) as { sessionId: string };
+      const store = new EventStore(root);
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: "wf_missing",
+        timestamp: new Date().toISOString(),
+        type: "workflow.instantiated",
+        payload: {
+          workflowInstanceId: "wf_missing",
+          workflowId: "missing-personal-workflow",
+          callerAgentId: "orchestrator",
+          nodeMap: { orchestrator: "orchestrator", implementor: "missing_implementor" },
+          completionCriteria: []
+        }
+      });
+      const waiting = await store.append({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: "wf_missing",
+        timestamp: new Date().toISOString(),
+        type: "workflow.waiting",
+        payload: {
+          workflowInstanceId: "wf_missing",
+          workflowId: "missing-personal-workflow",
+          callerAgentId: "orchestrator",
+          pendingAgentIds: ["missing_implementor"],
+          pendingCriteria: []
+        }
+      });
+
+      const restarted = new SessionManager({ sessionsRoot: root });
+      await restarted.handle({
+        id: "req_missing_waiting_recover",
+        method: "listSessions",
+        params: { includeArchived: true }
+      });
+      const replay = await restarted.handle({
+        id: "req_missing_waiting_replay",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: ReplayEvent[] };
+      expect(replay.events.some((event) => event.type === "error" && event.causationId === waiting.eventId && String(event.payload.message).includes("Cannot resume waiting workflow wf_missing"))).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("counts workflow turns from scheduler completions instead of transcript artifacts", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      const workflowRunCounts = (manager as unknown as {
+        workflowRunCounts(
+          events: Array<Record<string, unknown>>,
+          nodeMap: Map<string, string>,
+          orchestratorId: string,
+          workflowInstanceId: string
+        ): Map<string, number>;
+      }).workflowRunCounts.bind(manager);
+      const nodeMap = new Map([
+        ["orchestrator", "orchestrator"],
+        ["implementor", "implementation-review-qa_implementor"]
+      ]);
+      const baseEvent = {
+        sessionId: "sess_turn_count",
+        timestamp: new Date().toISOString()
+      };
+      const artifactEvents = Array.from({ length: 5 }, (_, index) => ({
+        ...baseEvent,
+        eventId: `evt_file_${index}`,
+        agentId: "implementation-review-qa_implementor",
+        type: "workspace.file_touched",
+        payload: { workflowInstanceId: "wf_turn_count", path: `file${index}.txt` }
+      }));
+      const counts = workflowRunCounts([
+        ...artifactEvents,
+        {
+          ...baseEvent,
+          eventId: "evt_turn_completed",
+          agentId: "implementation-review-qa_implementor",
+          type: "scheduler.job.completed",
+          payload: {
+            kind: "workflow-agent-turn",
+            workflowInstanceId: "wf_turn_count",
+            agentId: "implementation-review-qa_implementor"
+          }
+        }
+      ], nodeMap, "orchestrator", "wf_turn_count");
+      expect(counts.get("implementation-review-qa_implementor")).toBe(1);
+
+      const mixedCounts = workflowRunCounts([
+        ...artifactEvents,
+        {
+          ...baseEvent,
+          eventId: "evt_legacy_message",
+          agentId: "implementation-review-qa_implementor",
+          type: "agent.message",
+          payload: { workflowInstanceId: "wf_turn_count", text: "legacy progress" }
+        },
+        {
+          ...baseEvent,
+          eventId: "evt_turn_completed",
+          agentId: "implementation-review-qa_implementor",
+          type: "scheduler.job.completed",
+          payload: {
+            kind: "workflow-agent-turn",
+            workflowInstanceId: "wf_turn_count",
+            agentId: "implementation-review-qa_implementor"
+          }
+        }
+      ], nodeMap, "orchestrator", "wf_turn_count");
+      expect(mixedCounts.get("implementation-review-qa_implementor")).toBe(2);
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }

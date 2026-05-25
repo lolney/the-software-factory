@@ -38,6 +38,9 @@ interface ScheduledJob {
   jobId: string;
   kind: string;
   createdEventId: string;
+  workflowInstanceId?: string;
+  workflowId?: string;
+  callerAgentId?: string;
   heartbeat: ReturnType<typeof setInterval>;
 }
 
@@ -1341,8 +1344,8 @@ export class SessionManager {
       const snapshot = await this.store.readSnapshot(request.sessionId);
       const state = await this.executeMappedWorkflow(snapshot, request.spec, request.nodeMap, request.planWorkflow, request.causationId, publish, request.workflowInstanceId);
       const finishedAt = (await this.store.readEvents(request.sessionId)).length;
-      await this.finishScheduledTurn(request.sessionId, request.workflowInstanceId, job, publish, "completed", Math.max(0, finishedAt - startedAt), state.status === "waiting" ? {
-        status: "waiting",
+      await this.finishScheduledTurn(request.sessionId, request.workflowInstanceId, job, publish, "completed", Math.max(0, finishedAt - startedAt), state.status === "waiting" ? "workflow waiting" : undefined, state.status === "waiting" ? {
+        workflowExecutionStatus: "waiting",
         pendingAgentIds: state.pendingAgentIds,
         pendingCriteria: state.pendingCriteria
       } : undefined);
@@ -1366,7 +1369,7 @@ export class SessionManager {
   ): Promise<WorkflowCompletionState> {
     const orchestratorId = nodeMap.get(spec.lifecycle.orchestratorNodeId) ?? spec.lifecycle.orchestratorNodeId;
     const initialEvents = await this.store.readEvents(snapshot.sessionId);
-    const runCounts = this.workflowRunCounts(initialEvents, nodeMap, orchestratorId);
+    const runCounts = this.workflowRunCounts(initialEvents, nodeMap, orchestratorId, workflowInstanceId);
     const processedHandoffs = this.processedWorkflowEdges(initialEvents, "handoff.created", workflowInstanceId);
     const processedMessages = this.processedWorkflowEdges(initialEvents, "message.sent", workflowInstanceId);
     const maxIterationsPerAgent = 2;
@@ -1477,16 +1480,27 @@ export class SessionManager {
     });
   }
 
-  private workflowRunCounts(events: SessionEvent[], nodeMap: Map<string, string>, orchestratorId: string) {
+  private workflowRunCounts(events: SessionEvent[], nodeMap: Map<string, string>, orchestratorId: string, workflowInstanceId: string) {
     const runCounts = new Map<string, number>([[orchestratorId, 1]]);
     for (const mappedAgentId of nodeMap.values()) {
       if (mappedAgentId === orchestratorId) continue;
       const count = events.filter((event) =>
+        ["scheduler.job.completed", "scheduler.job.failed"].includes(event.type)
+        && event.payload.kind === "workflow-agent-turn"
+        && event.payload.workflowInstanceId === workflowInstanceId
+        && event.payload.agentId === mappedAgentId
+      ).length;
+      const legacyCount = events.filter((event) =>
         event.agentId === mappedAgentId
-        && ["agent.message", "agent.stopped", "agent.stop_blocked", "workspace.file_touched"].includes(event.type)
+        && ["agent.message", "agent.stopped", "agent.stop_blocked"].includes(event.type)
+        && (!event.payload.workflowInstanceId || event.payload.workflowInstanceId === workflowInstanceId)
       ).length;
       if (count > 0) {
-        runCounts.set(mappedAgentId, count);
+        runCounts.set(mappedAgentId, count + legacyCount);
+        continue;
+      }
+      if (legacyCount > 0) {
+        runCounts.set(mappedAgentId, legacyCount);
       }
     }
     return runCounts;
@@ -2397,15 +2411,28 @@ export class SessionManager {
     const instance = (await this.workflowInstancesForSession(sessionId)).find((candidate) => candidate.workflowInstanceId === workflowInstanceId);
     if (!instance) return;
     const planWorkflow = planWorkflowFromPayload(event.payload.planWorkflow, workflowId);
-    await this.scheduleMappedWorkflowExecution({
-      sessionId,
-      spec: this.workflows.get(workflowId),
-      nodeMap: instance.nodeMap,
-      planWorkflow,
-      workflowInstanceId,
-      causationId,
-      callerAgentId: instance.callerAgentId
-    }, publish);
+    try {
+      await this.scheduleMappedWorkflowExecution({
+        sessionId,
+        spec: this.workflows.get(workflowId),
+        nodeMap: instance.nodeMap,
+        planWorkflow,
+        workflowInstanceId,
+        causationId,
+        callerAgentId: instance.callerAgentId
+      }, publish);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId,
+        agentId: workflowInstanceId,
+        timestamp: new Date().toISOString(),
+        type: "error",
+        payload: { message: `Cannot resume waiting workflow ${workflowInstanceId}: ${message}`, workflowInstanceId, workflowId },
+        causationId
+      }, publish);
+    }
   }
 
   private async resumeWorkflowExecutionFromJob(
@@ -2512,7 +2539,15 @@ export class SessionManager {
         correlationId: jobId
       }, publish).catch(() => {});
     }, 30_000);
-    return { jobId, kind: metadata.kind, createdEventId: created.eventId, heartbeat };
+    return {
+      jobId,
+      kind: metadata.kind,
+      createdEventId: created.eventId,
+      workflowInstanceId: metadata.workflowInstanceId,
+      workflowId: metadata.workflowId,
+      callerAgentId: metadata.callerAgentId,
+      heartbeat
+    };
   }
 
   private async finishScheduledTurn(
@@ -2522,7 +2557,8 @@ export class SessionManager {
     publish: (event: SessionEvent) => void,
     status: "completed" | "failed",
     eventCount: number,
-    message?: unknown
+    message?: unknown,
+    details: Record<string, unknown> = {}
   ) {
     clearInterval(job.heartbeat);
     await this.appendAndPublish({
@@ -2535,8 +2571,12 @@ export class SessionManager {
         jobId: job.jobId,
         kind: job.kind,
         agentId,
+        workflowInstanceId: job.workflowInstanceId,
+        workflowId: job.workflowId,
+        callerAgentId: job.callerAgentId,
         eventCount,
-        message
+        message,
+        ...details
       },
       causationId: job.createdEventId,
       correlationId: job.jobId
