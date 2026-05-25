@@ -242,6 +242,58 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "workspace.file_touched" && event.agentId?.includes("implementor") && String(event.payload.diff).includes("+++ b/temperature_converter.py"))).toBe(true);
       expect(replay.events.some((event) => event.type === "agent.tool_result" && event.agentId?.includes("implementor") && String(event.payload.diff).includes("def celsius_to_fahrenheit"))).toBe(true);
       expect(replay.events.some((event) => event.type === "agent.tool_result" && event.agentId?.includes("qa") && String(event.payload.output).includes("OK"))).toBe(true);
+      expect(replay.events.some((event) => event.type === "agent.stop_blocked" && event.agentId?.includes("implementor"))).toBe(true);
+      expect(replay.events.some((event) => event.type === "agent.stopped" && event.agentId?.includes("qa") && event.payload.completedCriteria instanceof Array && event.payload.completedCriteria.includes("qa_acceptance"))).toBe(true);
+      expect(replay.events.some((event) => event.type === "workflow.completed" && String(event.payload.workflowId) === "implementation-review-qa")).toBe(true);
+      expect(replay.events.some((event) => event.type === "message.sent" && String(event.payload.text).includes("Workflow implementation-review-qa completed"))).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes workflow stop tools and records manual workflow stops", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            if (input.agentId === "orchestrator") {
+              const started = await input.workflowTools?.startWorkflow?.("implementor-reviewer");
+              const workflowInstanceId = started?.match(/(wf_[A-Za-z0-9_-]+)/)?.[1];
+              if (workflowInstanceId) {
+                await input.workflowTools?.stopWorkflow?.(workflowInstanceId, "caller cancelled early");
+              }
+            }
+            return [{
+              eventId: `evt_${crypto.randomUUID()}`,
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { text: "ok" }
+            }];
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_manual_workflow_stop",
+        method: "createSession",
+        params: {
+          prompt: "start and stop a child workflow",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      const replay = await manager.handle({
+        id: "req_manual_workflow_stop_replay",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
+
+      expect(replay.events.some((event) => event.type === "workflow.instantiated" && event.payload.workflowInstanceId)).toBe(true);
+      expect(replay.events.some((event) => event.type === "workflow.stopped" && event.payload.reason === "caller cancelled early")).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

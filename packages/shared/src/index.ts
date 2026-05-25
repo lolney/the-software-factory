@@ -14,6 +14,13 @@ export const AgentStatusSchema = z.enum([
 
 export const WorkflowEdgeKindSchema = z.enum(["handoff", "message"]);
 
+export const CompletionCriterionSchema = z.object({
+  id: SafeIdSchema,
+  description: z.string().min(1),
+  ownerNodeId: SafeIdSchema.optional(),
+  required: z.boolean().default(true)
+});
+
 export const RoleSpecSchema = z.object({
   id: SafeIdSchema,
   name: z.string().min(1),
@@ -37,7 +44,8 @@ export const WorkflowNodeSchema = z.object({
   id: SafeIdSchema,
   roleId: SafeIdSchema,
   label: z.string().min(1),
-  startsActive: z.boolean().default(false)
+  startsActive: z.boolean().default(false),
+  dependencies: z.array(SafeIdSchema).default([])
 });
 
 export const WorkflowEdgeSchema = z.object({
@@ -63,6 +71,7 @@ export const WorkflowSpecSchema = z.object({
     plannerNodeId: SafeIdSchema.optional(),
     orchestratorNodeId: SafeIdSchema
   }),
+  completionCriteria: z.array(CompletionCriterionSchema).default([]),
   stopCriteria: z.array(z.string()).default([])
 });
 
@@ -70,7 +79,8 @@ export const PlanWorkflowSchema = z.object({
   workflowId: SafeIdSchema,
   anchorNodeId: SafeIdSchema.optional(),
   agentPrompts: z.record(SafeIdSchema, z.string()).default({}),
-  doneCriteria: z.record(SafeIdSchema, z.array(z.string())).default({})
+  doneCriteria: z.record(SafeIdSchema, z.array(z.string())).default({}),
+  completionCriteria: z.record(SafeIdSchema, z.array(CompletionCriterionSchema)).default({})
 });
 
 export const PlanSpecSchema = z.object({
@@ -90,8 +100,12 @@ export const SessionEventTypeSchema = z.enum([
   "plan.instantiated",
   "graph.updated",
   "workflow.instantiated",
+  "workflow.completed",
+  "workflow.stopped",
   "agent.created",
   "agent.status",
+  "agent.stopped",
+  "agent.stop_blocked",
   "agent.message",
   "agent.tool_call",
   "agent.tool_result",
@@ -246,6 +260,7 @@ export const DaemonDebugLogNotificationSchema = z.object({
 
 export type AgentStatus = z.infer<typeof AgentStatusSchema>;
 export type WorkflowEdgeKind = z.infer<typeof WorkflowEdgeKindSchema>;
+export type CompletionCriterion = z.infer<typeof CompletionCriterionSchema>;
 export type RoleSpec = z.infer<typeof RoleSpecSchema>;
 export type WorkflowSpec = z.infer<typeof WorkflowSpecSchema>;
 export type PlanSpec = z.infer<typeof PlanSpecSchema>;

@@ -1,5 +1,4 @@
-import { PlanSpecSchema, type DaemonRequest, type DebugLogEntry, type DebugLogLevel, type PlanSpec, type SessionEvent } from "@multiagent/shared";
-import { type GraphState, type SessionSnapshot } from "@multiagent/shared";
+import { PlanSpecSchema, type DaemonRequest, type DebugLogEntry, type DebugLogLevel, type GraphState, type PlanSpec, type SessionEvent, type SessionSnapshot, type WorkflowSpec } from "@multiagent/shared";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
@@ -13,6 +12,26 @@ import { AuthManager, CODEX_PUBLIC_CLIENT_ID } from "./authManager.js";
 import { CodexIntegrationManager } from "./codexIntegrationManager.js";
 
 const execFileAsync = promisify(execFile);
+
+interface WorkflowRunContext {
+  workflowInstanceId?: string;
+  workflowId?: string;
+  callerAgentId?: string;
+}
+
+interface WorkflowInstance {
+  workflowInstanceId: string;
+  workflowId: string;
+  callerAgentId: string;
+  nodeMap: Map<string, string>;
+  agentIds: string[];
+  completionCriteria: unknown;
+}
+
+interface StopAgentResult {
+  stopped: boolean;
+  reason: string;
+}
 
 export class SessionManager {
   private readonly subscribers = new Map<string, Set<(event: SessionEvent) => void>>();
@@ -306,7 +325,7 @@ export class SessionManager {
     const runCounts = new Map<string, number>([[orchestratorId, 1]]);
     const processedHandoffs = new Set<string>();
     const maxConcurrent = Math.max(1, spec.concurrency.maxActiveAgents);
-    const maxIterationsPerAgent = 2;
+    const maxIterationsPerAgent = 3;
     const initialGraphSize = snapshot.graph.nodes.length + snapshot.graph.edges.length + 1;
     const maxSteps = Math.max(1, initialGraphSize * maxIterationsPerAgent * 2);
     let instantiatedPlanDuringActivation = false;
@@ -424,7 +443,8 @@ export class SessionManager {
     agentId: string,
     prompt: string,
     causationId: string,
-    publish: (event: SessionEvent) => void
+    publish: (event: SessionEvent) => void,
+    context: WorkflowRunContext = {}
   ) {
     const role = this.resolveRole(snapshot, agentId);
     const integrationCatalog = await this.integrations.listCatalog();
@@ -436,7 +456,7 @@ export class SessionManager {
       roleName: role?.name,
       instructions: role?.promptTemplate,
       apiKey: await this.openAIApiKey(snapshot.debugMode),
-      workflowTools: this.workflowTools(snapshot, agentId, publish),
+      workflowTools: this.workflowTools(snapshot, agentId, publish, context),
       mcpServers: snapshot.debugMode || this.options.runtime ? [] : await this.mcpServersForRole(role),
       skills: integrationCatalog.skills,
       causationId
@@ -447,7 +467,7 @@ export class SessionManager {
     if (role?.toolPolicy.canCreatePlans) {
       await this.createPlanForSession(snapshot, agentId, causationId, publish);
     } else if (snapshot.debugMode) {
-      await this.applyDeterministicRoleWork(snapshot, agentId, causationId, publish);
+      await this.applyDeterministicRoleWork(snapshot, agentId, causationId, publish, context);
     }
     await this.store.rebuildSnapshot(snapshot.sessionId);
   }
@@ -499,11 +519,25 @@ export class SessionManager {
     }, publish);
   }
 
-  private async applyDeterministicRoleWork(snapshot: SessionSnapshot, agentId: string, causationId: string, publish: (event: SessionEvent) => void) {
+  private async applyDeterministicRoleWork(
+    snapshot: SessionSnapshot,
+    agentId: string,
+    causationId: string,
+    publish: (event: SessionEvent) => void,
+    context: WorkflowRunContext = {}
+  ) {
     const role = this.resolveRole(snapshot, agentId);
     const roleId = role?.id ?? snapshot.graph.nodes.find((node) => node.id === agentId)?.roleId ?? agentId;
     if (roleId === "implementor") {
       await this.writeTemperatureConverter(snapshot, agentId, causationId, publish);
+      if (context.workflowInstanceId) {
+        await this.stopCurrentAgent(snapshot.sessionId, agentId, {
+          reason: "Implementation artifact created.",
+          artifact: { files: ["temperature_converter.py", "test_temperature_converter.py"] },
+          completedCriteria: ["implementation_ready_for_qa", "implementation_artifact"],
+          workflowInstanceId: context.workflowInstanceId
+        }, publish, causationId);
+      }
     } else if (roleId === "reviewer") {
       await this.appendAndPublish({
         eventId: makeEventId(),
@@ -518,8 +552,24 @@ export class SessionManager {
         },
         causationId
       }, publish);
+      if (context.workflowInstanceId) {
+        await this.stopCurrentAgent(snapshot.sessionId, agentId, {
+          reason: "Review complete with no blocking findings.",
+          artifact: { summary: "No blocking findings." },
+          completedCriteria: ["review_no_blockers", "review_complete"],
+          workflowInstanceId: context.workflowInstanceId
+        }, publish, causationId);
+      }
     } else if (roleId === "qa") {
       await this.runTemperatureConverterQA(snapshot, agentId, causationId, publish);
+      if (context.workflowInstanceId) {
+        await this.stopCurrentAgent(snapshot.sessionId, agentId, {
+          reason: "QA acceptance passed.",
+          artifact: { command: "python3 -m unittest test_temperature_converter.py", result: "passed" },
+          completedCriteria: ["qa_acceptance"],
+          workflowInstanceId: context.workflowInstanceId
+        }, publish, causationId);
+      }
     }
   }
 
@@ -685,13 +735,22 @@ export class SessionManager {
       nodes: [...snapshot.graph.nodes, ...newNodes],
       edges: [...snapshot.graph.edges, ...newEdges]
     };
+    const workflowInstanceId = `wf_${crypto.randomUUID()}`;
     const instantiated = await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId,
       agentId: anchorNodeId,
       timestamp: new Date().toISOString(),
       type: "workflow.instantiated",
-      payload: { workflowId, anchorNodeId, nodeMap: Object.fromEntries(nodeMap) },
+      payload: {
+        workflowInstanceId,
+        workflowId,
+        callerAgentId: anchorNodeId,
+        anchorNodeId,
+        nodeMap: Object.fromEntries(nodeMap),
+        completionCriteria: spec.completionCriteria,
+        stopCriteria: spec.stopCriteria
+      },
       causationId
     }, publish);
     for (const node of newNodes) {
@@ -722,7 +781,8 @@ export class SessionManager {
       snapshot: await this.store.rebuildSnapshot(sessionId),
       spec,
       nodeMap,
-      eventId: instantiated.eventId
+      eventId: instantiated.eventId,
+      workflowInstanceId
     };
   }
 
@@ -748,7 +808,7 @@ export class SessionManager {
         publish,
         instantiated.eventId
       );
-      await this.executeMappedWorkflow(graphResult.snapshot, graphResult.spec, graphResult.nodeMap, workflow, graphResult.eventId, publish);
+      await this.executeMappedWorkflow(graphResult.snapshot, graphResult.spec, graphResult.nodeMap, workflow, graphResult.eventId, publish, graphResult.workflowInstanceId);
     }
     return this.store.rebuildSnapshot(sessionId);
   }
@@ -759,13 +819,14 @@ export class SessionManager {
     nodeMap: Map<string, string>,
     planWorkflow: PlanSpec["workflows"][number],
     causationId: string,
-    publish: (event: SessionEvent) => void
+    publish: (event: SessionEvent) => void,
+    workflowInstanceId: string
   ) {
     const orchestratorId = nodeMap.get(spec.lifecycle.orchestratorNodeId) ?? spec.lifecycle.orchestratorNodeId;
     const runCounts = new Map<string, number>([[orchestratorId, 1]]);
     const processedHandoffs = new Set<string>();
-    const maxIterationsPerAgent = 1;
-    const maxSteps = Math.max(1, spec.edges.length * maxIterationsPerAgent + 2);
+    const maxIterationsPerAgent = 2;
+    const maxSteps = Math.max(1, spec.edges.length * maxIterationsPerAgent + 4);
     for (let step = 0; step < maxSteps; step += 1) {
       snapshot = await this.store.readSnapshot(snapshot.sessionId);
       const readyHandoff = spec.edges
@@ -775,8 +836,9 @@ export class SessionManager {
           const to = nodeMap.get(edge.to) ?? edge.to;
           return (runCounts.get(from) ?? 0) > 0
             && !processedHandoffs.has(edge.id)
-            && this.canSchedule(snapshot, from)
-            && this.canSchedule(snapshot, to);
+            && this.canEmitFrom(snapshot, from)
+            && this.canSchedule(snapshot, to)
+            && this.canHandoffFrom(snapshot, spec, nodeMap, edge.from, edge.to, workflowInstanceId);
         });
       if (readyHandoff) {
         processedHandoffs.add(readyHandoff.id);
@@ -790,7 +852,7 @@ export class SessionManager {
           agentId: from,
           timestamp: new Date().toISOString(),
           type: "handoff.created",
-          payload: { from, to, reason: `plan workflow ${planWorkflow.workflowId}: ${readyHandoff.description}`, edgeId: readyHandoff.id, originalGoal, prompt },
+          payload: { from, to, reason: `plan workflow ${planWorkflow.workflowId}: ${readyHandoff.description}`, edgeId: readyHandoff.id, originalGoal, prompt, workflowInstanceId },
           causationId
         }, publish);
         if (to !== orchestratorId) {
@@ -803,7 +865,11 @@ export class SessionManager {
             payload: { status: snapshot.debugMode ? "waiting" : "working" },
             causationId: handoff.eventId
           }, publish);
-          await this.runWorkflowAgent(snapshot, to, prompt, handoff.eventId, publish);
+          await this.runWorkflowAgent(snapshot, to, prompt, handoff.eventId, publish, {
+            workflowInstanceId,
+            workflowId: spec.id,
+            callerAgentId: orchestratorId
+          });
           runCounts.set(to, (runCounts.get(to) ?? 0) + 1);
         }
         continue;
@@ -816,8 +882,9 @@ export class SessionManager {
           const to = nodeMap.get(edge.to) ?? edge.to;
           return (runCounts.get(from) ?? 0) > 0
             && (runCounts.get(to) ?? 0) < maxIterationsPerAgent
-            && this.canSchedule(snapshot, from)
-            && this.canSchedule(snapshot, to);
+            && this.canEmitFrom(snapshot, from)
+            && this.canSchedule(snapshot, to)
+            && this.canHandoffFrom(snapshot, spec, nodeMap, edge.from, edge.to, workflowInstanceId);
         });
       if (!readyMessage) break;
       const from = nodeMap.get(readyMessage.from) ?? readyMessage.from;
@@ -830,7 +897,7 @@ export class SessionManager {
         agentId: from,
         timestamp: new Date().toISOString(),
         type: "message.sent",
-        payload: { from, to, text: `Plan workflow message: ${readyMessage.description}`, edgeId: readyMessage.id, originalGoal, prompt },
+        payload: { from, to, text: `Plan workflow message: ${readyMessage.description}`, edgeId: readyMessage.id, originalGoal, prompt, workflowInstanceId },
         causationId
       }, publish);
       if (to !== orchestratorId) {
@@ -843,13 +910,18 @@ export class SessionManager {
           payload: { status: snapshot.debugMode ? "waiting" : "working" },
           causationId: message.eventId
         }, publish);
-        await this.runWorkflowAgent(snapshot, to, prompt, message.eventId, publish);
+        await this.runWorkflowAgent(snapshot, to, prompt, message.eventId, publish, {
+          workflowInstanceId,
+          workflowId: spec.id,
+          callerAgentId: orchestratorId
+        });
         runCounts.set(to, (runCounts.get(to) ?? 0) + 1);
       }
     }
+    await this.maybeCompleteWorkflow(snapshot.sessionId, workflowInstanceId, publish, causationId);
   }
 
-  private workflowTools(snapshot: SessionSnapshot, agentId: string, publish: (event: SessionEvent) => void) {
+  private workflowTools(snapshot: SessionSnapshot, agentId: string, publish: (event: SessionEvent) => void, context: WorkflowRunContext = {}) {
     const role = this.resolveRole(snapshot, agentId);
     const roleId = role?.id ?? snapshot.graph.nodes.find((node) => node.id === agentId)?.roleId;
     const tools: NonNullable<Parameters<AgentRuntime["runTurn"]>[0]["workflowTools"]> = {};
@@ -858,8 +930,10 @@ export class SessionManager {
         id: workflow.id,
         name: workflow.name,
         description: workflow.description,
-        nodes: workflow.nodes.map((node) => ({ id: node.id, roleId: node.roleId, label: node.label })),
-        edges: workflow.edges.map((edge) => ({ id: edge.id, from: edge.from, to: edge.to, kind: edge.kind, description: edge.description }))
+        nodes: workflow.nodes.map((node) => ({ id: node.id, roleId: node.roleId, label: node.label, dependencies: node.dependencies })),
+        edges: workflow.edges.map((edge) => ({ id: edge.id, from: edge.from, to: edge.to, kind: edge.kind, description: edge.description })),
+        completionCriteria: workflow.completionCriteria,
+        stopCriteria: workflow.stopCriteria
       }));
     }
     if (role?.toolPolicy.canCreatePlans) {
@@ -886,6 +960,28 @@ export class SessionManager {
         await this.instantiatePlan(snapshot.sessionId, planId, agentId, publish);
         return `Instantiated plan ${planId}.`;
       };
+      tools.startWorkflow = async (workflowId: string, anchorNodeId?: string) => {
+        const result = await this.instantiateWorkflowGraph(snapshot.sessionId, workflowId, anchorNodeId ?? agentId, publish);
+        await this.executeMappedWorkflow(result.snapshot, result.spec, result.nodeMap, {
+          workflowId,
+          agentPrompts: {},
+          doneCriteria: {},
+          completionCriteria: {}
+        }, result.eventId, publish, result.workflowInstanceId);
+        return `Started workflow ${workflowId} as ${result.workflowInstanceId}.`;
+      };
+      tools.stopWorkflow = async (workflowInstanceId: string, reason: string) => {
+        await this.stopWorkflowInstance(snapshot.sessionId, workflowInstanceId, agentId, reason, publish);
+        return `Stopped workflow ${workflowInstanceId}.`;
+      };
+      tools.stopAgent = async (targetAgentId: string, reason: string, artifact?: unknown) => {
+        const result = await this.stopCurrentAgent(snapshot.sessionId, targetAgentId, {
+          reason,
+          artifact,
+          stoppedBy: agentId
+        }, publish);
+        return result.stopped ? `Stopped agent ${targetAgentId}.` : `Agent ${targetAgentId} stop blocked: ${result.reason}.`;
+      };
       tools.inspectAgents = () => snapshot.graph;
       tools.readWorkspaceFile = async (relativePath: string) => readFile(containedPath(snapshot.workspaceRoot, relativePath), "utf8");
       tools.sendAgentMessage = async (targetAgentId: string, text: string) => {
@@ -901,7 +997,251 @@ export class SessionManager {
         return `Sent message to ${targetAgentId}.`;
       };
     }
+    tools.stopSelf = async (reason: string, artifact?: unknown, completedCriteria: string[] = []) => {
+      const result = await this.stopCurrentAgent(snapshot.sessionId, agentId, {
+        reason,
+        artifact,
+        completedCriteria,
+        workflowInstanceId: context.workflowInstanceId
+      }, publish);
+      return result.stopped ? `Stopped ${agentId}.` : `Stop blocked for ${agentId}: ${result.reason}.`;
+    };
     return tools;
+  }
+
+  private async stopCurrentAgent(
+    sessionId: string,
+    agentId: string,
+    input: {
+      reason: string;
+      artifact?: unknown;
+      completedCriteria?: string[];
+      workflowInstanceId?: string;
+      stoppedBy?: string;
+    },
+    publish: (event: SessionEvent) => void,
+    causationId?: string
+  ): Promise<StopAgentResult> {
+    const workflowInstance = input.workflowInstanceId
+      ? (await this.workflowInstancesForSession(sessionId)).find((instance) => instance.workflowInstanceId === input.workflowInstanceId)
+      : await this.inferActiveWorkflowForAgent(sessionId, agentId);
+    const workflowInstanceId = workflowInstance?.workflowInstanceId ?? input.workflowInstanceId;
+    if (workflowInstance && !(await this.canAgentStop(sessionId, workflowInstance, agentId))) {
+      const unresolved = await this.unresolvedStopDependencies(sessionId, workflowInstance, agentId);
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId,
+        agentId,
+        timestamp: new Date().toISOString(),
+        type: "agent.stop_blocked",
+        payload: {
+          reason: input.reason,
+          workflowInstanceId,
+          unresolvedDependencies: unresolved.dependencies,
+          activeChildWorkflows: unresolved.activeChildWorkflows
+        },
+        causationId
+      }, publish);
+      const blockers = [
+        unresolved.dependencies.length > 0 ? `dependencies ${unresolved.dependencies.join(", ")}` : undefined,
+        unresolved.activeChildWorkflows.length > 0 ? `child workflows ${unresolved.activeChildWorkflows.join(", ")}` : undefined
+      ].filter(Boolean).join("; ");
+      return { stopped: false, reason: blockers || "completion gates are still open" };
+    }
+    const stopped = await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.stopped",
+      payload: {
+        reason: input.reason,
+        artifact: input.artifact,
+        completedCriteria: input.completedCriteria ?? [],
+        workflowInstanceId,
+        stoppedBy: input.stoppedBy
+      },
+      causationId
+    }, publish);
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.status",
+      payload: { status: "completed" },
+      causationId: stopped.eventId
+    }, publish);
+    if (workflowInstanceId) {
+      await this.maybeCompleteWorkflow(sessionId, workflowInstanceId, publish, stopped.eventId);
+    }
+    return { stopped: true, reason: input.reason };
+  }
+
+  private async stopWorkflowInstance(
+    sessionId: string,
+    workflowInstanceId: string,
+    stoppedBy: string,
+    reason: string,
+    publish: (event: SessionEvent) => void
+  ) {
+    const instance = (await this.workflowInstancesForSession(sessionId)).find((candidate) => candidate.workflowInstanceId === workflowInstanceId);
+    if (!instance) {
+      throw new Error(`Unknown workflow instance: ${workflowInstanceId}`);
+    }
+    const stopped = await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId: stoppedBy,
+      timestamp: new Date().toISOString(),
+      type: "workflow.stopped",
+      payload: {
+        workflowInstanceId,
+        workflowId: instance?.workflowId,
+        callerAgentId: instance?.callerAgentId,
+        stoppedBy,
+        reason
+      }
+    }, publish);
+    const events = await this.store.readEvents(sessionId);
+    const stoppedAgentIds = new Set(events
+      .filter((event) => event.type === "agent.stopped" && event.payload.workflowInstanceId === workflowInstanceId && event.agentId)
+      .map((event) => event.agentId as string));
+    for (const agentId of instance.agentIds) {
+      if (stoppedAgentIds.has(agentId)) continue;
+      this.activeRuns.get(runKey(sessionId, agentId))?.abort();
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId,
+        agentId,
+        timestamp: new Date().toISOString(),
+        type: "agent.status",
+        payload: { status: "cancelled", workflowInstanceId, reason },
+        causationId: stopped.eventId
+      }, publish);
+    }
+  }
+
+  private async maybeCompleteWorkflow(
+    sessionId: string,
+    workflowInstanceId: string,
+    publish: (event: SessionEvent) => void,
+    causationId?: string
+  ) {
+    const instance = (await this.workflowInstancesForSession(sessionId)).find((candidate) => candidate.workflowInstanceId === workflowInstanceId);
+    if (!instance || await this.isWorkflowClosed(sessionId, workflowInstanceId)) return;
+    const events = await this.store.readEvents(sessionId);
+    const stoppedAgentIds = new Set(events
+      .filter((event) => event.type === "agent.stopped" && event.payload.workflowInstanceId === workflowInstanceId && event.agentId)
+      .map((event) => event.agentId as string));
+    const pendingAgentIds = instance.agentIds.filter((candidate) => !stoppedAgentIds.has(candidate));
+    if (pendingAgentIds.length > 0) return;
+    const completed = await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId: instance.callerAgentId,
+      timestamp: new Date().toISOString(),
+      type: "workflow.completed",
+      payload: {
+        workflowInstanceId,
+        workflowId: instance.workflowId,
+        callerAgentId: instance.callerAgentId,
+        completedAgentIds: instance.agentIds,
+        completionCriteria: instance.completionCriteria,
+        message: `Workflow ${instance.workflowId} completed: all agents stopped.`
+      },
+      causationId
+    }, publish);
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId: instance.callerAgentId,
+      timestamp: new Date().toISOString(),
+      type: "message.sent",
+      payload: {
+        from: workflowInstanceId,
+        to: instance.callerAgentId,
+        text: `Workflow ${instance.workflowId} completed: all agents stopped.`,
+        workflowInstanceId,
+        workflowId: instance.workflowId
+      },
+      causationId: completed.eventId
+    }, publish);
+  }
+
+  private canHandoffFrom(
+    snapshot: SessionSnapshot,
+    spec: WorkflowSpec,
+    nodeMap: Map<string, string>,
+    fromNodeId: string,
+    toNodeId: string,
+    workflowInstanceId: string
+  ) {
+    const node = spec.nodes.find((candidate) => candidate.id === fromNodeId);
+    if (!node || node.dependencies.length === 0) return true;
+    if (node.dependencies.includes(toNodeId)) return true;
+    return node.dependencies.every((dependency) => {
+      const mappedDependency = nodeMap.get(dependency) ?? dependency;
+      return snapshot.transcript.some((event) => event.type === "agent.stopped" && event.agentId === mappedDependency && event.payload.workflowInstanceId === workflowInstanceId)
+        || snapshot.transcript.some((event) => event.type === "handoff.created" && event.payload.from === mappedDependency && (!event.payload.workflowInstanceId || event.payload.workflowInstanceId === workflowInstanceId));
+    });
+  }
+
+  private async canAgentStop(sessionId: string, instance: WorkflowInstance, agentId: string) {
+    const unresolved = await this.unresolvedStopDependencies(sessionId, instance, agentId);
+    return unresolved.dependencies.length === 0 && unresolved.activeChildWorkflows.length === 0;
+  }
+
+  private async unresolvedStopDependencies(sessionId: string, instance: WorkflowInstance, agentId: string) {
+    const events = await this.store.readEvents(sessionId);
+    const originalNodeId = [...instance.nodeMap.entries()].find(([, mapped]) => mapped === agentId)?.[0];
+    const spec = this.workflows.get(instance.workflowId);
+    const dependencies = originalNodeId
+      ? (spec.nodes.find((node) => node.id === originalNodeId)?.dependencies ?? [])
+        .map((dependency) => instance.nodeMap.get(dependency) ?? dependency)
+        .filter((dependencyAgentId) => !events.some((event) => event.type === "agent.stopped" && event.agentId === dependencyAgentId && event.payload.workflowInstanceId === instance.workflowInstanceId)
+          && !events.some((event) => event.type === "handoff.created" && event.payload.from === dependencyAgentId && (!event.payload.workflowInstanceId || event.payload.workflowInstanceId === instance.workflowInstanceId)))
+      : [];
+    const activeChildWorkflows = (await this.workflowInstancesForSession(sessionId))
+      .filter((child) => child.callerAgentId === agentId)
+      .filter((child) => child.workflowInstanceId !== instance.workflowInstanceId)
+      .filter((child) => !events.some((event) => ["workflow.completed", "workflow.stopped"].includes(event.type) && event.payload.workflowInstanceId === child.workflowInstanceId))
+      .map((child) => child.workflowInstanceId);
+    return { dependencies, activeChildWorkflows };
+  }
+
+  private async inferActiveWorkflowForAgent(sessionId: string, agentId: string) {
+    const instances = await this.workflowInstancesForSession(sessionId);
+    const events = await this.store.readEvents(sessionId);
+    return [...instances].reverse().find((instance) =>
+      instance.agentIds.includes(agentId)
+      && !events.some((event) => ["workflow.completed", "workflow.stopped"].includes(event.type) && event.payload.workflowInstanceId === instance.workflowInstanceId)
+    );
+  }
+
+  private async isWorkflowClosed(sessionId: string, workflowInstanceId: string) {
+    return (await this.store.readEvents(sessionId))
+      .some((event) => ["workflow.completed", "workflow.stopped"].includes(event.type) && event.payload.workflowInstanceId === workflowInstanceId);
+  }
+
+  private async workflowInstancesForSession(sessionId: string): Promise<WorkflowInstance[]> {
+    return (await this.store.readEvents(sessionId))
+      .filter((event) => event.type === "workflow.instantiated")
+      .map((event) => {
+        const nodeMap = new Map(Object.entries(objectPayload(event.payload.nodeMap)).map(([key, value]) => [key, String(value)]));
+        const workflowInstanceId = String(event.payload.workflowInstanceId ?? event.eventId);
+        const workflowId = String(event.payload.workflowId ?? "");
+        const callerAgentId = String(event.payload.callerAgentId ?? event.payload.anchorNodeId ?? event.agentId ?? "orchestrator");
+        const agentIds = [...new Set([...nodeMap.values()].filter((value) => value !== callerAgentId))];
+        return {
+          workflowInstanceId,
+          workflowId,
+          callerAgentId,
+          nodeMap,
+          agentIds,
+          completionCriteria: event.payload.completionCriteria
+        };
+      });
   }
 
   private async assertLiveCredentialAvailable() {
@@ -995,6 +1335,11 @@ export class SessionManager {
   private canSchedule(snapshot: SessionSnapshot, agentId: string) {
     const status = snapshot.graph.nodes.find((node) => node.id === agentId)?.status ?? "idle";
     return !["paused", "cancelled", "failed", "completed"].includes(status);
+  }
+
+  private canEmitFrom(snapshot: SessionSnapshot, agentId: string) {
+    const status = snapshot.graph.nodes.find((node) => node.id === agentId)?.status ?? "idle";
+    return !["paused", "cancelled", "failed"].includes(status);
   }
 
   private async initializeWorkspace(workspaceRoot: string, title: string) {
@@ -1140,6 +1485,10 @@ function diffStats(diff: string) {
     if (line.startsWith("-")) deletions += 1;
   }
   return { additions, deletions };
+}
+
+function objectPayload(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function uniqueId(base: string, existing: Set<string>) {

@@ -174,6 +174,18 @@ function assertGraphReferences(spec: WorkflowSpec) {
       throw new Error(`Edge ${edge.id} references a missing node.`);
     }
   }
+  for (const node of spec.nodes) {
+    for (const dependency of node.dependencies) {
+      if (!nodeIds.has(dependency)) {
+        throw new Error(`Node ${node.id} depends on missing node ${dependency}.`);
+      }
+    }
+  }
+  for (const criterion of spec.completionCriteria) {
+    if (criterion.ownerNodeId && !nodeIds.has(criterion.ownerNodeId)) {
+      throw new Error(`Completion criterion ${criterion.id} references missing node ${criterion.ownerNodeId}.`);
+    }
+  }
 }
 
 const baseRoles: WorkflowSpec["roles"] = [
@@ -259,8 +271,8 @@ const builtInWorkflows: WorkflowSpec[] = [
     description: "Planner proposes a graph, then the orchestrator launches and supervises it.",
     roles: baseRoles,
     nodes: [
-      { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", startsActive: true },
-      { id: "planner", roleId: "planner", label: "Planner", startsActive: false }
+      { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", startsActive: true, dependencies: [] },
+      { id: "planner", roleId: "planner", label: "Planner", startsActive: false, dependencies: [] }
     ],
     edges: [
       { id: "handoff-orchestrator-planner", from: "orchestrator", to: "planner", kind: "handoff", description: "Ask planner for workflow details." },
@@ -268,6 +280,10 @@ const builtInWorkflows: WorkflowSpec[] = [
     ],
     concurrency: { maxActiveAgents: 2 },
     lifecycle: { plannerNodeId: "planner", orchestratorNodeId: "orchestrator" },
+    completionCriteria: [
+      { id: "planner_plan_created", ownerNodeId: "planner", description: "Planner creates a workflow plan for the original user goal.", required: true },
+      { id: "orchestrator_plan_instantiated", ownerNodeId: "orchestrator", description: "Orchestrator instantiates the selected plan.", required: true }
+    ],
     stopCriteria: ["Orchestrator marks the user goal completed."]
   },
   {
@@ -277,9 +293,9 @@ const builtInWorkflows: WorkflowSpec[] = [
     description: "Implementor edits while reviewer continuously inspects transcript and diffs.",
     roles: baseRoles,
     nodes: [
-      { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", startsActive: true },
-      { id: "implementor", roleId: "implementor", label: "Implementor", startsActive: false },
-      { id: "reviewer", roleId: "reviewer", label: "Reviewer", startsActive: false }
+      { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", startsActive: true, dependencies: [] },
+      { id: "implementor", roleId: "implementor", label: "Implementor", startsActive: false, dependencies: ["reviewer"] },
+      { id: "reviewer", roleId: "reviewer", label: "Reviewer", startsActive: false, dependencies: [] }
     ],
     edges: [
       { id: "handoff-orchestrator-implementor", from: "orchestrator", to: "implementor", kind: "handoff", description: "Assign implementation." },
@@ -288,6 +304,10 @@ const builtInWorkflows: WorkflowSpec[] = [
     ],
     concurrency: { maxActiveAgents: 3 },
     lifecycle: { orchestratorNodeId: "orchestrator" },
+    completionCriteria: [
+      { id: "implementation_finished", ownerNodeId: "implementor", description: "Implementor records final implementation artifact after review is complete.", required: true },
+      { id: "review_no_blockers", ownerNodeId: "reviewer", description: "Reviewer reports no blocking findings or sends concrete fixes.", required: true }
+    ],
     stopCriteria: ["Reviewer reports no blocking findings.", "Orchestrator accepts final implementation."]
   },
   {
@@ -297,9 +317,9 @@ const builtInWorkflows: WorkflowSpec[] = [
     description: "QA runs checks and hands back issues until acceptance.",
     roles: baseRoles,
     nodes: [
-      { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", startsActive: true },
-      { id: "implementor", roleId: "implementor", label: "Implementor", startsActive: false },
-      { id: "qa", roleId: "qa", label: "QA", startsActive: false }
+      { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", startsActive: true, dependencies: [] },
+      { id: "implementor", roleId: "implementor", label: "Implementor", startsActive: false, dependencies: ["qa"] },
+      { id: "qa", roleId: "qa", label: "QA", startsActive: false, dependencies: [] }
     ],
     edges: [
       { id: "handoff-orchestrator-implementor", from: "orchestrator", to: "implementor", kind: "handoff", description: "Assign implementation." },
@@ -308,6 +328,10 @@ const builtInWorkflows: WorkflowSpec[] = [
     ],
     concurrency: { maxActiveAgents: 2 },
     lifecycle: { orchestratorNodeId: "orchestrator" },
+    completionCriteria: [
+      { id: "implementation_ready_for_qa", ownerNodeId: "implementor", description: "Implementor creates the requested implementation artifact.", required: true },
+      { id: "qa_acceptance", ownerNodeId: "qa", description: "QA marks acceptance criteria complete.", required: true }
+    ],
     stopCriteria: ["QA marks acceptance.", "Orchestrator summarizes completion."]
   },
   {
@@ -317,10 +341,10 @@ const builtInWorkflows: WorkflowSpec[] = [
     description: "Implementor builds, reviewer critiques, implementor revises, and QA verifies acceptance.",
     roles: baseRoles,
     nodes: [
-      { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", startsActive: true },
-      { id: "implementor", roleId: "implementor", label: "Implementor", startsActive: false },
-      { id: "reviewer", roleId: "reviewer", label: "Reviewer", startsActive: false },
-      { id: "qa", roleId: "qa", label: "QA", startsActive: false }
+      { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", startsActive: true, dependencies: [] },
+      { id: "implementor", roleId: "implementor", label: "Implementor", startsActive: false, dependencies: ["reviewer", "qa"] },
+      { id: "reviewer", roleId: "reviewer", label: "Reviewer", startsActive: false, dependencies: [] },
+      { id: "qa", roleId: "qa", label: "QA", startsActive: false, dependencies: [] }
     ],
     edges: [
       { id: "handoff-orchestrator-implementor", from: "orchestrator", to: "implementor", kind: "handoff", description: "Assign scoped implementation from the active plan." },
@@ -331,6 +355,11 @@ const builtInWorkflows: WorkflowSpec[] = [
     ],
     concurrency: { maxActiveAgents: 3 },
     lifecycle: { orchestratorNodeId: "orchestrator" },
+    completionCriteria: [
+      { id: "implementation_artifact", ownerNodeId: "implementor", description: "Implementor produces the requested code artifact.", required: true },
+      { id: "review_complete", ownerNodeId: "reviewer", description: "Reviewer completes adversarial code review.", required: true },
+      { id: "qa_acceptance", ownerNodeId: "qa", description: "QA verifies acceptance criteria.", required: true }
+    ],
     stopCriteria: ["Implementation matches the plan.", "Reviewer has no blocking findings.", "QA acceptance checks pass."]
   }
 ];

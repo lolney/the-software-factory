@@ -60,6 +60,7 @@ struct WorkflowNodeSpec: Identifiable, Hashable, Codable {
     var roleId: String
     var label: String
     var startsActive: Bool?
+    var dependencies: [String]?
 }
 
 struct WorkflowEdgeSpec: Identifiable, Hashable, Codable {
@@ -78,7 +79,15 @@ struct WorkflowSpec: Identifiable, Hashable, Codable {
     var roles: [RoleSpec]
     var nodes: [WorkflowNodeSpec]
     var edges: [WorkflowEdgeSpec]
+    var completionCriteria: [CompletionCriterion]?
     var stopCriteria: [String]
+}
+
+struct CompletionCriterion: Identifiable, Hashable, Codable {
+    var id: String
+    var description: String
+    var ownerNodeId: String?
+    var required: Bool?
 }
 
 struct AuthStatus: Hashable, Codable {

@@ -25,7 +25,7 @@
   ],
   "nodes": [
     { "id": "orchestrator", "roleId": "orchestrator", "label": "Orchestrator", "startsActive": true },
-    { "id": "implementor", "roleId": "implementor", "label": "Implementor" },
+    { "id": "implementor", "roleId": "implementor", "label": "Implementor", "dependencies": ["reviewer"] },
     { "id": "reviewer", "roleId": "reviewer", "label": "Reviewer" }
   ],
   "edges": [
@@ -35,5 +35,9 @@
   ],
   "concurrency": { "maxActiveAgents": 3 },
   "lifecycle": { "orchestratorNodeId": "orchestrator" },
+  "completionCriteria": [
+    { "id": "implementation_finished", "ownerNodeId": "implementor", "description": "Implementor records final implementation artifact after review is complete." },
+    { "id": "review_no_blockers", "ownerNodeId": "reviewer", "description": "Reviewer reports no blocking findings or sends concrete fixes." }
+  ],
   "stopCriteria": ["Reviewer reports no blocking findings.", "Orchestrator accepts final implementation."]
 }

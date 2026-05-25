@@ -17,6 +17,10 @@ export interface AgentTurnInput {
     listWorkflows?: () => unknown;
     createPlan?: (plan: unknown) => Promise<string>;
     instantiatePlan?: (planId: string) => Promise<string>;
+    startWorkflow?: (workflowId: string, anchorNodeId?: string) => Promise<string>;
+    stopWorkflow?: (workflowInstanceId: string, reason: string) => Promise<string>;
+    stopAgent?: (agentId: string, reason: string, artifact?: unknown) => Promise<string>;
+    stopSelf?: (reason: string, artifact?: unknown, completedCriteria?: string[]) => Promise<string>;
     inspectAgents?: () => unknown;
     readWorkspaceFile?: (relativePath: string) => Promise<string>;
     writeWorkspaceFile?: (relativePath: string, content: string) => Promise<string>;
@@ -69,6 +73,38 @@ export class OpenAIAgentRuntime implements AgentRuntime {
         description: "Instantiate a planner-created plan into the current session graph.",
         parameters: z.object({ planId: z.string() }),
         execute: async (args) => input.workflowTools?.instantiatePlan?.(args.planId) ?? "Plan tools unavailable."
+      }));
+    }
+    if (input.workflowTools?.startWorkflow) {
+      tools.push(tool({
+        name: "workflow_start",
+        description: "Start a predefined workflow in the current session graph. Returns a workflow instance id that must complete before you can stop.",
+        parameters: z.object({ workflowId: z.string(), anchorNodeId: z.string().optional() }),
+        execute: async (args) => input.workflowTools?.startWorkflow?.(args.workflowId, args.anchorNodeId) ?? "Workflow start tool unavailable."
+      }));
+    }
+    if (input.workflowTools?.stopWorkflow) {
+      tools.push(tool({
+        name: "workflow_stop",
+        description: "Stop a workflow instance you started before all agents complete it.",
+        parameters: z.object({ workflowInstanceId: z.string(), reason: z.string() }),
+        execute: async (args) => input.workflowTools?.stopWorkflow?.(args.workflowInstanceId, args.reason) ?? "Workflow stop tool unavailable."
+      }));
+    }
+    if (input.workflowTools?.stopAgent) {
+      tools.push(tool({
+        name: "agent_stop",
+        description: "Stop an individual agent in the current session graph.",
+        parameters: z.object({ agentId: z.string(), reason: z.string(), artifact: z.unknown().optional() }),
+        execute: async (args) => input.workflowTools?.stopAgent?.(args.agentId, args.reason, args.artifact) ?? "Agent stop tool unavailable."
+      }));
+    }
+    if (input.workflowTools?.stopSelf) {
+      tools.push(tool({
+        name: "workflow_stop_self",
+        description: "Call this when your workflow responsibilities are complete. Include the artifact or summary you are handing back and the completion criteria you satisfied.",
+        parameters: z.object({ reason: z.string(), artifact: z.unknown().optional(), completedCriteria: z.array(z.string()).default([]) }),
+        execute: async (args) => input.workflowTools?.stopSelf?.(args.reason, args.artifact, args.completedCriteria) ?? "Stop tool unavailable."
       }));
     }
     if (input.workflowTools?.inspectAgents) {

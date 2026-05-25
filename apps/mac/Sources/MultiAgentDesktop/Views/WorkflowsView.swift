@@ -84,6 +84,20 @@ private struct WorkflowDetail: View {
                 LabeledContent("Edges", value: "\(workflow.edges.count)")
 
                 VStack(alignment: .leading, spacing: 8) {
+                    Text("Node Dependencies")
+                        .font(.headline)
+                    ForEach(workflow.nodes) { node in
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(node.label)
+                                .font(.callout.weight(.medium))
+                            Spacer()
+                            Text((node.dependencies ?? []).isEmpty ? "None" : (node.dependencies ?? []).joined(separator: ", "))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
                     Text("Roles")
                         .font(.headline)
                     ForEach(workflow.roles) { role in
@@ -121,6 +135,28 @@ private struct WorkflowDetail: View {
                         ForEach(workflow.stopCriteria, id: \.self) { criterion in
                             Text(criterion)
                                 .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                if let completionCriteria = workflow.completionCriteria, !completionCriteria.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Completion Criteria")
+                            .font(.headline)
+                        ForEach(completionCriteria) { criterion in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Image(systemName: criterion.required == false ? "circle" : "checkmark.circle")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 16)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(criterion.description)
+                                    if let owner = criterion.ownerNodeId {
+                                        Text(owner)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
                         }
                     }
                 }

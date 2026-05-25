@@ -189,6 +189,19 @@ private struct CompactEventRow: View {
             return "\(item.sender) handed off to \(item.recipient ?? "agent")"
         case "workflow.instantiated":
             return "\(item.sender) instantiated workflow"
+        case "workflow.completed":
+            return item.payload["message"]?.stringValue ?? "workflow completed"
+        case "workflow.stopped":
+            return "workflow stopped: \(item.payload["reason"]?.stringValue ?? "no reason provided")"
+        case "agent.stopped":
+            return "\(item.sender) stopped: \(item.payload["reason"]?.stringValue ?? "done")"
+        case "agent.stop_blocked":
+            let dependencies = arrayValue(item.payload["unresolvedDependencies"])?.compactMap(\.stringValue).joined(separator: ", ") ?? "dependencies"
+            let childWorkflows = arrayValue(item.payload["activeChildWorkflows"])?.compactMap(\.stringValue).joined(separator: ", ")
+            if let childWorkflows, !childWorkflows.isEmpty {
+                return "\(item.sender) stop blocked by child workflow \(childWorkflows)"
+            }
+            return "\(item.sender) stop blocked by \(dependencies.isEmpty ? "completion gates" : dependencies)"
         case "plan.created", "plan.instantiated", "graph.updated":
             return item.text
         default:
@@ -212,8 +225,14 @@ private struct TransitionEventRow: View {
                     if let edgeId = item.payload["edgeId"]?.stringValue {
                         ToolPayloadBlock(title: "Edge", value: .string(edgeId))
                     }
+                    if let workflowInstanceId = item.payload["workflowInstanceId"]?.stringValue {
+                        ToolPayloadBlock(title: "Workflow Instance", value: .string(workflowInstanceId))
+                    }
                     ToolPayloadBlock(title: "Prompt sent to \(item.recipient ?? "agent")", value: .string(prompt))
                 } else if let text = item.payload["text"]?.stringValue {
+                    if let workflowInstanceId = item.payload["workflowInstanceId"]?.stringValue {
+                        ToolPayloadBlock(title: "Workflow Instance", value: .string(workflowInstanceId))
+                    }
                     ToolPayloadBlock(title: "Message", value: .string(text))
                 }
                 if let reason = item.payload["reason"]?.stringValue {
@@ -331,6 +350,18 @@ private struct PlanWorkflowView: View {
                 Text("Nodes: \(nodes.compactMap { $0.objectValue?["label"]?.stringValue ?? $0.objectValue?["id"]?.stringValue }.joined(separator: ", "))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                let dependencyLabels = nodes.compactMap { value -> String? in
+                    guard let node = value.objectValue,
+                          let id = node["id"]?.stringValue,
+                          let dependencies = arrayValue(node["dependencies"])?.compactMap(\.stringValue),
+                          !dependencies.isEmpty else { return nil }
+                    return "\(id) waits for \(dependencies.joined(separator: ", "))"
+                }
+                if !dependencyLabels.isEmpty {
+                    Text("Dependencies: \(dependencyLabels.joined(separator: " | "))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             if let edges = arrayValue(spec?["edges"]), !edges.isEmpty {
                 Text("Edges: \(edges.compactMap(edgeLabel).joined(separator: " | "))")
@@ -341,6 +372,15 @@ private struct PlanWorkflowView: View {
                 Text("Stop: \(stopCriteria.joined(separator: "; "))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            if let completionCriteria = arrayValue(spec?["completionCriteria"])?.compactMap(\.objectValue), !completionCriteria.isEmpty {
+                Text("Completion Criteria")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(Array(completionCriteria.enumerated()), id: \.offset) { _, criterion in
+                    Text("- \(criterion["description"]?.stringValue ?? criterion["id"]?.stringValue ?? "Criterion")")
+                        .font(.caption)
+                }
             }
             if let prompts = workflow["agentPrompts"]?.objectValue, !prompts.isEmpty {
                 Text("Agent Prompts")
