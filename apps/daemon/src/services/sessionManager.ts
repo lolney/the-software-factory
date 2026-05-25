@@ -41,6 +41,16 @@ interface ScheduledJob {
   heartbeat: ReturnType<typeof setInterval>;
 }
 
+interface WorkflowExecutionRequest {
+  sessionId: string;
+  spec: ReturnType<WorkflowEngine["get"]>;
+  nodeMap: Map<string, string>;
+  planWorkflow: PlanSpec["workflows"][number];
+  workflowInstanceId: string;
+  causationId: string;
+  callerAgentId: string;
+}
+
 export class SessionManager {
   private readonly subscribers = new Map<string, Set<(event: SessionEvent) => void>>();
   private readonly logSubscribers = new Map<string, Set<(entry: DebugLogEntry) => void>>();
@@ -477,12 +487,14 @@ export class SessionManager {
     const initialGraphSize = snapshot.graph.nodes.length + snapshot.graph.edges.length + 1;
     const maxSteps = Math.max(1, initialGraphSize * maxIterationsPerAgent * 2);
     let instantiatedPlanDuringActivation = false;
+    const rootEdgeIds = new Set(spec.edges.map((edge) => edge.id));
 
     for (let step = 0; step < maxSteps; step += 1) {
       snapshot = await this.store.readSnapshot(snapshot.sessionId);
       const graph = snapshot.graph;
       const readyHandoffs = graph.edges
         .filter((edge) => edge.kind === "handoff")
+        .filter((edge) => rootEdgeIds.has(edge.id))
         .filter((edge) => (runCounts.get(edge.from) ?? 0) > 0 && !processedHandoffs.has(edge.id))
         .filter((edge) => this.canSchedule(snapshot, edge.from) && this.canSchedule(snapshot, edge.to));
       if (readyHandoffs.length > 0) {
@@ -519,6 +531,7 @@ export class SessionManager {
 
       const readyMessages = graph.edges
         .filter((edge) => edge.kind === "message")
+        .filter((edge) => rootEdgeIds.has(edge.id))
         .filter((edge) => (runCounts.get(edge.from) ?? 0) > 0 && (runCounts.get(edge.to) ?? 0) < maxIterationsPerAgent)
         .filter((edge) => !processedMessages.has(edge.id))
         .filter((edge) => this.canSchedule(snapshot, edge.from) && this.canSchedule(snapshot, edge.to));
@@ -1249,9 +1262,57 @@ export class SessionManager {
         instantiated.eventId,
         workflow
       );
-      await this.executeMappedWorkflow(graphResult.snapshot, graphResult.spec, graphResult.nodeMap, workflow, graphResult.eventId, publish, graphResult.workflowInstanceId);
+      await this.scheduleMappedWorkflowExecution({
+        sessionId,
+        spec: graphResult.spec,
+        nodeMap: graphResult.nodeMap,
+        planWorkflow: workflow,
+        workflowInstanceId: graphResult.workflowInstanceId,
+        causationId: graphResult.eventId,
+        callerAgentId: anchorNodeId
+      }, publish);
     }
     return this.store.rebuildSnapshot(sessionId);
+  }
+
+  private async scheduleMappedWorkflowExecution(
+    request: WorkflowExecutionRequest,
+    publish: (event: SessionEvent) => void
+  ) {
+    const job = await this.startScheduledTurn(request.sessionId, request.workflowInstanceId, publish, {
+      kind: "workflow-execution",
+      prompt: `Execute workflow ${request.spec.id} for caller ${request.callerAgentId}.`,
+      workflowInstanceId: request.workflowInstanceId,
+      workflowId: request.spec.id,
+      callerAgentId: request.callerAgentId,
+      causationId: request.causationId,
+      details: {
+        planWorkflow: request.planWorkflow,
+        nodeMap: Object.fromEntries(request.nodeMap)
+      }
+    });
+    void this.runScheduledWorkflowExecution(request, job, publish);
+    return job;
+  }
+
+  private async runScheduledWorkflowExecution(
+    request: WorkflowExecutionRequest,
+    job: ScheduledJob,
+    publish: (event: SessionEvent) => void
+  ) {
+    try {
+      const startedAt = (await this.store.readEvents(request.sessionId)).length;
+      const snapshot = await this.store.readSnapshot(request.sessionId);
+      await this.executeMappedWorkflow(snapshot, request.spec, request.nodeMap, request.planWorkflow, request.causationId, publish, request.workflowInstanceId);
+      const finishedAt = (await this.store.readEvents(request.sessionId)).length;
+      await this.finishScheduledTurn(request.sessionId, request.workflowInstanceId, job, publish, "completed", Math.max(0, finishedAt - startedAt));
+    } catch (error) {
+      try {
+        await this.failScheduledSideEffect(request.sessionId, request.workflowInstanceId, job, publish, error, request.causationId);
+      } catch {
+        clearInterval(job.heartbeat);
+      }
+    }
   }
 
   private async executeMappedWorkflow(
@@ -1264,13 +1325,15 @@ export class SessionManager {
     workflowInstanceId: string
   ) {
     const orchestratorId = nodeMap.get(spec.lifecycle.orchestratorNodeId) ?? spec.lifecycle.orchestratorNodeId;
-    const runCounts = new Map<string, number>([[orchestratorId, 1]]);
-    const processedHandoffs = new Set<string>();
-    const processedMessages = new Set<string>();
+    const initialEvents = await this.store.readEvents(snapshot.sessionId);
+    const runCounts = this.workflowRunCounts(initialEvents, nodeMap, orchestratorId);
+    const processedHandoffs = this.processedWorkflowEdges(initialEvents, "handoff.created", workflowInstanceId);
+    const processedMessages = this.processedWorkflowEdges(initialEvents, "message.sent", workflowInstanceId);
     const maxIterationsPerAgent = 2;
     const maxSteps = Math.max(1, spec.edges.length * maxIterationsPerAgent + 4);
     for (let step = 0; step < maxSteps; step += 1) {
       snapshot = await this.store.readSnapshot(snapshot.sessionId);
+      if (await this.isWorkflowClosed(snapshot.sessionId, workflowInstanceId)) break;
       const readyHandoff = spec.edges
         .filter((edge) => edge.kind === "handoff")
         .find((edge) => {
@@ -1371,6 +1434,34 @@ export class SessionManager {
     await this.maybeCompleteWorkflow(snapshot.sessionId, workflowInstanceId, publish, causationId);
   }
 
+  private workflowRunCounts(events: SessionEvent[], nodeMap: Map<string, string>, orchestratorId: string) {
+    const runCounts = new Map<string, number>([[orchestratorId, 1]]);
+    for (const mappedAgentId of nodeMap.values()) {
+      if (mappedAgentId === orchestratorId) continue;
+      const count = events.filter((event) =>
+        event.agentId === mappedAgentId
+        && ["agent.message", "agent.stopped", "agent.stop_blocked", "workspace.file_touched"].includes(event.type)
+      ).length;
+      if (count > 0) {
+        runCounts.set(mappedAgentId, count);
+      }
+    }
+    return runCounts;
+  }
+
+  private processedWorkflowEdges(events: SessionEvent[], type: "handoff.created" | "message.sent", workflowInstanceId: string) {
+    const processed = new Set<string>();
+    for (const event of events) {
+      if (event.type !== type || event.payload.workflowInstanceId !== workflowInstanceId) continue;
+      const edgeId = String(event.payload.edgeId ?? "");
+      const targetAgentId = String(event.payload.to ?? "");
+      if (edgeId && targetAgentId && hasAgentProgressAfter(events, event.eventId, targetAgentId)) {
+        processed.add(edgeId);
+      }
+    }
+    return processed;
+  }
+
   private workflowTools(snapshot: SessionSnapshot, agentId: string, publish: (event: SessionEvent) => void, context: WorkflowRunContext = {}) {
     const role = this.resolveRole(snapshot, agentId);
     const roleId = role?.id ?? snapshot.graph.nodes.find((node) => node.id === agentId)?.roleId;
@@ -1418,28 +1509,30 @@ export class SessionManager {
       };
       tools.startWorkflow = async (workflowId: string, anchorNodeId?: string) => {
         const result = await this.instantiateWorkflowGraph(snapshot.sessionId, workflowId, anchorNodeId ?? agentId, publish);
-        await this.executeMappedWorkflow(result.snapshot, result.spec, result.nodeMap, {
+        await this.scheduleMappedWorkflowExecution({
+          sessionId: snapshot.sessionId,
+          spec: result.spec,
+          nodeMap: result.nodeMap,
+          workflowInstanceId: result.workflowInstanceId,
+          causationId: result.eventId,
+          callerAgentId: agentId,
+          planWorkflow: {
           workflowId,
           agentPrompts: {},
           doneCriteria: {},
           completionCriteria: {}
-        }, result.eventId, publish, result.workflowInstanceId);
-        const latest = await this.store.readSnapshot(snapshot.sessionId);
+          }
+        }, publish);
         const agentIds = [...result.nodeMap.entries()]
           .filter(([nodeId]) => nodeId !== result.spec.lifecycle.orchestratorNodeId)
           .map(([nodeId, mappedId]) => {
             const node = result.spec.nodes.find((candidate) => candidate.id === nodeId);
             return `${mappedId} (${node?.roleId ?? nodeId})`;
           });
-        const completed = latest.transcript.find((event) =>
-          event.type === "workflow.completed"
-          && event.payload.workflowInstanceId === result.workflowInstanceId
-        );
         return [
           `Started workflow ${workflowId} as ${result.workflowInstanceId}.`,
           agentIds.length ? `Agents: ${agentIds.join(", ")}.` : undefined,
-          completed ? `Workflow completed: ${String(completed.payload.message ?? "all agents stopped")}.` : "Workflow has not completed yet.",
-          await this.workflowCompletionSummary(snapshot.sessionId, result.workflowInstanceId, result.nodeMap),
+          "Workflow execution is scheduled asynchronously; watch for workflow.completed or workflow.stopped events before treating the delegated work as finished.",
           "Use the mapped agent ids above when sending messages; role names alone are not agent ids."
         ].filter(Boolean).join("\n");
       };
@@ -2077,14 +2170,24 @@ export class SessionManager {
           .filter((event) => ["scheduler.job.completed", "scheduler.job.failed", "scheduler.job.recovered"].includes(event.type))
           .map((event) => String(event.payload.jobId ?? ""))
           .filter(Boolean));
-        const openJobs = new Map<string, SessionEvent>();
+        const openJobs = new Map<string, { created?: SessionEvent; latest: SessionEvent }>();
         for (const event of events) {
           if (!["scheduler.job.created", "scheduler.job.started", "scheduler.job.heartbeat"].includes(event.type)) continue;
           const jobId = String(event.payload.jobId ?? "");
           if (!jobId || closedJobIds.has(jobId)) continue;
-          openJobs.set(jobId, event);
+          const existing = openJobs.get(jobId);
+          openJobs.set(jobId, {
+            created: event.type === "scheduler.job.created" ? event : existing?.created,
+            latest: event
+          });
         }
-        for (const [jobId, event] of openJobs) {
+        const recoveringWorkflowInstances = new Set([...openJobs.values()]
+          .map((record) => record.created ?? record.latest)
+          .filter((event) => event.payload.kind === "workflow-execution")
+          .map((event) => String(event.payload.workflowInstanceId ?? ""))
+          .filter(Boolean));
+        for (const [jobId, record] of openJobs) {
+          const event = record.created ?? record.latest;
           const agentId = event.agentId ?? String(event.payload.agentId ?? "");
           if (!agentId || this.activeRuns.has(runKey(sessionId, agentId))) continue;
           const recovered = await this.appendAndPublish({
@@ -2101,6 +2204,43 @@ export class SessionManager {
             causationId: event.eventId,
             correlationId: jobId
           }, publish);
+          if (event.payload.kind === "workflow-execution") {
+            await this.appendDebugLog(
+              sessionId,
+              "warn",
+              "scheduler",
+              `Resuming interrupted workflow job ${jobId}.`,
+              { jobId, agentId, workflowInstanceId: event.payload.workflowInstanceId, recoveredFromEventId: event.eventId },
+              publishLog,
+              agentId,
+              recovered.eventId
+            );
+            await this.resumeWorkflowExecutionFromJob(sessionId, event, recovered.eventId, publish);
+            continue;
+          }
+          if (recoveringWorkflowInstances.has(String(event.payload.workflowInstanceId ?? ""))) {
+            await this.appendAndPublish({
+              eventId: makeEventId(),
+              sessionId,
+              agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.status",
+              payload: { status: "idle", reason: "workflow execution recovered and will reschedule this agent turn", jobId },
+              causationId: recovered.eventId,
+              correlationId: jobId
+            }, publish);
+            await this.appendDebugLog(
+              sessionId,
+              "warn",
+              "scheduler",
+              `Recovered interrupted agent job ${jobId}; parent workflow will reschedule as needed.`,
+              { jobId, agentId, workflowInstanceId: event.payload.workflowInstanceId, recoveredFromEventId: event.eventId },
+              publishLog,
+              agentId,
+              recovered.eventId
+            );
+            continue;
+          }
           await this.appendAndPublish({
             eventId: makeEventId(),
             sessionId,
@@ -2146,6 +2286,54 @@ export class SessionManager {
     }
   }
 
+  private async resumeWorkflowExecutionFromJob(
+    sessionId: string,
+    event: SessionEvent,
+    causationId: string,
+    publish: (event: SessionEvent) => void
+  ) {
+    const workflowInstanceId = String(event.payload.workflowInstanceId ?? "");
+    const workflowId = String(event.payload.workflowId ?? "");
+    if (!workflowInstanceId || !workflowId) {
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId,
+        agentId: event.agentId,
+        timestamp: new Date().toISOString(),
+        type: "error",
+        payload: { message: "Cannot resume workflow execution job without workflow id and instance id.", jobId: event.payload.jobId },
+        causationId,
+        correlationId: String(event.payload.jobId ?? "")
+      }, publish);
+      return;
+    }
+    const instance = (await this.workflowInstancesForSession(sessionId)).find((candidate) => candidate.workflowInstanceId === workflowInstanceId);
+    if (!instance) {
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId,
+        agentId: event.agentId,
+        timestamp: new Date().toISOString(),
+        type: "error",
+        payload: { message: `Cannot resume unknown workflow instance ${workflowInstanceId}.`, jobId: event.payload.jobId },
+        causationId,
+        correlationId: String(event.payload.jobId ?? "")
+      }, publish);
+      return;
+    }
+    const details = objectPayload(event.payload.details);
+    const planWorkflow = planWorkflowFromPayload(details.planWorkflow, workflowId);
+    await this.scheduleMappedWorkflowExecution({
+      sessionId,
+      spec: this.workflows.get(workflowId),
+      nodeMap: instance.nodeMap,
+      planWorkflow,
+      workflowInstanceId,
+      causationId,
+      callerAgentId: instance.callerAgentId
+    }, publish);
+  }
+
   private async startScheduledTurn(
     sessionId: string,
     agentId: string,
@@ -2157,6 +2345,7 @@ export class SessionManager {
       workflowId?: string;
       callerAgentId?: string;
       causationId?: string;
+      details?: Record<string, unknown>;
     }
   ): Promise<ScheduledJob> {
     const jobId = `job_${crypto.randomUUID()}`;
@@ -2173,7 +2362,8 @@ export class SessionManager {
         prompt: metadata.prompt,
         workflowInstanceId: metadata.workflowInstanceId,
         workflowId: metadata.workflowId,
-        callerAgentId: metadata.callerAgentId
+        callerAgentId: metadata.callerAgentId,
+        details: metadata.details
       },
       causationId: metadata.causationId,
       correlationId: jobId
@@ -2398,6 +2588,51 @@ function diffStats(diff: string) {
 
 function objectPayload(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function planWorkflowFromPayload(value: unknown, workflowId: string): PlanSpec["workflows"][number] {
+  const payload = objectPayload(value);
+  return {
+    workflowId: typeof payload.workflowId === "string" ? payload.workflowId : workflowId,
+    anchorNodeId: typeof payload.anchorNodeId === "string" ? payload.anchorNodeId : undefined,
+    agentPrompts: stringRecord(payload.agentPrompts),
+    doneCriteria: stringArrayRecord(payload.doneCriteria),
+    completionCriteria: completionCriteriaRecord(payload.completionCriteria)
+  };
+}
+
+function stringArrayRecord(value: unknown) {
+  const payload = objectPayload(value);
+  const entries = Object.entries(payload)
+    .map(([key, item]) => [key, Array.isArray(item) ? item.filter((entry): entry is string => typeof entry === "string") : []] as const);
+  return Object.fromEntries(entries);
+}
+
+function stringRecord(value: unknown) {
+  const payload = objectPayload(value);
+  const entries = Object.entries(payload)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string");
+  return Object.fromEntries(entries);
+}
+
+function completionCriteriaRecord(value: unknown) {
+  const payload = objectPayload(value);
+  const entries = Object.entries(payload).map(([key, item]) => [
+    key,
+    Array.isArray(item)
+      ? item.map((criterion) => CompletionCriterionSchema.safeParse(criterion)).filter((result) => result.success).map((result) => result.data)
+      : []
+  ] as const);
+  return Object.fromEntries(entries);
+}
+
+function hasAgentProgressAfter(events: SessionEvent[], eventId: string, agentId: string) {
+  const index = events.findIndex((event) => event.eventId === eventId);
+  if (index < 0) return false;
+  return events.slice(index + 1).some((event) =>
+    event.agentId === agentId
+    && ["agent.message", "agent.stopped", "agent.stop_blocked", "workspace.file_touched", "agent.tool_result", "error"].includes(event.type)
+  );
 }
 
 async function scanWorkspaceFiles(root: string) {

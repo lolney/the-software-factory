@@ -4,7 +4,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 ## Architecture And Code Review Follow-Ups
 
-- **P1: Make child workflow execution resumable outside a single model turn.** The orchestrator currently executes long child workflows inside one WHAM tool-call loop, which can still exhaust the model turn budget. Move child workflows to durable scheduler jobs and notify the caller asynchronously.
 - **P1: De-duplicate tool transcript events.** Engine tools such as `workspace_write_file` currently emit both runtime-level tool call/result events and internal engine tool events, creating duplicate rows and inconsistent tool names.
 - **P2: Avoid noisy completed-agent messaging failures.** The orchestrator can still attempt `agent_message_send` to agents that are already completed, producing repeated tool errors in successful transcripts; expose completed state more explicitly to the model or convert these to structured no-op guidance.
 - **P2: Expand UI control and observability for autonomous workflows.** Add a first-class workflow/run inspector, criteria checklist, diff/artifact browser, per-agent control panel, reconnect/resume UI.
@@ -25,6 +24,18 @@ Computer Use could inspect this app, but direct Computer Use access to `com.open
 - **P1: Add a changed-files and diff review surface.** Summarize touched files in a dedicated panel, open inline diffs from `workspace.file_touched` events, show additions/deletions, and allow copying file paths or diff hunks.
 - **P1: Add command/tool execution details.** For tool calls, show duration, status, working directory, exit code when applicable, raw input/result, and a compact/expanded Codex-style rendering.
 - **P2: Add copy/share/export actions for session artifacts.** Export transcript, event log, debug log, workspace path, and selected diffs from the session UI.
+
+## User follow-ups
+
+Workflow graph UX improvements:
+- The graph should be zoomable and panable
+- Done, failed, idle, active states should be more visually distinct
+- With an agent selected, clicking outside of it should deselect it
+- Nodes on the graph should not be allowed to overlap or touch; there should be a minimum distance enforced
+- Layout should be done carefully to maximize use of space and legibility as more workflows are added
+- Edges should not terminate at the center of the node, but instead at the edge of the rectangle representing the node
+- If an edge connects rectangles representing node a and b, we should choose where to draw the line as follows: we should choose the edge of the node a rectangle and the edge of the node b rectangle that minimizes the length of the line
+- The end of an edge should be represented with a dot (shared if there are multiple edges terminating at the same spot)
 
 ## Completed Non-Controversial Items
 
@@ -51,6 +62,7 @@ Computer Use could inspect this app, but direct Computer Use access to `com.open
 - **2026-05-25: Add workspace command tool.** Command-enabled roles can run bounded commands inside the session workspace, allowing QA to execute tests and local CLI checks.
 - **2026-05-25: Harden WHAM live calls.** Added retry/backoff for transient WHAM 429/502/503/504 responses and raised the live turn budget for longer workflow orchestration.
 - **2026-05-25: Normalize runtime tool causality.** Added runtime-side event streaming for WHAM transcript events so tool calls are durably logged before engine side effects and tool results are logged afterward, with tests preventing duplicate returned tool events.
+- **2026-05-25: Schedule child workflow execution durably.** Changed `workflow_start` and `plan_instantiate` to enqueue workflow execution as durable scheduler jobs, added recovery that reschedules interrupted workflow jobs, prevented root workflow activation from consuming child graph edges, and covered async completion/recovery in daemon tests.
 
 
 

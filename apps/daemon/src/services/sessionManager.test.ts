@@ -6,6 +6,49 @@ import { describe, expect, it } from "vitest";
 import { SessionManager } from "./sessionManager.js";
 import { EventStore, makeEventId } from "./eventStore.js";
 
+type ReplayEvent = { type: string; agentId?: string; payload: Record<string, unknown> };
+
+async function waitForEvents(manager: SessionManager, sessionId: string, predicate: (events: ReplayEvent[]) => boolean, timeoutMs = 3_000) {
+  const deadline = Date.now() + timeoutMs;
+  let events: ReplayEvent[] = [];
+  while (Date.now() < deadline) {
+    const replay = await manager.handle({
+      id: `req_wait_${crypto.randomUUID()}`,
+      method: "subscribeEvents",
+      params: { sessionId }
+    }) as { events: ReplayEvent[] };
+    events = replay.events;
+    if (predicate(events)) return events;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for session events. Last events: ${events.slice(-5).map((event) => event.type).join(", ")}`);
+}
+
+async function waitForSchedulerIdle(manager: SessionManager, sessionId: string) {
+  const deadline = Date.now() + 3_000;
+  let stableSamples = 0;
+  let events: ReplayEvent[] = [];
+  while (Date.now() < deadline) {
+    const replay = await manager.handle({
+      id: `req_wait_idle_${crypto.randomUUID()}`,
+      method: "subscribeEvents",
+      params: { sessionId }
+    }) as { events: ReplayEvent[] };
+    events = replay.events;
+    const terminal = new Set(events
+      .filter((event) => ["scheduler.job.completed", "scheduler.job.failed", "scheduler.job.recovered"].includes(event.type))
+      .map((event) => String(event.payload.jobId ?? ""))
+      .filter(Boolean));
+    const idle = events
+      .filter((event) => event.type === "scheduler.job.created")
+      .every((event) => terminal.has(String(event.payload.jobId ?? "")));
+    stableSamples = idle ? stableSamples + 1 : 0;
+    if (stableSamples >= 6) return events;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Timed out waiting for scheduler idle. Last events: ${events.slice(-5).map((event) => event.type).join(", ")}`);
+}
+
 describe("SessionManager deterministic debug sessions", () => {
   it("creates a replayable multiagent debug session", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
@@ -43,7 +86,7 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "message.sent" && event.payload.from === "implementor" && event.payload.to === "reviewer")).toBe(true);
       expect(replay.events.some((event) => event.type === "agent.status" && event.agentId === "reviewer" && event.payload.status === "waiting")).toBe(true);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -76,7 +119,7 @@ describe("SessionManager deterministic debug sessions", () => {
         "implementation-review-qa"
       ]));
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -94,6 +137,7 @@ describe("SessionManager deterministic debug sessions", () => {
           debugMode: true
         }
       }) as { sessionId: string };
+      await waitForSchedulerIdle(manager, snapshot.sessionId);
 
       await manager.handle({
         id: "req_archive",
@@ -128,7 +172,7 @@ describe("SessionManager deterministic debug sessions", () => {
       }) as { sessions: Array<{ id: string; archived?: boolean }> };
       expect(restored.sessions.find((session) => session.id === snapshot.sessionId)?.archived).toBe(false);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -146,6 +190,7 @@ describe("SessionManager deterministic debug sessions", () => {
           debugMode: true
         }
       }) as { sessionId: string };
+      await waitForSchedulerIdle(manager, snapshot.sessionId);
       await manager.handle({
         id: "req_archive_readonly",
         method: "archiveSessions",
@@ -163,7 +208,7 @@ describe("SessionManager deterministic debug sessions", () => {
         params: { sessionId: snapshot.sessionId, workflowId: "implementor-reviewer" }
       })).rejects.toThrow(/archived/i);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -189,7 +234,7 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(roleResult.roles.some((role) => role.name === "")).toBe(true);
       expect(workflowResult.workflows.some((workflow) => workflow.name === "")).toBe(true);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -236,7 +281,7 @@ describe("SessionManager deterministic debug sessions", () => {
       }));
       expect(events).toContain("\"debugMode\":false");
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -286,7 +331,7 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(claimIndex).toBeGreaterThan(-1);
       expect(touchedIndex).toBeGreaterThan(claimIndex);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -348,7 +393,7 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "workspace.conflict_detected" && event.agentId === "second_implementor")).toBe(true);
       expect(replay.events.some((event) => event.type === "agent.tool_result" && event.agentId === "second_implementor" && event.payload.blocked === true)).toBe(true);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -403,7 +448,7 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(output).toContain("workspace changes rolled back");
       expect(await readFile(path.join(snapshot.workspaceRoot, "shared.txt"), "utf8")).toBe("owned\n");
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -443,7 +488,7 @@ describe("SessionManager deterministic debug sessions", () => {
       }) as { logs: Array<{ level: string; message: string }> };
       expect(logs.logs.some((entry) => entry.level === "error" && entry.message === "model unavailable")).toBe(true);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -513,8 +558,75 @@ describe("SessionManager deterministic debug sessions", () => {
         params: { sessionId: snapshot.sessionId }
       }) as { graph: { activeToolCalls: unknown[] } };
       expect(recoveredSnapshot.graph.activeToolCalls).toEqual([]);
+      await waitForSchedulerIdle(restarted, snapshot.sessionId);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("recovers interrupted workflow execution jobs by rescheduling the workflow", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      const snapshot = await manager.handle({
+        id: "req_workflow_recovery_session",
+        method: "createSession",
+        params: {
+          prompt: "workflow recovery",
+          workspaceRoot: root,
+          workflowId: "implementor-reviewer",
+          debugMode: true
+        }
+      }) as { sessionId: string };
+      const expanded = await manager.handle({
+        id: "req_workflow_recovery_instantiate",
+        method: "instantiateWorkflow",
+        params: { sessionId: snapshot.sessionId, workflowId: "implementor-reviewer" }
+      }) as { graph: { nodes: Array<{ id: string }> } };
+      expect(expanded.graph.nodes.some((node) => node.id.includes("implementor"))).toBe(true);
+      const replay = await manager.handle({
+        id: "req_workflow_recovery_replay",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: ReplayEvent[] };
+      const instantiated = [...replay.events].reverse().find((event) => event.type === "workflow.instantiated" && event.payload.workflowId === "implementor-reviewer");
+      const workflowInstanceId = String(instantiated?.payload.workflowInstanceId ?? "");
+      expect(workflowInstanceId).toMatch(/^wf_/);
+
+      const store = new EventStore(root);
+      const openJobId = `job_${crypto.randomUUID()}`;
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: workflowInstanceId,
+        timestamp: new Date().toISOString(),
+        type: "scheduler.job.created",
+        payload: {
+          jobId: openJobId,
+          kind: "workflow-execution",
+          agentId: workflowInstanceId,
+          workflowInstanceId,
+          workflowId: "implementor-reviewer",
+          callerAgentId: "orchestrator",
+          prompt: "resume workflow",
+          details: {
+            planWorkflow: { workflowId: "implementor-reviewer", agentPrompts: {}, doneCriteria: {}, completionCriteria: {} }
+          }
+        },
+        correlationId: openJobId
+      });
+
+      const restarted = new SessionManager({ sessionsRoot: root });
+      await restarted.handle({
+        id: "req_recover_workflow",
+        method: "listSessions",
+        params: { includeArchived: true }
+      });
+      const recoveredEvents = await waitForSchedulerIdle(restarted, snapshot.sessionId);
+      expect(recoveredEvents.some((event) => event.type === "scheduler.job.recovered" && event.payload.jobId === openJobId)).toBe(true);
+      expect(recoveredEvents.some((event) => event.type === "scheduler.job.created" && event.payload.kind === "workflow-execution" && event.payload.jobId !== openJobId)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -532,6 +644,9 @@ describe("SessionManager deterministic debug sessions", () => {
           debugMode: true
         }
       }) as { sessionId: string; workspaceRoot: string };
+      await waitForEvents(manager, snapshot.sessionId, (events) =>
+        events.some((event) => event.type === "workflow.completed" && event.payload.workflowId === "implementation-review-qa")
+      );
 
       const program = await readFile(path.join(snapshot.workspaceRoot, "temperature_converter.py"), "utf8");
       expect(program).toContain("def celsius_to_fahrenheit");
@@ -558,8 +673,9 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "workflow.completed" && String(event.payload.workflowId) === "implementation-review-qa")).toBe(true);
       expect(replay.events.some((event) => event.type === "workflow.completed" && event.payload.completedCriteria instanceof Array && event.payload.completedCriteria.includes("qa_acceptance"))).toBe(true);
       expect(replay.events.some((event) => event.type === "message.sent" && String(event.payload.text).includes("Workflow implementation-review-qa completed"))).toBe(true);
+      await waitForSchedulerIdle(manager, snapshot.sessionId);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -609,8 +725,9 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "completion.criterion.updated" && event.payload.status === "completed" && event.payload.criterionId === "qa_acceptance" && event.agentId?.endsWith("_implementor"))).toBe(false);
       expect(replay.events.some((event) => event.type === "agent.stopped" && event.agentId?.endsWith("_implementor"))).toBe(false);
       expect(replay.events.some((event) => event.type === "workflow.completed")).toBe(false);
+      await waitForSchedulerIdle(manager, snapshot.sessionId);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -651,7 +768,7 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "plan.created")).toBe(false);
       expect(replay.events.some((event) => event.type === "plan.instantiated")).toBe(false);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -706,6 +823,7 @@ describe("SessionManager deterministic debug sessions", () => {
           debugMode: false
         }
       }) as { sessionId: string };
+      await waitForSchedulerIdle(manager, snapshot.sessionId);
       const replay = await manager.handle({
         id: "req_tool_plan_replay",
         method: "subscribeEvents",
@@ -716,7 +834,7 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "capability.checked" && event.agentId === "planner" && event.payload.action === "plan.create" && event.payload.allowed === true)).toBe(true);
       expect(replay.events.some((event) => event.type === "plan.instantiated" && event.payload.planId === "tool_created_plan")).toBe(true);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -755,6 +873,7 @@ describe("SessionManager deterministic debug sessions", () => {
           debugMode: false
         }
       }) as { sessionId: string };
+      await waitForSchedulerIdle(manager, snapshot.sessionId);
       const replay = await manager.handle({
         id: "req_manual_workflow_stop_replay",
         method: "subscribeEvents",
@@ -764,7 +883,97 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "workflow.instantiated" && event.payload.workflowInstanceId)).toBe(true);
       expect(replay.events.some((event) => event.type === "workflow.stopped" && event.payload.reason === "caller cancelled early")).toBe(true);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("schedules child workflow execution outside the caller model turn", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    let releaseImplementor: () => void = () => {};
+    const implementorGate = new Promise<void>((resolve) => {
+      releaseImplementor = resolve;
+    });
+    let implementorRuns = 0;
+    let manager: SessionManager | undefined;
+    let sessionId: string | undefined;
+    try {
+      manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            if (input.agentId === "orchestrator") {
+              const started = await input.workflowTools?.startWorkflow?.("implementor-reviewer");
+              return [{
+                eventId: `evt_${crypto.randomUUID()}`,
+                sessionId: input.sessionId,
+                agentId: input.agentId,
+                timestamp: new Date().toISOString(),
+                type: "agent.message",
+                payload: { text: started }
+              }];
+            }
+            if (input.agentId.includes("reviewer")) {
+              await input.workflowTools?.stopSelf?.("review approved", "approved", ["review_no_blockers"]);
+              return [{
+                eventId: `evt_${crypto.randomUUID()}`,
+                sessionId: input.sessionId,
+                agentId: input.agentId,
+                timestamp: new Date().toISOString(),
+                type: "agent.message",
+                payload: { text: "approved with no blockers" }
+              }];
+            }
+            if (input.agentId.includes("implementor")) {
+              implementorRuns += 1;
+              if (implementorRuns === 1) {
+                await implementorGate;
+              }
+              await input.workflowTools?.stopSelf?.("implementation ready", "implemented", ["implementation_finished"]);
+              return [{
+                eventId: `evt_${crypto.randomUUID()}`,
+                sessionId: input.sessionId,
+                agentId: input.agentId,
+                timestamp: new Date().toISOString(),
+                type: "agent.message",
+                payload: { text: "implemented and ready" }
+              }];
+            }
+            return [];
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_async_child_workflow",
+        method: "createSession",
+        params: {
+          prompt: "start a child workflow asynchronously",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      sessionId = snapshot.sessionId;
+
+      const beforeRelease = await manager.handle({
+        id: "req_async_child_workflow_before_release",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: ReplayEvent[] };
+      expect(beforeRelease.events.some((event) => event.type === "scheduler.job.created" && event.payload.kind === "workflow-execution")).toBe(true);
+      expect(beforeRelease.events.some((event) => event.type === "workflow.completed")).toBe(false);
+
+      releaseImplementor();
+      await waitForEvents(manager, snapshot.sessionId, (events) =>
+        events.some((event) => event.type === "workflow.completed" && event.payload.workflowId === "implementor-reviewer")
+      );
+      const settledEvents = await waitForSchedulerIdle(manager, snapshot.sessionId);
+      expect(settledEvents.some((event) => event.type === "scheduler.job.completed" && event.payload.kind === "workflow-execution")).toBe(true);
+    } finally {
+      releaseImplementor();
+      if (manager && sessionId) {
+        await waitForSchedulerIdle(manager, sessionId).catch(() => {});
+      }
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -778,7 +987,7 @@ describe("SessionManager deterministic debug sessions", () => {
         params: { sessionId: "../escape", agentId: "orchestrator" }
       })).rejects.toThrow();
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -813,7 +1022,7 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "message.sent" && event.agentId === "reviewer" && event.payload.to === "reviewer")).toBe(true);
       expect(replay.events.some((event) => event.type === "agent.message" && event.agentId === "reviewer")).toBe(true);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -871,7 +1080,7 @@ describe("SessionManager deterministic debug sessions", () => {
         && String(event.payload.text).includes(snapshot.workspaceRoot)
       )).toBe(true);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -899,7 +1108,7 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "agent.message" && event.agentId === "qa")).toBe(true);
       expect(replay.events.some((event) => event.type === "message.sent" && event.payload.from === "qa" && event.payload.to === "implementor")).toBe(true);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -931,8 +1140,9 @@ describe("SessionManager deterministic debug sessions", () => {
       }) as { events: Array<{ type: string }> };
       expect(replay.events.some((event) => event.type === "workflow.instantiated")).toBe(true);
       expect(replay.events.some((event) => event.type === "graph.updated")).toBe(true);
+      await waitForSchedulerIdle(manager, snapshot.sessionId);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -977,7 +1187,7 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "handoff.created" && event.payload.from === "implementor" && event.payload.to === "qa")).toBe(false);
       expect(replay.events.some((event) => event.type === "agent.message" && event.agentId === "qa")).toBe(false);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 });
