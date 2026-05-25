@@ -436,6 +436,111 @@ describe("SessionManager deterministic debug sessions", () => {
     }
   });
 
+  it("does not create the demo plan automatically in non-debug sessions", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            return [{
+              eventId: `evt_${crypto.randomUUID()}`,
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { text: `${input.agentId} responded without creating a plan` }
+            }];
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_no_demo_plan",
+        method: "createSession",
+        params: {
+          prompt: "live planner must use tool",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      const replay = await manager.handle({
+        id: "req_no_demo_plan_replay",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
+
+      expect(replay.events.some((event) => event.type === "plan.created")).toBe(false);
+      expect(replay.events.some((event) => event.type === "plan.instantiated")).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts planner-created plans through the plan_create tool in non-debug sessions", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            if (input.agentId === "planner") {
+              await input.workflowTools?.createPlan?.({
+                version: 1,
+                id: "tool_created_plan",
+                name: "Tool-created implementation plan",
+                description: "Plan emitted by the planner through plan_create.",
+                goal: "Build the requested project",
+                workflows: [{
+                  workflowId: "implementation-review-qa",
+                  agentPrompts: {
+                    implementor: "Implement the requested project.",
+                    reviewer: "Review the implementation.",
+                    qa: "Run acceptance checks."
+                  },
+                  doneCriteria: {
+                    implementor: ["Implementation exists"],
+                    reviewer: ["No blockers"],
+                    qa: ["Checks pass"]
+                  }
+                }],
+                globalDoneCriteria: ["Plan persisted through planner tool"]
+              });
+            }
+            return [{
+              eventId: `evt_${crypto.randomUUID()}`,
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { text: "ok" }
+            }];
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_tool_plan",
+        method: "createSession",
+        params: {
+          prompt: "live planner creates a plan",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      const replay = await manager.handle({
+        id: "req_tool_plan_replay",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
+
+      expect(replay.events.some((event) => event.type === "plan.created" && event.agentId === "planner" && event.payload.plan && (event.payload.plan as { id?: string }).id === "tool_created_plan")).toBe(true);
+      expect(replay.events.some((event) => event.type === "plan.instantiated" && event.payload.planId === "tool_created_plan")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("exposes workflow stop tools and records manual workflow stops", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
     try {

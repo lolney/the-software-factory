@@ -352,7 +352,7 @@ const baseRoles: WorkflowSpec["roles"] = [
     id: "planner",
     name: "Planner",
     color: "#9b51e0",
-    promptTemplate: "Create a decision-complete plan: one or more workflows, agent prompts, and done criteria for each participating agent.",
+    promptTemplate: "Create a decision-complete plan: one or more workflows, agent prompts, and done criteria for each participating agent. Use the plan_create tool to persist the exact PlanSpec before handing control back to the orchestrator.",
     model: "gpt-5.4",
     toolPolicy: { canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: true },
     workspace: { allowedRoots: ["."] },

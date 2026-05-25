@@ -567,7 +567,7 @@ export class SessionManager {
         causationId
       });
       await this.appendRuntimeEvents(snapshot.sessionId, agentId, events, publish);
-      if (role?.toolPolicy.canCreatePlans) {
+      if (role?.toolPolicy.canCreatePlans && snapshot.debugMode) {
         await this.createPlanForSession(snapshot, agentId, causationId, publish);
       } else if (snapshot.debugMode) {
         await this.applyDeterministicRoleWork(snapshot, agentId, causationId, publish, context);
