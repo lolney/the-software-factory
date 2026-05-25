@@ -51,6 +51,11 @@ interface WorkflowExecutionRequest {
   callerAgentId: string;
 }
 
+type WorkflowCompletionState =
+  | { status: "closed" }
+  | { status: "completed" }
+  | { status: "waiting"; workflowId: string; callerAgentId: string; pendingAgentIds: string[]; pendingCriteria: string[] };
+
 export class SessionManager {
   private readonly subscribers = new Map<string, Set<(event: SessionEvent) => void>>();
   private readonly logSubscribers = new Map<string, Set<(entry: DebugLogEntry) => void>>();
@@ -1334,9 +1339,13 @@ export class SessionManager {
     try {
       const startedAt = (await this.store.readEvents(request.sessionId)).length;
       const snapshot = await this.store.readSnapshot(request.sessionId);
-      await this.executeMappedWorkflow(snapshot, request.spec, request.nodeMap, request.planWorkflow, request.causationId, publish, request.workflowInstanceId);
+      const state = await this.executeMappedWorkflow(snapshot, request.spec, request.nodeMap, request.planWorkflow, request.causationId, publish, request.workflowInstanceId);
       const finishedAt = (await this.store.readEvents(request.sessionId)).length;
-      await this.finishScheduledTurn(request.sessionId, request.workflowInstanceId, job, publish, "completed", Math.max(0, finishedAt - startedAt));
+      await this.finishScheduledTurn(request.sessionId, request.workflowInstanceId, job, publish, "completed", Math.max(0, finishedAt - startedAt), state.status === "waiting" ? {
+        status: "waiting",
+        pendingAgentIds: state.pendingAgentIds,
+        pendingCriteria: state.pendingCriteria
+      } : undefined);
     } catch (error) {
       try {
         await this.failScheduledSideEffect(request.sessionId, request.workflowInstanceId, job, publish, error, request.causationId);
@@ -1354,7 +1363,7 @@ export class SessionManager {
     causationId: string,
     publish: (event: SessionEvent) => void,
     workflowInstanceId: string
-  ) {
+  ): Promise<WorkflowCompletionState> {
     const orchestratorId = nodeMap.get(spec.lifecycle.orchestratorNodeId) ?? spec.lifecycle.orchestratorNodeId;
     const initialEvents = await this.store.readEvents(snapshot.sessionId);
     const runCounts = this.workflowRunCounts(initialEvents, nodeMap, orchestratorId);
@@ -1462,7 +1471,10 @@ export class SessionManager {
         runCounts.set(to, (runCounts.get(to) ?? 0) + 1);
       }
     }
-    await this.maybeCompleteWorkflow(snapshot.sessionId, workflowInstanceId, publish, causationId);
+    return this.maybeCompleteWorkflow(snapshot.sessionId, workflowInstanceId, publish, causationId, {
+      recordWaiting: true,
+      planWorkflow
+    });
   }
 
   private workflowRunCounts(events: SessionEvent[], nodeMap: Map<string, string>, orchestratorId: string) {
@@ -1796,18 +1808,45 @@ export class SessionManager {
     sessionId: string,
     workflowInstanceId: string,
     publish: (event: SessionEvent) => void,
-    causationId?: string
-  ) {
+    causationId?: string,
+    options: { recordWaiting?: boolean; planWorkflow?: PlanSpec["workflows"][number] } = {}
+  ): Promise<WorkflowCompletionState> {
     const instance = (await this.workflowInstancesForSession(sessionId)).find((candidate) => candidate.workflowInstanceId === workflowInstanceId);
-    if (!instance || await this.isWorkflowClosed(sessionId, workflowInstanceId)) return;
+    if (!instance || await this.isWorkflowClosed(sessionId, workflowInstanceId)) return { status: "closed" };
     const events = await this.store.readEvents(sessionId);
     const stoppedAgentIds = new Set(events
       .filter((event) => event.type === "agent.stopped" && event.payload.workflowInstanceId === workflowInstanceId && event.agentId)
       .map((event) => event.agentId as string));
     const pendingAgentIds = instance.agentIds.filter((candidate) => !stoppedAgentIds.has(candidate));
-    if (pendingAgentIds.length > 0) return;
     const pendingCriteria = await this.pendingRequiredCriteria(sessionId, instance);
-    if (pendingCriteria.length > 0) return;
+    if (pendingAgentIds.length > 0 || pendingCriteria.length > 0) {
+      if (options.recordWaiting) {
+        await this.appendAndPublish({
+          eventId: makeEventId(),
+          sessionId,
+          agentId: workflowInstanceId,
+          timestamp: new Date().toISOString(),
+          type: "workflow.waiting",
+          payload: {
+            workflowInstanceId,
+            workflowId: instance.workflowId,
+            callerAgentId: instance.callerAgentId,
+            pendingAgentIds,
+            pendingCriteria,
+            planWorkflow: options.planWorkflow,
+            reason: pendingAgentIds.length > 0 ? "agents pending" : "completion criteria pending"
+          },
+          causationId
+        }, publish);
+      }
+      return {
+        status: "waiting",
+        workflowId: instance.workflowId,
+        callerAgentId: instance.callerAgentId,
+        pendingAgentIds,
+        pendingCriteria
+      };
+    }
     const ledger = await this.criteriaLedger(sessionId, workflowInstanceId);
     const completed = await this.appendAndPublish({
       eventId: makeEventId(),
@@ -1841,6 +1880,7 @@ export class SessionManager {
       },
       causationId: completed.eventId
     }, publish);
+    return { status: "completed" };
   }
 
   private canHandoffFrom(
@@ -2306,6 +2346,34 @@ export class SessionManager {
             recovered.eventId
           );
         }
+        const latestEvents = await this.store.readEvents(sessionId);
+        const closedWorkflowInstances = new Set(latestEvents
+          .filter((event) => ["workflow.completed", "workflow.stopped"].includes(event.type))
+          .map((event) => String(event.payload.workflowInstanceId ?? ""))
+          .filter(Boolean));
+        const waitingWorkflows = new Map<string, SessionEvent>();
+        for (const event of latestEvents) {
+          if (event.type !== "workflow.waiting") continue;
+          const workflowInstanceId = String(event.payload.workflowInstanceId ?? "");
+          if (!workflowInstanceId || closedWorkflowInstances.has(workflowInstanceId)) continue;
+          waitingWorkflows.set(workflowInstanceId, event);
+        }
+        for (const [workflowInstanceId, event] of waitingWorkflows) {
+          if (recoveringWorkflowInstances.has(workflowInstanceId)) continue;
+          const workflowId = String(event.payload.workflowId ?? "");
+          if (!workflowId) continue;
+          await this.appendDebugLog(
+            sessionId,
+            "warn",
+            "scheduler",
+            `Resuming waiting workflow ${workflowInstanceId}.`,
+            { workflowInstanceId, workflowId, waitingEventId: event.eventId },
+            publishLog,
+            workflowInstanceId,
+            event.eventId
+          );
+          await this.resumeWorkflowExecutionFromWaiting(sessionId, event, event.eventId, publish);
+        }
         if (openJobs.size > 0) {
           await this.store.rebuildSnapshot(sessionId);
         }
@@ -2315,6 +2383,29 @@ export class SessionManager {
       this.recoveryComplete = false;
       throw error;
     }
+  }
+
+  private async resumeWorkflowExecutionFromWaiting(
+    sessionId: string,
+    event: SessionEvent,
+    causationId: string,
+    publish: (event: SessionEvent) => void
+  ) {
+    const workflowInstanceId = String(event.payload.workflowInstanceId ?? "");
+    const workflowId = String(event.payload.workflowId ?? "");
+    if (!workflowInstanceId || !workflowId || await this.isWorkflowClosed(sessionId, workflowInstanceId)) return;
+    const instance = (await this.workflowInstancesForSession(sessionId)).find((candidate) => candidate.workflowInstanceId === workflowInstanceId);
+    if (!instance) return;
+    const planWorkflow = planWorkflowFromPayload(event.payload.planWorkflow, workflowId);
+    await this.scheduleMappedWorkflowExecution({
+      sessionId,
+      spec: this.workflows.get(workflowId),
+      nodeMap: instance.nodeMap,
+      planWorkflow,
+      workflowInstanceId,
+      causationId,
+      callerAgentId: instance.callerAgentId
+    }, publish);
   }
 
   private async resumeWorkflowExecutionFromJob(

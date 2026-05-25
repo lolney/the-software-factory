@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { SessionManager } from "./sessionManager.js";
 import { EventStore, makeEventId } from "./eventStore.js";
 
-type ReplayEvent = { type: string; agentId?: string; payload: Record<string, unknown> };
+type ReplayEvent = { eventId?: string; type: string; agentId?: string; payload: Record<string, unknown>; causationId?: string };
 
 async function waitForEvents(manager: SessionManager, sessionId: string, predicate: (events: ReplayEvent[]) => boolean, timeoutMs = 3_000) {
   const deadline = Date.now() + timeoutMs;
@@ -766,7 +766,76 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "completion.criterion.updated" && event.payload.status === "completed" && event.payload.criterionId === "qa_acceptance" && event.agentId?.endsWith("_implementor"))).toBe(false);
       expect(replay.events.some((event) => event.type === "agent.stopped" && event.agentId?.endsWith("_implementor"))).toBe(false);
       expect(replay.events.some((event) => event.type === "workflow.completed")).toBe(false);
-      await waitForSchedulerIdle(manager, snapshot.sessionId);
+      const settled = await waitForSchedulerIdle(manager, snapshot.sessionId);
+      expect(settled.some((event) => event.type === "workflow.waiting" && event.payload.workflowId === "implementor-qa-loop")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("recovers waiting open workflows by scheduling a continuation job", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            if (input.agentId === "orchestrator") {
+              await input.workflowTools?.startWorkflow?.("implementor-qa-loop");
+            }
+            if (input.agentId === "implementor" || input.agentId.endsWith("_implementor")) {
+              await input.workflowTools?.stopSelf?.("blocked on missing criteria", undefined, ["qa_acceptance"]);
+            }
+            return [{
+              eventId: `evt_${crypto.randomUUID()}`,
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { text: "ok" }
+            }];
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_waiting_recovery_session",
+        method: "createSession",
+        params: {
+          prompt: "create waiting workflow",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      const beforeRecovery = await waitForSchedulerIdle(manager, snapshot.sessionId);
+      const waiting = beforeRecovery.find((event) => event.type === "workflow.waiting" && event.payload.workflowId === "implementor-qa-loop");
+      expect(waiting).toBeTruthy();
+      const workflowJobCount = beforeRecovery.filter((event) => event.type === "scheduler.job.created" && event.payload.kind === "workflow-execution").length;
+
+      const restarted = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            return [{
+              eventId: `evt_${crypto.randomUUID()}`,
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { text: "recovered" }
+            }];
+          }
+        }
+      });
+      await restarted.handle({
+        id: "req_waiting_recovery_list",
+        method: "listSessions",
+        params: { includeArchived: true }
+      });
+      const afterRecovery = await waitForEvents(restarted, snapshot.sessionId, (events) =>
+        events.filter((event) => event.type === "scheduler.job.created" && event.payload.kind === "workflow-execution").length > workflowJobCount
+      );
+      expect(afterRecovery.some((event) => event.type === "scheduler.job.created" && event.payload.kind === "workflow-execution" && event.causationId === waiting?.eventId)).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }

@@ -4,7 +4,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 ## Architecture And Code Review Follow-Ups
 
-- **P1: Keep durable workflow jobs alive while workflows are open.** A workflow-execution scheduler job can be marked completed even when `maybeCompleteWorkflow` leaves agents or criteria pending, which removes the restart-recovery handle for unfinished workflows; add explicit waiting/blocked workflow state or reschedule until the workflow reaches completed/stopped.
 - **P1: Track workflow turn budgets by scheduled turns instead of transcript artifact counts.** Current workflow run counts can treat multiple file/tool events from one agent run as multiple turns, suppressing legitimate review or QA feedback edges; add regression coverage for multi-event turns followed by message edges.
 - **P2: Avoid noisy completed-agent messaging failures.** The orchestrator can still attempt `agent_message_send` to agents that are already completed, producing repeated tool errors in successful transcripts; expose completed state more explicitly to the model or convert these to structured no-op guidance.
 - **P2: Expand UI control and observability for autonomous workflows.** Add a first-class workflow/run inspector, criteria checklist, diff/artifact browser, per-agent control panel, reconnect/resume UI.
@@ -78,6 +77,7 @@ Bugs
 - **2026-05-25: Harden transcript timeline rendering.** Moved timeline grouping into SwiftUI state, bounded rendered rows to the latest 500 filtered events, throttled auto-scroll, and deferred large transition/plan/tool payload rendering until rows are expanded.
 - **2026-05-25: Add a Plan inspector panel.** Added a right-side Plan pane with current goal, workflow status, completion-criteria checklist state, owner-agent links, agent prompts/done criteria, and transcript event filtering by event id.
 - **2026-05-25: Add changed-files and diff review surface.** Upgraded the Workspace inspector with changed-file totals, expandable per-file diff events, inline colored diffs, and copy actions for absolute file paths and recorded diffs.
+- **2026-05-25: Keep durable recovery handles for open workflows.** Added a `workflow.waiting` event for incomplete workflow executions, recorded pending agents/criteria and plan context, and taught daemon restart recovery to reschedule waiting open workflows.
 
 
 
