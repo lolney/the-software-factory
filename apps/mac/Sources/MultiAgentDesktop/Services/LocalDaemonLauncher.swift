@@ -7,23 +7,23 @@ final class LocalDaemonLauncher: @unchecked Sendable {
 
     func ensureStarted(port: Int) async -> Bool {
         prepareStableSessionsRoot()
-        if process?.isRunning == true, Self.isListening(port: port) {
+        if process?.isRunning == true, Self.isListening(port: port), Self.isHealthyDaemon(port: port) {
             return true
         }
         terminateStaleDaemonIfNeeded(port: port)
         if Self.isListening(port: port) {
-            return true
+            return Self.isHealthyDaemon(port: port)
         }
         await Task.detached(priority: .utility) { [weak self] in
             self?.start(port: port)
         }.value
         for _ in 0..<40 {
-            if Self.isListening(port: port) {
+            if Self.isListening(port: port), Self.isHealthyDaemon(port: port) {
                 return true
             }
             try? await Task.sleep(for: .milliseconds(250))
         }
-        return Self.isListening(port: port)
+        return Self.isListening(port: port) && Self.isHealthyDaemon(port: port)
     }
 
     func stop() {
@@ -50,6 +50,7 @@ final class LocalDaemonLauncher: @unchecked Sendable {
         defer { lock.unlock() }
         guard process?.isRunning != true else { return }
         guard let supportURL = appSupportURL() else { return }
+        guard let daemonToken = ensureDaemonToken(supportURL: supportURL) else { return }
         let sessionsURL = supportURL.appending(path: "sessions", directoryHint: .isDirectory)
         let logsURL = supportURL.appending(path: "logs", directoryHint: .isDirectory)
         try? FileManager.default.createDirectory(at: logsURL, withIntermediateDirectories: true)
@@ -77,7 +78,8 @@ final class LocalDaemonLauncher: @unchecked Sendable {
         process.arguments = launch.arguments
         var environment = ProcessInfo.processInfo.environment.merging([
             "MULTIAGENT_DAEMON_PORT": String(port),
-            "MULTIAGENT_SESSIONS_ROOT": sessionsURL.path
+            "MULTIAGENT_SESSIONS_ROOT": sessionsURL.path,
+            "MULTIAGENT_DAEMON_TOKEN": daemonToken
         ]) { _, new in new }
         environment["PATH"] = sanitizedPath(environment["PATH"])
         if let workflowsURL = launch.workflowsURL {
@@ -103,6 +105,24 @@ final class LocalDaemonLauncher: @unchecked Sendable {
         guard let supportURL = appSupportURL() else { return }
         let sessionsURL = supportURL.appending(path: "sessions", directoryHint: .isDirectory)
         try? FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        _ = ensureDaemonToken(supportURL: supportURL)
+    }
+
+    private func ensureDaemonToken(supportURL: URL) -> String? {
+        let tokenURL = supportURL.appending(path: "daemon.token")
+        if let existing = try? String(contentsOf: tokenURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !existing.isEmpty {
+            return existing
+        }
+        let token = UUID().uuidString.replacingOccurrences(of: "-", with: "") + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        do {
+            try token.write(to: tokenURL, atomically: true, encoding: .utf8)
+            chmod(tokenURL.path, S_IRUSR | S_IWUSR)
+            return token
+        } catch {
+            return nil
+        }
     }
 
     private func terminateStaleDaemonIfNeeded(port: Int) {
@@ -178,6 +198,16 @@ final class LocalDaemonLauncher: @unchecked Sendable {
                 connect(descriptor, socketAddress, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
             }
         }
+    }
+
+    private static func isHealthyDaemon(port: Int) -> Bool {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/health"),
+              let data = try? Data(contentsOf: url),
+              let text = String(data: data, encoding: .utf8) else {
+            return false
+        }
+        return text.contains("\"service\":\"multiagent-daemon\"")
+            || text.contains("\"service\": \"multiagent-daemon\"")
     }
 
     private func daemonLaunchConfiguration() -> (arguments: [String], workflowsURL: URL?)? {

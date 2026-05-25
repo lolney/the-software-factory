@@ -1,5 +1,6 @@
 import { SessionManager } from "./services/sessionManager.js";
 import { routeDaemonMessage } from "./protocol/router.js";
+import { authorizeDaemonRequest } from "./services/daemonSecurity.js";
 
 export interface DaemonServerOptions {
   port: number;
@@ -11,6 +12,7 @@ export function createDaemonServer(options: DaemonServerOptions) {
 
   return Bun.serve({
     port: options.port,
+    hostname: "127.0.0.1",
     async fetch(request, server) {
       const url = new URL(request.url);
       if (url.pathname === "/oauth/callback" || url.pathname === "/auth/callback") {
@@ -25,6 +27,15 @@ export function createDaemonServer(options: DaemonServerOptions) {
             headers: { "content-type": "text/plain" }
           });
         }
+      }
+      if (url.pathname === "/health") {
+        return new Response(JSON.stringify({ ok: true, service: "multiagent-daemon", transport: "bun" }), {
+          headers: { "content-type": "application/json" }
+        });
+      }
+      const authorization = authorizeDaemonRequest({ url, headers: request.headers, port: options.port });
+      if (!authorization.ok) {
+        return new Response(authorization.message, { status: authorization.status });
       }
       if (server.upgrade(request)) {
         return undefined;

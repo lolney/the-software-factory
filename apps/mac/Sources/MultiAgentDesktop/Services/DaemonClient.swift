@@ -14,7 +14,11 @@ final class DaemonClient {
     func connect(port: Int = 3767) {
         guard task == nil else { return }
         let url = URL(string: "ws://127.0.0.1:\(port)")!
-        let task = URLSession.shared.webSocketTask(with: url)
+        var request = URLRequest(url: url)
+        if let token = Self.daemonToken(), !token.isEmpty {
+            request.setValue(token, forHTTPHeaderField: "x-multiagent-token")
+        }
+        let task = URLSession.shared.webSocketTask(with: request)
         self.task = task
         isConnecting = true
         task.resume()
@@ -80,5 +84,15 @@ final class DaemonClient {
                 }
             }
         }
+    }
+
+    private static func daemonToken() -> String? {
+        guard let supportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appending(path: "MultiAgentDesktop", directoryHint: .isDirectory)
+            .appending(path: "daemon.token") else {
+            return nil
+        }
+        return try? String(contentsOf: supportURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

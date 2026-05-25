@@ -4,7 +4,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 ## Architecture And Code Review Follow-Ups
 
-- **P0: Secure the local daemon.** Bind explicitly to loopback, require a per-install auth token on WebSocket and OAuth callback, validate `Origin`, and gate sensitive methods separately.
 - **P1: Introduce a capability broker.** Centralize file read/write, command execution, MCP tool allowlists, approvals, auditing, and per-role sandbox constraints.
 - **P1: Harden workspace management for multi-agent coding.** Add pre-write file leases, conflict blocking, merge/review checkpoints, and durable lease reconstruction.
 - **P1: Make the event store operationally robust.** Add monotonic sequence IDs, append serialization per session, checksummed frames, snapshot compaction, indexes for sessions/agents/tool calls, and corruption recovery tests.
@@ -37,6 +36,7 @@ Computer Use could inspect this app, but direct Computer Use access to `com.open
 - **2026-05-25: Add durable scheduler recovery.** Added append-only scheduler job lifecycle events, per-run heartbeat records, startup recovery for interrupted jobs, stale tool-call cleanup on failed/cancelled/completed agents, and daemon tests for restart recovery.
 - **2026-05-25: Remove demo planning from production paths.** Live planners must now persist model/user-authored plans through `plan_create`; the canned plan remains available only for deterministic debug mode, with tests covering both paths.
 - **2026-05-25: Enforce completion criteria as first-class state.** Added workflow-instance criterion ledger events, owner-scoped stop validation, missing/invalid criterion blockers, prompt-visible criterion IDs, and workflow completion gated by completed required criteria.
+- **2026-05-25: Secure the local daemon.** Bound Bun/Node daemons to loopback, added per-install WebSocket token auth, loopback Origin validation, unauthenticated `/health` identity probes, and Swift launcher/client token wiring.
 - **2026-05-25: Surface failures prominently.** Added a session-level status banner with a Debug shortcut and dismissible transient errors.
 - **2026-05-25: Clarify agent controls.** Split transcript viewing from the control target, added a `Control` toolbar menu, exposed `Controlling: <agent>` in the graph panel, and renamed pause to "Pause Scheduling."
 - **2026-05-25: Add a Workspace inspector.** Added a Workspace inspector tab with root path, copy/open actions, touched files, diff stats, conflict counts, and empty states.

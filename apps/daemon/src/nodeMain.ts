@@ -3,6 +3,7 @@ import { WebSocketServer } from "ws";
 import { SessionManager } from "./services/sessionManager.js";
 import { routeDaemonMessage } from "./protocol/router.js";
 import { defaultSessionsRoot } from "./services/sessionRoot.js";
+import { authorizeDaemonRequest } from "./services/daemonSecurity.js";
 
 const port = Number(process.env.MULTIAGENT_DAEMON_PORT ?? 3767);
 const sessionsRoot = defaultSessionsRoot();
@@ -21,11 +22,22 @@ const server = http.createServer(async (request, response) => {
     }
     return;
   }
+  if (url.pathname === "/health") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true, service: "multiagent-daemon", transport: "node" }));
+    return;
+  }
+  const authorization = authorizeDaemonRequest({ url, headers: request.headers, port });
+  if (!authorization.ok) {
+    response.writeHead(authorization.status, { "content-type": "text/plain" });
+    response.end(authorization.message);
+    return;
+  }
   response.writeHead(200, { "content-type": "application/json" });
   response.end(JSON.stringify({ ok: true, service: "multiagent-daemon-node" }));
 });
 
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ noServer: true });
 wss.on("connection", (ws) => {
   ws.on("message", async (raw) => {
     const response = await routeDaemonMessage(manager, String(raw), (event) => {
@@ -34,6 +46,19 @@ wss.on("connection", (ws) => {
       ws.send(JSON.stringify({ method: "debugLog", params: entry }));
     });
     ws.send(JSON.stringify(response));
+  });
+});
+
+server.on("upgrade", (request, socket, head) => {
+  const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
+  const authorization = authorizeDaemonRequest({ url, headers: request.headers, port });
+  if (!authorization.ok) {
+    socket.write(`HTTP/1.1 ${authorization.status} ${authorization.message}\r\nConnection: close\r\n\r\n`);
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit("connection", ws, request);
   });
 });
 
