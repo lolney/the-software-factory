@@ -4,7 +4,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 ## Architecture And Code Review Follow-Ups
 
-- **P1: Make the event store operationally robust.** Add monotonic sequence IDs, append serialization per session, checksummed frames, snapshot compaction, indexes for sessions/agents/tool calls, and corruption recovery tests.
 - **P1: Isolate OpenAI/WHAM runtime integration.** Move to per-run clients, honor role model/settings, add retries/backoff/timeouts/usage telemetry, and isolate WHAM behind a compatibility adapter with explicit compliance review.
 - **P1: Harden daemon ownership proof before sending the local auth token.** Replace the unauthenticated health-string check with a challenge or token-authenticated ownership probe so a spoofed loopback listener cannot receive the daemon token.
 - **P1: Fix transcript/event causality ordering.** Tool-side effects such as `agent.stopped`, `workflow.completed`, and workspace file events can appear before the `agent.tool_call`/`agent.tool_result` transcript items that caused them; normalize event buffering so the timeline reads in causal order.
@@ -15,6 +14,7 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 ## UX And Product Review Follow-Ups
 
+- **P1: Fix transcript timeline hangs.** Move timeline projection out of SwiftUI body evaluation, bound or virtualize rendered transcript rows, defer large payload/diff rendering until expansion, and throttle `ScrollViewReader.scrollTo` during transcript/snapshot updates.
 - **P2: Improve dense workflow graph layout.** Reduce edge overlap and node crowding for multi-agent workflows, add pan/zoom or fit controls, and consider grouped workflow lanes for instantiated subgraphs.
 
 
@@ -41,6 +41,7 @@ Computer Use could inspect this app, but direct Computer Use access to `com.open
 - **2026-05-25: Secure the local daemon.** Bound Bun/Node daemons to loopback, added per-install WebSocket token auth, loopback Origin validation, unauthenticated `/health` identity probes, and Swift launcher/client token wiring.
 - **2026-05-25: Introduce a capability broker.** Added centralized role-policy decisions for workspace read/write, commands, plan creation, and MCP exposure, with durable `capability.checked` audit events for tool use.
 - **2026-05-25: Harden workspace management.** Added pre-write file leases, per-file write serialization, durable lease/touch reconstruction, conflict-blocking before file mutation, command-write diff attribution with rollback on lease conflicts, and review checkpoint events on agent stop.
+- **2026-05-25: Harden the event store.** Added checksummed event frames, monotonic sequence IDs compatible with legacy logs, in-process and stale-safe file append locks, rebuilt session/agent/tool indexes, compaction-aware snapshot replay, per-agent transcript repair, and corruption recovery tests.
 - **2026-05-25: Surface failures prominently.** Added a session-level status banner with a Debug shortcut and dismissible transient errors.
 - **2026-05-25: Clarify agent controls.** Split transcript viewing from the control target, added a `Control` toolbar menu, exposed `Controlling: <agent>` in the graph panel, and renamed pause to "Pause Scheduling."
 - **2026-05-25: Add a Workspace inspector.** Added a Workspace inspector tab with root path, copy/open actions, touched files, diff stats, conflict counts, and empty states.

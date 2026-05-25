@@ -1,5 +1,6 @@
-import { mkdir, readFile, readdir, writeFile, appendFile, rename } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile, appendFile, rename, open, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import {
   GraphStateSchema,
@@ -25,7 +26,17 @@ export interface CreateSessionInput {
   graph: GraphState;
 }
 
+interface CompactionMetadata {
+  sessionId: string;
+  compactedAt: string;
+  compactedThroughSequenceId: number;
+  eventCount: number;
+  snapshotChecksum: string;
+}
+
 export class EventStore {
+  private readonly appendLocks = new Map<string, Promise<void>>();
+
   constructor(private readonly sessionsRoot: string) {}
 
   async ensureRoot() {
@@ -78,8 +89,8 @@ export class EventStore {
       }
     };
 
-    await this.append(created);
-    const transcript = [created];
+    const appendedCreated = await this.append(created);
+    const transcript = [appendedCreated];
     for (const node of input.graph.nodes) {
       await mkdir(path.join(sessionDir, node.id), { recursive: true });
       const agentCreated: SessionEvent = {
@@ -95,8 +106,7 @@ export class EventStore {
         },
         causationId: created.eventId
       };
-      await this.append(agentCreated);
-      transcript.push(agentCreated);
+      transcript.push(await this.append(agentCreated));
     }
 
     const snapshot: SessionSnapshot = {
@@ -126,18 +136,90 @@ export class EventStore {
   }
 
   async append(event: SessionEvent): Promise<SessionEvent> {
-    const parsed = SessionEventSchema.parse(event);
-    const dir = this.sessionDir(parsed.sessionId);
-    await mkdir(dir, { recursive: true });
-    await appendFile(path.join(dir, "events.jsonl"), `${JSON.stringify(parsed)}\n`, "utf8");
+    return this.withSessionAppendLock(event.sessionId, async () => {
+      const dir = this.sessionDir(event.sessionId);
+      await mkdir(dir, { recursive: true });
+      const sequenceId = await this.nextSequenceId(event.sessionId);
+      const parsed = SessionEventSchema.parse({
+        ...event,
+        payload: {
+          ...event.payload,
+          sequenceId
+        }
+      });
+      await appendFile(path.join(dir, "events.jsonl"), `${JSON.stringify(frameForEvent(parsed))}\n`, "utf8");
 
-    if (parsed.agentId) {
-      const agentDir = containedPath(dir, parsed.agentId);
-      await mkdir(agentDir, { recursive: true });
-      await appendFile(path.join(agentDir, "transcript.jsonl"), `${JSON.stringify(parsed)}\n`, "utf8");
+      if (parsed.agentId) {
+        const agentDir = containedPath(dir, parsed.agentId);
+        await mkdir(agentDir, { recursive: true });
+        await appendFile(path.join(agentDir, "transcript.jsonl"), `${JSON.stringify(frameForEvent(parsed))}\n`, "utf8");
+      }
+
+      await this.updateIndexes(parsed);
+      return parsed;
+    });
+  }
+
+  private async withSessionAppendLock<T>(sessionId: string, work: () => Promise<T>) {
+    await mkdir(this.sessionDir(sessionId), { recursive: true });
+    const previous = this.appendLocks.get(sessionId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chained = previous.then(() => current, () => current);
+    this.appendLocks.set(sessionId, chained);
+    await previous.catch(() => undefined);
+    const fileLock = await acquireFileLock(path.join(this.sessionDir(sessionId), ".append.lock"));
+    try {
+      return await work();
+    } finally {
+      await fileLock.release();
+      release();
+      if (this.appendLocks.get(sessionId) === chained) {
+        this.appendLocks.delete(sessionId);
+      }
     }
+  }
 
-    return parsed;
+  private async nextSequenceId(sessionId: string) {
+    const events = await this.readEvents(sessionId);
+    return events.reduce((max, event, index) => Math.max(max, sequenceOf(event, index)), 0) + 1;
+  }
+
+  private async updateIndexes(event: SessionEvent) {
+    const dir = path.join(this.sessionDir(event.sessionId), "indexes");
+    await mkdir(dir, { recursive: true });
+    const events = await this.readEvents(event.sessionId);
+    const agentIndex: Record<string, string[]> = {};
+    const toolIndex: Record<string, Record<string, unknown>> = {};
+    for (const replayed of events) {
+      if (replayed.agentId) {
+        agentIndex[replayed.agentId] = [...(agentIndex[replayed.agentId] ?? []), replayed.eventId];
+      }
+      const callId = typeof replayed.payload.callId === "string" ? replayed.payload.callId : undefined;
+      if (callId && (replayed.type === "agent.tool_call" || replayed.type === "agent.tool_result")) {
+        const existing = toolIndex[callId] ?? {};
+        toolIndex[callId] = {
+          ...existing,
+          callId,
+          agentId: replayed.agentId,
+          toolName: typeof replayed.payload.toolName === "string" ? replayed.payload.toolName : existing.toolName,
+          callEventId: replayed.type === "agent.tool_call" ? replayed.eventId : existing.callEventId,
+          resultEventId: replayed.type === "agent.tool_result" ? replayed.eventId : existing.resultEventId,
+          status: replayed.type === "agent.tool_result" ? "completed" : existing.status ?? "running",
+          updatedAt: replayed.timestamp
+        };
+      }
+    }
+    await writeJsonFile(path.join(dir, "events.json"), {
+      sessionId: event.sessionId,
+      eventCount: events.length,
+      lastSequenceId: events.reduce((max, replayed, index) => Math.max(max, sequenceOf(replayed, index)), 0),
+      updatedAt: event.timestamp
+    });
+    await writeJsonFile(path.join(dir, "agents.json"), agentIndex);
+    await writeJsonFile(path.join(dir, "tool-calls.json"), toolIndex);
   }
 
   async appendDebugLog(entry: DebugLogEntry): Promise<DebugLogEntry> {
@@ -189,15 +271,32 @@ export class EventStore {
     const invalidLines: string[] = [];
     for (const line of raw.split("\n").filter(Boolean)) {
       try {
-        events.push(SessionEventSchema.parse(JSON.parse(line)));
-      } catch {
+        events.push(parseEventLine(line));
+      } catch (error) {
         invalidLines.push(line);
       }
     }
     if (invalidLines.length > 0) {
-      await appendFile(path.join(this.sessionDir(sessionId), "events.invalid.jsonl"), invalidLines.join("\n") + "\n", "utf8");
+      await quarantineInvalidLines(path.join(this.sessionDir(sessionId), "events.invalid.jsonl"), invalidLines);
     }
     return events;
+  }
+
+  async compactSnapshot(sessionId: string) {
+    return this.withSessionAppendLock(sessionId, async () => {
+      const events = await this.readEvents(sessionId);
+      const snapshot = await this.rebuildSnapshotUnlocked(sessionId, events);
+      const compactedThroughSequenceId = events.reduce((max, event, index) => Math.max(max, sequenceOf(event, index)), 0);
+      await this.writeSnapshot(snapshot);
+      await writeJsonFile(path.join(this.sessionDir(sessionId), "snapshot.compaction.json"), {
+        sessionId,
+        compactedAt: new Date().toISOString(),
+        compactedThroughSequenceId,
+        eventCount: events.length,
+        snapshotChecksum: checksum(JSON.stringify(snapshot))
+      } satisfies CompactionMetadata);
+      return snapshot;
+    });
   }
 
   async readDebugLogs(sessionId: string): Promise<DebugLogEntry[]> {
@@ -214,7 +313,7 @@ export class EventStore {
       }
     }
     if (invalidLines.length > 0) {
-      await appendFile(path.join(this.sessionDir(sessionId), "debug.invalid.jsonl"), invalidLines.join("\n") + "\n", "utf8");
+      await quarantineInvalidLines(path.join(this.sessionDir(sessionId), "debug.invalid.jsonl"), invalidLines);
     }
     return entries;
   }
@@ -244,7 +343,37 @@ export class EventStore {
   }
 
   async rebuildSnapshot(sessionId: string): Promise<SessionSnapshot> {
-    const events = await this.readEvents(sessionId);
+    return this.withSessionAppendLock(sessionId, async () => {
+      const compacted = await this.compactedSnapshotBase(sessionId);
+      const events = await this.readEvents(sessionId);
+      if (compacted) {
+        const seen = new Set(compacted.snapshot.transcript.map((event) => event.eventId));
+        const tail = events.filter((event, index) => sequenceOf(event, index) > compacted.metadata.compactedThroughSequenceId && !seen.has(event.eventId));
+        const snapshot = await this.rebuildSnapshotUnlocked(sessionId, [...compacted.snapshot.transcript, ...tail]);
+        await writeJsonFile(path.join(this.sessionDir(sessionId), "snapshot.compaction.json"), {
+          ...compacted.metadata,
+          eventCount: events.length,
+          snapshotChecksum: checksum(JSON.stringify(snapshot))
+        } satisfies CompactionMetadata);
+        return snapshot;
+      }
+      return this.rebuildSnapshotUnlocked(sessionId, events);
+    });
+  }
+
+  private async compactedSnapshotBase(sessionId: string) {
+    const metadata = await readJsonFile<CompactionMetadata>(path.join(this.sessionDir(sessionId), "snapshot.compaction.json"));
+    if (!metadata || metadata.sessionId !== sessionId || typeof metadata.compactedThroughSequenceId !== "number") return undefined;
+    const snapshotPath = path.join(this.sessionDir(sessionId), "snapshot.json");
+    if (!existsSync(snapshotPath)) return undefined;
+    const parsed = SessionSnapshotSchema.safeParse(JSON.parse(await readFile(snapshotPath, "utf8")));
+    if (!parsed.success) return undefined;
+    const snapshot = normalizeSnapshot(parsed.data, true);
+    if (metadata.snapshotChecksum !== checksum(JSON.stringify(snapshot))) return undefined;
+    return { metadata, snapshot };
+  }
+
+  private async rebuildSnapshotUnlocked(sessionId: string, events: SessionEvent[]): Promise<SessionSnapshot> {
     const created = events.find((event) => event.type === "session.created");
     if (!created) {
       throw new Error(`Session ${sessionId} has no session.created event.`);
@@ -366,7 +495,22 @@ export class EventStore {
       transcript: events
     };
     await this.writeSnapshot(snapshot);
+    await this.rebuildDerivedTranscripts(sessionId, events);
     return snapshot;
+  }
+
+  private async rebuildDerivedTranscripts(sessionId: string, events: SessionEvent[]) {
+    const dir = this.sessionDir(sessionId);
+    const byAgent = new Map<string, SessionEvent[]>();
+    for (const event of events) {
+      if (!event.agentId) continue;
+      byAgent.set(event.agentId, [...(byAgent.get(event.agentId) ?? []), event]);
+    }
+    for (const [agentId, agentEvents] of byAgent) {
+      const agentDir = containedPath(dir, agentId);
+      await mkdir(agentDir, { recursive: true });
+      await writeFile(path.join(agentDir, "transcript.jsonl"), agentEvents.map((event) => JSON.stringify(frameForEvent(event))).join("\n") + "\n", "utf8");
+    }
   }
 }
 
@@ -409,4 +553,112 @@ function parseReasoningEffort(value: unknown): "none" | "minimal" | "low" | "med
   return ["none", "minimal", "low", "medium", "high", "xhigh"].includes(String(value ?? ""))
     ? String(value) as "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
     : undefined;
+}
+
+function frameForEvent(event: SessionEvent) {
+  const eventJson = JSON.stringify(event);
+  return {
+    frameVersion: 1,
+    checksum: checksum(eventJson),
+    event
+  };
+}
+
+function parseEventLine(line: string) {
+  const raw = JSON.parse(line);
+  if (raw && typeof raw === "object" && "frameVersion" in raw && "checksum" in raw && "event" in raw) {
+    const frame = raw as { checksum?: unknown; event?: unknown };
+    const eventJson = JSON.stringify(frame.event);
+    if (frame.checksum !== checksum(eventJson)) {
+      throw new Error("Event frame checksum mismatch.");
+    }
+    return SessionEventSchema.parse(frame.event);
+  }
+  return SessionEventSchema.parse(raw);
+}
+
+function checksum(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function sequenceOf(event: SessionEvent, index = 0) {
+  return typeof event.payload.sequenceId === "number" ? event.payload.sequenceId : index + 1;
+}
+
+async function quarantineInvalidLines(file: string, invalidLines: string[]) {
+  if (invalidLines.length === 0) return;
+  const existing = existsSync(file)
+    ? new Set((await readFile(file, "utf8")).split("\n").filter(Boolean))
+    : new Set<string>();
+  const newLines = invalidLines.filter((line) => !existing.has(line));
+  if (newLines.length > 0) {
+    await appendFile(file, `${newLines.join("\n")}\n`, "utf8");
+  }
+}
+
+async function acquireFileLock(file: string) {
+  await mkdir(path.dirname(file), { recursive: true });
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      const handle = await open(file, "wx");
+      await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }), "utf8");
+      return {
+        release: async () => {
+          await handle.close();
+          await unlink(file).catch(() => undefined);
+        }
+      };
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code !== "EEXIST") throw error;
+      if (await isStaleLock(file)) {
+        await unlink(file).catch(() => undefined);
+        continue;
+      }
+      await delay(Math.min(5 + attempt, 50));
+    }
+  }
+  throw new Error(`Timed out waiting for event store lock: ${file}`);
+}
+
+async function isStaleLock(file: string) {
+  try {
+    const metadata = JSON.parse(await readFile(file, "utf8")) as { pid?: unknown; createdAt?: unknown };
+    const pid = typeof metadata.pid === "number" ? metadata.pid : undefined;
+    const createdAt = typeof metadata.createdAt === "string" ? Date.parse(metadata.createdAt) : Number.NaN;
+    if (!pid) return true;
+    if (!isProcessAlive(pid)) return true;
+    return Number.isFinite(createdAt) && Date.now() - createdAt > 5 * 60_000;
+  } catch {
+    return true;
+  }
+}
+
+function isProcessAlive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function writeJsonFile(file: string, value: unknown) {
+  await mkdir(path.dirname(file), { recursive: true });
+  const tmpPath = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  await writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await rename(tmpPath, file);
+}
+
+async function readJsonFile<T>(file: string): Promise<T | undefined> {
+  if (!existsSync(file)) return undefined;
+  try {
+    return JSON.parse(await readFile(file, "utf8")) as T;
+  } catch {
+    return undefined;
+  }
 }
