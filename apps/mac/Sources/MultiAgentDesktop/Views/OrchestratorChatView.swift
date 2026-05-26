@@ -279,6 +279,14 @@ private struct CompactEventRow: View {
                 return "\(item.sender) stop blocked by child workflow \(childWorkflows)"
             }
             return "\(item.sender) stop blocked by \(dependencies.isEmpty ? "completion gates" : dependencies)"
+        case "message.skipped":
+            let target = item.payload["to"]?.stringValue ?? item.recipient ?? "agent"
+            let status = item.payload["targetStatus"]?.stringValue
+            let reason = item.payload["reason"]?.stringValue ?? "target unavailable"
+            if let status {
+                return "message to \(target) skipped (\(status)): \(reason)"
+            }
+            return "message to \(target) skipped: \(reason)"
         case "plan.created", "plan.instantiated", "graph.updated":
             return item.text
         default:

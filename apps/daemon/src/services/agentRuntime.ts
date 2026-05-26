@@ -169,7 +169,7 @@ export class OpenAIAgentRuntime implements AgentRuntime {
     if (input.workflowTools?.sendAgentMessage) {
       tools.push(tool({
         name: "agent_message_send",
-        description: "Send a message to another agent in the current workflow graph.",
+        description: "Send a message to another active agent in the current workflow graph. Inspect agent_state_inspect first; if the target is completed, failed, cancelled, or paused, this returns a skipped-delivery note instead of waking that agent.",
         parameters: z.object({ agentId: z.string(), text: z.string() }),
         execute: async (args) => input.workflowTools?.sendAgentMessage?.(args.agentId, args.text) ?? "Messaging tool unavailable."
       }));

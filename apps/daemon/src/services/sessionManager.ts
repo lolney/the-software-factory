@@ -668,13 +668,19 @@ export class SessionManager {
   }
 
   private assertAgentCanReceive(snapshot: SessionSnapshot, agentId: string) {
+    const blocked = this.agentMessageBlocker(snapshot, agentId);
+    if (blocked) throw new Error(blocked);
+  }
+
+  private agentMessageBlocker(snapshot: SessionSnapshot, agentId: string) {
     const node = snapshot.graph.nodes.find((candidate) => candidate.id === agentId);
     if (!node) {
-      throw new Error(`Unknown agent ${agentId} in session ${snapshot.sessionId}`);
+      return `Unknown agent ${agentId} in session ${snapshot.sessionId}`;
     }
     if (["paused", "cancelled", "failed", "completed"].includes(node.status)) {
-      throw new Error(`Agent ${agentId} cannot receive messages while ${node.status}.`);
+      return `Agent ${agentId} cannot receive messages while ${node.status}.`;
     }
+    return undefined;
   }
 
   private resolveAgentTarget(snapshot: SessionSnapshot, requestedAgentId: string) {
@@ -1618,7 +1624,26 @@ export class SessionManager {
         if (!resolvedAgentId) {
           throw new Error(`Unknown agent ${targetAgentId} in session ${snapshot.sessionId}. Use agent_state_inspect to get current agent ids.`);
         }
-        this.assertAgentCanReceive(latest, resolvedAgentId);
+        const blocker = this.agentMessageBlocker(latest, resolvedAgentId);
+        if (blocker) {
+          const targetNode = latest.graph.nodes.find((node) => node.id === resolvedAgentId);
+          await this.appendAndPublish({
+            eventId: makeEventId(),
+            sessionId: snapshot.sessionId,
+            agentId,
+            timestamp: new Date().toISOString(),
+            type: "message.skipped",
+            payload: {
+              from: agentId,
+              to: resolvedAgentId,
+              requestedTo: targetAgentId,
+              text,
+              reason: blocker,
+              targetStatus: targetNode?.status
+            }
+          }, publish);
+          return `Message not sent: ${blocker} Treat ${resolvedAgentId}'s current status as authoritative; use agent_state_inspect for current state or start a new workflow if more work is needed.`;
+        }
         await this.appendAndPublish({
           eventId: makeEventId(),
           sessionId: snapshot.sessionId,

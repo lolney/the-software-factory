@@ -1161,6 +1161,11 @@ final class SessionStore {
     }
 
     private func displayText(for event: SessionEvent) -> String {
+        if event.type == "message.skipped" {
+            let target = event.payload["to"]?.stringValue ?? "agent"
+            let reason = event.payload["reason"]?.stringValue ?? "target unavailable"
+            return "Message to \(target) skipped: \(reason)"
+        }
         if let text = event.payload["text"]?.stringValue { return text }
         if let message = event.payload["message"]?.stringValue { return message }
         if let summary = event.payload["summary"]?.stringValue { return summary }

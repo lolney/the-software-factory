@@ -1275,6 +1275,79 @@ describe("SessionManager deterministic debug sessions", () => {
     }
   });
 
+  it("skips orchestrator tool messages to completed agents without failing the turn", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            if (input.agentId === "orchestrator" && input.prompt === "send to completed planner") {
+              const result = await input.workflowTools?.sendAgentMessage?.("planner", "late follow-up");
+              return [{
+                eventId: `evt_${crypto.randomUUID()}`,
+                sessionId: input.sessionId,
+                agentId: input.agentId,
+                timestamp: new Date().toISOString(),
+                type: "agent.message",
+                payload: { text: result ?? "" }
+              }];
+            }
+            return [{
+              eventId: `evt_${crypto.randomUUID()}`,
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { text: "idle" }
+            }];
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_create_skip_completed_message",
+        method: "createSession",
+        params: {
+          prompt: "setup",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      const store = new EventStore(root);
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: "planner",
+        timestamp: new Date().toISOString(),
+        type: "agent.status",
+        payload: { status: "completed" }
+      });
+      await store.rebuildSnapshot(snapshot.sessionId);
+
+      await manager.handle({
+        id: "req_skip_completed_message",
+        method: "sendMessage",
+        params: {
+          sessionId: snapshot.sessionId,
+          text: "send to completed planner"
+        }
+      });
+      const replay = await manager.handle({
+        id: "req_skip_completed_message_replay",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
+
+      expect(replay.events.some((event) => event.type === "message.skipped" && event.payload.to === "planner" && event.payload.targetStatus === "completed")).toBe(true);
+      expect(replay.events.some((event) => event.type === "message.sent" && event.payload.to === "planner" && event.payload.text === "late follow-up")).toBe(false);
+      expect(replay.events.some((event) => event.type === "error" && String(event.payload.message).includes("cannot receive messages while completed"))).toBe(false);
+      expect(replay.events.some((event) => event.type === "scheduler.job.failed" && String(event.payload.message).includes("cannot receive messages while completed"))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   it("exposes bounded workspace command execution to command-enabled roles", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
     try {

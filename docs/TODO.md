@@ -4,7 +4,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 ## Architecture And Code Review Follow-Ups
 
-- **P2: Avoid noisy completed-agent messaging failures.** The orchestrator can still attempt `agent_message_send` to agents that are already completed, producing repeated tool errors in successful transcripts; expose completed state more explicitly to the model or convert these to structured no-op guidance.
 - **P2: Expand UI control and observability for autonomous workflows.** Add a first-class workflow/run inspector, criteria checklist, diff/artifact browser, per-agent control panel, reconnect/resume UI.
 - **P2: Add retry/resume UI for recovered scheduler jobs.** Recovery currently marks interrupted jobs failed; persist enough job input and expose a retry action so users can resume work after daemon restarts.
 
@@ -86,6 +85,7 @@ Feedback from the orchestrator:
 - **2026-05-25: Keep durable recovery handles for open workflows.** Added a `workflow.waiting` event for incomplete workflow executions, recorded pending agents/criteria and plan context, and taught daemon restart recovery to reschedule waiting open workflows.
 - **2026-05-25: Count workflow turns from scheduler jobs.** Changed workflow run accounting to use completed/failed `workflow-agent-turn` scheduler jobs instead of transcript artifacts, added workflow metadata to terminal job events, and covered multi-file turn accounting in tests.
 - **2026-05-25: Fix completed session dashboard status.** Added explicit daemon session statuses, live Swift summary refresh, dashboard labels/icons for terminal states, and stop gating so orchestrators cannot complete while child workflows are still open.
+- **2026-05-25: Avoid noisy completed-agent messaging failures.** Changed orchestrator agent-to-agent messaging to record `message.skipped` no-op events with target status guidance when the target agent is completed, failed, cancelled, or paused, instead of failing otherwise successful turns.
 
 
 

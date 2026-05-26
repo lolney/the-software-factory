@@ -123,6 +123,7 @@ export const SessionEventTypeSchema = z.enum([
   "agent.reasoning",
   "handoff.created",
   "message.sent",
+  "message.skipped",
   "workspace.file_claimed",
   "workspace.file_touched",
   "workspace.review_checkpoint",
