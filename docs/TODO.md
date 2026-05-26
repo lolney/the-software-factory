@@ -19,16 +19,6 @@ Computer Use could inspect this app, but direct Computer Use access to `com.open
 
 ## User follow-ups
 
-Workflow graph UX improvements:
-- The graph should be zoomable and panable
-- Done, failed, idle, active states should be more visually distinct
-- With an agent selected, clicking outside of it should deselect it
-- Nodes on the graph should not be allowed to overlap or touch; there should be a minimum distance enforced
-- Layout should be done carefully to maximize use of space and legibility as more workflows are added
-- Edges should not terminate at the center of the node, but instead at the edge of the rectangle representing the node
-- If an edge connects rectangles representing node a and b, we should choose where to draw the line as follows: we should choose the edge of the node a rectangle and the edge of the node b rectangle that minimizes the length of the line
-- The end of an edge should be represented with a dot (shared if there are multiple edges terminating at the same spot)
-
 Continuous improvement workflow:
 - Consists of a todo-generator, reviewer, and implementor
 - These run continuously until shut down by the orchestrator, or until the todo-generator judges the project is in an acceptable state and no further improvements can be made in the spirit of the original prompt (and calls the stop tool)
@@ -91,6 +81,7 @@ Feedback from the orchestrator:
 - **2026-05-25: Preserve transcript reading position.** Added an explicit Follow Live toggle and stopped transcript search/filter changes from forcing the timeline back to the newest row.
 - **2026-05-25: Disambiguate repeated session rows.** Added status, last-activity, active/failure hints, and durable user-editable session titles to sidebar rows without changing creation-time ordering.
 - **2026-05-25: Reduce expanded transcript hang risk.** Investigated the scrolling hang stackshot and capped inline expanded prompt/diff payload rendering so large planner handoff rows no longer force SwiftUI to lay out unbounded text inside the lazy transcript stack.
+- **2026-05-25: Improve workflow graph navigation and layout.** Added graph pan/zoom/reset controls, background deselection, more distinct status styling, non-overlapping grid placement, edge routing to node boundaries, arrowheads, and endpoint dots for live workflow graphs.
 
 
 
