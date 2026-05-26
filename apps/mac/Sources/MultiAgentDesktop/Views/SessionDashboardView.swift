@@ -3,6 +3,8 @@ import SwiftUI
 struct SessionDashboardView: View {
     @Bindable var store: SessionStore
     @State private var tableSelection = Set<String>()
+    @State private var pendingArchiveSessionIds: [String] = []
+    @State private var isConfirmingArchive = false
 
     private var rows: [SessionSummary] {
         let all = store.sessions + store.archivedSessions
@@ -30,7 +32,7 @@ struct SessionDashboardView: View {
                 }
                 if !tableSelection.isEmpty {
                     Button {
-                        store.archiveSessions(Array(tableSelection))
+                        requestArchive(Array(tableSelection))
                     } label: {
                         Label("Archive Selected", systemImage: "archivebox")
                     }
@@ -108,7 +110,7 @@ struct SessionDashboardView: View {
                                 }
                             } else {
                                 Button {
-                                    store.archiveSessions([session.id])
+                                    requestArchive([session.id])
                                 } label: {
                                     Label("Archive", systemImage: "archivebox")
                                 }
@@ -120,6 +122,27 @@ struct SessionDashboardView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .confirmationDialog("Archive sessions?", isPresented: $isConfirmingArchive) {
+            Button(archiveButtonTitle, role: .destructive) {
+                store.archiveSessions(pendingArchiveSessionIds)
+                tableSelection.subtract(pendingArchiveSessionIds)
+                pendingArchiveSessionIds = []
+            }
+            Button("Cancel", role: .cancel) {
+                pendingArchiveSessionIds = []
+            }
+        } message: {
+            Text("Archived sessions are hidden from the main list and can be restored from Archived Sessions.")
+        }
+    }
+
+    private var archiveButtonTitle: String {
+        pendingArchiveSessionIds.count == 1 ? "Archive Session" : "Archive \(pendingArchiveSessionIds.count) Sessions"
+    }
+
+    private func requestArchive(_ sessionIds: [String]) {
+        pendingArchiveSessionIds = sessionIds
+        isConfirmingArchive = true
     }
 
     private func dateLabel(_ timestamp: String?) -> String {

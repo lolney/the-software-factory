@@ -536,12 +536,12 @@ function deriveSessionStatus(nodes: GraphState["nodes"], events: SessionEvent[],
   if (events.some((event) => event.type === "error")) return "failed";
   if (nodes.some((node) => ["working", "waiting"].includes(node.status))) return "active";
   if (nodes.some((node) => node.status === "paused")) return "paused";
-  const latestWorkflowTerminal = [...events].reverse().find((event) => event.type === "workflow.completed" || event.type === "workflow.stopped");
-  if (latestWorkflowTerminal?.type === "workflow.stopped") return "cancelled";
-  if (nodes.some((node) => node.status === "cancelled")) return "cancelled";
-  if (latestWorkflowTerminal?.type === "workflow.completed") return "completed";
   const latestOrchestratorStatus = [...events].reverse().find((event) => event.agentId === "orchestrator" && event.type === "agent.status")?.payload.status;
+  if (latestOrchestratorStatus === "cancelled") return "cancelled";
   if (latestOrchestratorStatus === "completed") return "completed";
+  const orchestratorNode = nodes.find((node) => node.id === "orchestrator");
+  if (orchestratorNode?.status === "cancelled") return "cancelled";
+  if (orchestratorNode?.status === "completed") return "completed";
   return "idle";
 }
 

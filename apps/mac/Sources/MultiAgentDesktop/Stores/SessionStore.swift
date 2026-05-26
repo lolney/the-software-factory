@@ -126,8 +126,18 @@ final class SessionStore {
 
         let query = transcriptSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return visibleTranscript }
-        return visibleTranscript.filter { item in
+        let directMatches = visibleTranscript.filter { item in
             item.searchText.localizedCaseInsensitiveContains(query)
+        }
+        let matchedToolCallIds = Set(directMatches.compactMap { item in
+            ["agent.tool_call", "agent.tool_result"].contains(item.type) ? item.payload["callId"]?.stringValue : nil
+        })
+        guard !matchedToolCallIds.isEmpty else { return directMatches }
+        let directMatchIds = Set(directMatches.map(\.id))
+        return visibleTranscript.filter { item in
+            directMatchIds.contains(item.id)
+                || (["agent.tool_call", "agent.tool_result"].contains(item.type)
+                    && item.payload["callId"]?.stringValue.map { matchedToolCallIds.contains($0) } == true)
         }
     }
 
@@ -1260,29 +1270,26 @@ final class SessionStore {
         let activeCount = graph.nodes.filter { [.working, .waiting, .paused].contains($0.status) }.count
         sessions[selectedIndex].activeAgents = activeCount
         sessions[selectedIndex].failureCount = failureCount
+        let orchestratorStatus = latestOrchestratorStatus()
         if failureCount > 0 || graph.nodes.contains(where: { $0.status == .failed }) {
             sessions[selectedIndex].status = "failed"
         } else if graph.nodes.contains(where: { [.working, .waiting].contains($0.status) }) {
             sessions[selectedIndex].status = "active"
         } else if graph.nodes.contains(where: { $0.status == .paused }) {
             sessions[selectedIndex].status = "paused"
-        } else if latestWorkflowTerminalType() == "workflow.stopped" {
+        } else if orchestratorStatus == "cancelled" || graph.nodes.first(where: { $0.id == "orchestrator" })?.status == .cancelled {
             sessions[selectedIndex].status = "cancelled"
-        } else if graph.nodes.contains(where: { $0.status == .cancelled }) {
-            sessions[selectedIndex].status = "cancelled"
-        } else if latestWorkflowTerminalType() == "workflow.completed" {
-            sessions[selectedIndex].status = "completed"
-        } else if transcript.last(where: { $0.agentId == "orchestrator" && $0.type == "agent.status" && $0.payload["status"]?.stringValue == "completed" }) != nil {
+        } else if orchestratorStatus == "completed" || graph.nodes.first(where: { $0.id == "orchestrator" })?.status == .completed {
             sessions[selectedIndex].status = "completed"
         } else {
             sessions[selectedIndex].status = "idle"
         }
     }
 
-    private func latestWorkflowTerminalType() -> String? {
+    private func latestOrchestratorStatus() -> String? {
         transcript.reversed().first { item in
-            item.type == "workflow.completed" || item.type == "workflow.stopped"
-        }?.type
+            item.agentId == "orchestrator" && item.type == "agent.status"
+        }?.payload["status"]?.stringValue
     }
 
     private func selectedWorkflowId(for prompt: String) -> String {

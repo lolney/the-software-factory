@@ -659,7 +659,7 @@ describe("EventStore", () => {
     }
   });
 
-  it("does not mark stopped sessions completed just because one agent completed", async () => {
+  it("does not mark sessions terminal just because a child workflow stopped", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-events-"));
     try {
       const store = new EventStore(root);
@@ -698,7 +698,65 @@ describe("EventStore", () => {
       });
 
       expect((await store.listSessions()).find((session) => session.id === "sess_stopped_status")).toMatchObject({
-        status: "cancelled"
+        status: "idle"
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: "sess_stopped_status",
+        agentId: "orchestrator",
+        timestamp: "2026-01-01T00:00:03.000Z",
+        type: "agent.status",
+        payload: { status: "completed" }
+      });
+
+      expect((await store.listSessions()).find((session) => session.id === "sess_stopped_status")).toMatchObject({
+        status: "completed"
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not mark sessions completed just because a child workflow completed", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-events-"));
+    try {
+      const store = new EventStore(root);
+      await store.createSession({
+        sessionId: "sess_child_completed",
+        title: "Child completed",
+        workspaceRoot: root,
+        workflowId: "orchestrator-basic",
+        debugMode: true,
+        graph: {
+          sessionId: "sess_child_completed",
+          workflowId: "orchestrator-basic",
+          nodes: [
+            { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", status: "idle", color: "#4f7cff", unreadCount: 0, errorCount: 0 },
+            { id: "qaer", roleId: "qaer", label: "QAer", status: "idle", color: "#ff9500", unreadCount: 0, errorCount: 0 }
+          ],
+          edges: [],
+          activeToolCalls: []
+        }
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: "sess_child_completed",
+        agentId: "qaer",
+        timestamp: "2026-01-01T00:00:01.000Z",
+        type: "agent.status",
+        payload: { status: "completed" }
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: "sess_child_completed",
+        agentId: "orchestrator",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        type: "workflow.completed",
+        payload: { workflowInstanceId: "wf_child", workflowId: "implementor-qa-loop" }
+      });
+
+      expect((await store.listSessions()).find((session) => session.id === "sess_child_completed")).toMatchObject({
+        status: "idle"
       });
     } finally {
       await rm(root, { recursive: true, force: true });

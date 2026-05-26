@@ -564,6 +564,7 @@ private struct ToolEventRow: View {
         guard let result else { return "hammer" }
         if result.payload["blocked"]?.boolValue == true { return "exclamationmark.octagon" }
         if let exitCode = result.payload["exitCode"]?.numberValue, exitCode != 0 { return "xmark.octagon" }
+        if resultLooksLikeError { return "exclamationmark.triangle" }
         return "checkmark.circle"
     }
 
@@ -571,6 +572,7 @@ private struct ToolEventRow: View {
         guard let result else { return color }
         if result.payload["blocked"]?.boolValue == true { return .orange }
         if let exitCode = result.payload["exitCode"]?.numberValue, exitCode != 0 { return .red }
+        if resultLooksLikeError { return .orange }
         return .green
     }
 
@@ -580,7 +582,18 @@ private struct ToolEventRow: View {
         if let exitCode = result.payload["exitCode"]?.numberValue {
             return exitCode == 0 ? "exit 0" : "exit \(Int(exitCode))"
         }
+        if resultLooksLikeError { return "error" }
         return "done"
+    }
+
+    private var resultLooksLikeError: Bool {
+        guard let result else { return false }
+        if result.payload["error"] != nil { return true }
+        guard let output = result.payload["output"]?.stringValue?.lowercased() else { return false }
+        return output.contains("an error occurred while running the tool")
+            || output.contains("error: error:")
+            || output.contains("cannot receive messages while")
+            || output.contains("cannot receive messages")
     }
 
     private var metadataPairs: [(String, String)] {
