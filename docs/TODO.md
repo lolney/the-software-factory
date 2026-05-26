@@ -48,8 +48,10 @@ UI-QA role
 https://developers.openai.com/api/docs/guides/tools-computer-use?computer_use_action_handlers=playwright#option-1-run-the-built-in-computer-use-loop
 - Let's test this out with a UI development task., making sure the UI-QA agent provides useful feedback
 
-Bugs
-- sessions in the dashboard are listed as "active" even if they are completed. If this is because agents are still active, we should ensure that orchestrator shuts down all agents before it can mark itself as completed.
+Feedback from the orchestrator:
+- "However, the implementation/review/QA agents were already in a completed state when I inspected the graph, and this environment did not provide me a way to directly run shell commands or tests myself."
+- The orchestrator should be able to list events from any agent and inspect the details on those events (including seeing commands and their output)
+
 
 ## Completed Non-Controversial Items
 
@@ -83,6 +85,7 @@ Bugs
 - **2026-05-25: Add changed-files and diff review surface.** Upgraded the Workspace inspector with changed-file totals, expandable per-file diff events, inline colored diffs, and copy actions for absolute file paths and recorded diffs.
 - **2026-05-25: Keep durable recovery handles for open workflows.** Added a `workflow.waiting` event for incomplete workflow executions, recorded pending agents/criteria and plan context, and taught daemon restart recovery to reschedule waiting open workflows.
 - **2026-05-25: Count workflow turns from scheduler jobs.** Changed workflow run accounting to use completed/failed `workflow-agent-turn` scheduler jobs instead of transcript artifacts, added workflow metadata to terminal job events, and covered multi-file turn accounting in tests.
+- **2026-05-25: Fix completed session dashboard status.** Added explicit daemon session statuses, live Swift summary refresh, dashboard labels/icons for terminal states, and stop gating so orchestrators cannot complete while child workflows are still open.
 
 
 

@@ -60,10 +60,10 @@ struct SessionDashboardView: View {
                     }
                     TableColumn("Status") { session in
                         HStack(spacing: 6) {
-                            Image(systemName: session.archived == true ? "archivebox" : "circle.fill")
-                                .foregroundStyle(session.archived == true ? Color.secondary : Color.green)
+                            Image(systemName: statusIcon(for: session))
+                                .foregroundStyle(statusColor(for: session))
                                 .font(.caption2)
-                            Text(session.archived == true ? "Archived" : "Active")
+                            Text(statusLabel(for: session))
                         }
                     }
                     TableColumn("Mode") { session in
@@ -137,5 +137,42 @@ struct SessionDashboardView: View {
             return date
         }
         return ISO8601DateFormatter().date(from: timestamp)
+    }
+
+    private func statusLabel(for session: SessionSummary) -> String {
+        if session.archived == true { return "Archived" }
+        switch session.status {
+        case "completed": return "Completed"
+        case "failed": return "Failed"
+        case "cancelled": return "Cancelled"
+        case "paused": return "Paused"
+        case "active": return "Active"
+        case "idle": return "Idle"
+        default: return (session.activeAgents ?? 0) > 0 ? "Active" : "Idle"
+        }
+    }
+
+    private func statusIcon(for session: SessionSummary) -> String {
+        if session.archived == true { return "archivebox" }
+        switch session.status {
+        case "completed": return "checkmark.circle.fill"
+        case "failed": return "xmark.octagon.fill"
+        case "cancelled": return "stop.circle.fill"
+        case "paused": return "pause.circle.fill"
+        case "active": return "circle.fill"
+        default: return "circle"
+        }
+    }
+
+    private func statusColor(for session: SessionSummary) -> Color {
+        if session.archived == true { return .secondary }
+        switch session.status {
+        case "completed": return .green
+        case "failed": return .red
+        case "cancelled": return .orange
+        case "paused": return .orange
+        case "active": return .blue
+        default: return .secondary
+        }
     }
 }

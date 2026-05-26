@@ -591,4 +591,117 @@ describe("EventStore", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("derives completed and active session list statuses from replayed agent state", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-events-"));
+    try {
+      const store = new EventStore(root);
+      await store.createSession({
+        sessionId: "sess_completed_status",
+        title: "Completed status",
+        workspaceRoot: root,
+        workflowId: "orchestrator-basic",
+        debugMode: true,
+        graph: {
+          sessionId: "sess_completed_status",
+          workflowId: "orchestrator-basic",
+          nodes: [
+            { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", status: "idle", color: "#4f7cff", unreadCount: 0, errorCount: 0 }
+          ],
+          edges: [],
+          activeToolCalls: []
+        }
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: "sess_completed_status",
+        agentId: "orchestrator",
+        timestamp: "2026-01-01T00:00:01.000Z",
+        type: "agent.status",
+        payload: { status: "completed" }
+      });
+      await store.createSession({
+        sessionId: "sess_active_status",
+        title: "Active status",
+        workspaceRoot: root,
+        workflowId: "orchestrator-basic",
+        debugMode: true,
+        graph: {
+          sessionId: "sess_active_status",
+          workflowId: "orchestrator-basic",
+          nodes: [
+            { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", status: "idle", color: "#4f7cff", unreadCount: 0, errorCount: 0 }
+          ],
+          edges: [],
+          activeToolCalls: []
+        }
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: "sess_active_status",
+        agentId: "orchestrator",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        type: "agent.status",
+        payload: { status: "waiting" }
+      });
+
+      const sessions = await store.listSessions();
+      expect(sessions.find((session) => session.id === "sess_completed_status")).toMatchObject({
+        status: "completed",
+        activeAgents: 0
+      });
+      expect(sessions.find((session) => session.id === "sess_active_status")).toMatchObject({
+        status: "active",
+        activeAgents: 1
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not mark stopped sessions completed just because one agent completed", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-events-"));
+    try {
+      const store = new EventStore(root);
+      await store.createSession({
+        sessionId: "sess_stopped_status",
+        title: "Stopped status",
+        workspaceRoot: root,
+        workflowId: "orchestrator-basic",
+        debugMode: true,
+        graph: {
+          sessionId: "sess_stopped_status",
+          workflowId: "orchestrator-basic",
+          nodes: [
+            { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", status: "idle", color: "#4f7cff", unreadCount: 0, errorCount: 0 },
+            { id: "implementor", roleId: "implementor", label: "Implementor", status: "idle", color: "#34c759", unreadCount: 0, errorCount: 0 }
+          ],
+          edges: [],
+          activeToolCalls: []
+        }
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: "sess_stopped_status",
+        agentId: "implementor",
+        timestamp: "2026-01-01T00:00:01.000Z",
+        type: "agent.status",
+        payload: { status: "completed" }
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: "sess_stopped_status",
+        agentId: "orchestrator",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        type: "workflow.stopped",
+        payload: { workflowInstanceId: "wf_stopped", workflowId: "implementor-reviewer" }
+      });
+
+      expect((await store.listSessions()).find((session) => session.id === "sess_stopped_status")).toMatchObject({
+        status: "cancelled"
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

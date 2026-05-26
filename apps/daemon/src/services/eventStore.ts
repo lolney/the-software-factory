@@ -243,6 +243,7 @@ export class EventStore {
       const updatedAt = events.at(-1)?.timestamp ?? snapshot.updatedAt;
       const activeAgents = snapshot.graph.nodes.filter((node) => ["working", "waiting", "paused"].includes(node.status)).length;
       const failureCount = snapshot.graph.nodes.reduce((total, node) => total + node.errorCount + (node.status === "failed" ? 1 : 0), 0);
+      const sessionStatus = deriveSessionStatus(snapshot.graph.nodes, events, snapshot.archived === true);
       sessions.push({
         id: snapshot.sessionId,
         title: snapshot.title,
@@ -254,6 +255,7 @@ export class EventStore {
         debugMode: snapshot.debugMode === true,
         model: snapshot.model,
         reasoningEffort: snapshot.reasoningEffort,
+        status: sessionStatus,
         activeAgents,
         failureCount
       });
@@ -526,6 +528,21 @@ function deriveStatus(events: SessionEvent[], agentId: string) {
   const latest = [...events].reverse().find((event: SessionEvent) => event.agentId === agentId && event.type === "agent.status");
   const status = latest?.payload.status;
   return typeof status === "string" ? status as GraphState["nodes"][number]["status"] : "idle";
+}
+
+function deriveSessionStatus(nodes: GraphState["nodes"], events: SessionEvent[], archived: boolean) {
+  if (archived) return "archived";
+  if (nodes.some((node) => node.status === "failed")) return "failed";
+  if (events.some((event) => event.type === "error")) return "failed";
+  if (nodes.some((node) => ["working", "waiting"].includes(node.status))) return "active";
+  if (nodes.some((node) => node.status === "paused")) return "paused";
+  const latestWorkflowTerminal = [...events].reverse().find((event) => event.type === "workflow.completed" || event.type === "workflow.stopped");
+  if (latestWorkflowTerminal?.type === "workflow.stopped") return "cancelled";
+  if (nodes.some((node) => node.status === "cancelled")) return "cancelled";
+  if (latestWorkflowTerminal?.type === "workflow.completed") return "completed";
+  const latestOrchestratorStatus = [...events].reverse().find((event) => event.agentId === "orchestrator" && event.type === "agent.status")?.payload.status;
+  if (latestOrchestratorStatus === "completed") return "completed";
+  return "idle";
 }
 
 function containedPath(root: string, child: string) {

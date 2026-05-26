@@ -27,6 +27,7 @@ struct SessionSummary: Identifiable, Hashable, Codable {
     var debugMode: Bool? = nil
     var model: String? = nil
     var reasoningEffort: String? = nil
+    var status: String? = nil
     var activeAgents: Int? = nil
     var failureCount: Int? = nil
 
@@ -41,6 +42,7 @@ struct SessionSummary: Identifiable, Hashable, Codable {
         case debugMode
         case model
         case reasoningEffort
+        case status
         case activeAgents
         case failureCount
     }

@@ -1712,6 +1712,23 @@ export class SessionManager {
       ].filter(Boolean).join("; ");
       return { stopped: false, reason: blockers || "completion gates are still open" };
     }
+    const activeChildWorkflowIds = await this.activeChildWorkflowIds(sessionId, agentId, workflowInstanceId);
+    if (activeChildWorkflowIds.length > 0) {
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId,
+        agentId,
+        timestamp: new Date().toISOString(),
+        type: "agent.stop_blocked",
+        payload: {
+          reason: input.reason,
+          workflowInstanceId,
+          activeChildWorkflows: activeChildWorkflowIds
+        },
+        causationId
+      }, publish);
+      return { stopped: false, reason: `child workflows ${activeChildWorkflowIds.join(", ")}` };
+    }
     if (workflowInstance && criteria) {
       for (const criterionId of criteria.accepted) {
         const criterion = workflowInstance.completionCriteria.find((candidate) => candidate.id === criterionId);
@@ -1989,12 +2006,17 @@ export class SessionManager {
         .filter((dependencyAgentId) => !events.some((event) => event.type === "agent.stopped" && event.agentId === dependencyAgentId && event.payload.workflowInstanceId === instance.workflowInstanceId)
           && !events.some((event) => event.type === "handoff.created" && event.payload.from === dependencyAgentId && (!event.payload.workflowInstanceId || event.payload.workflowInstanceId === instance.workflowInstanceId)))
       : [];
-    const activeChildWorkflows = (await this.workflowInstancesForSession(sessionId))
-      .filter((child) => child.callerAgentId === agentId)
-      .filter((child) => child.workflowInstanceId !== instance.workflowInstanceId)
-      .filter((child) => !events.some((event) => ["workflow.completed", "workflow.stopped"].includes(event.type) && event.payload.workflowInstanceId === child.workflowInstanceId))
-      .map((child) => child.workflowInstanceId);
+    const activeChildWorkflows = await this.activeChildWorkflowIds(sessionId, agentId, instance.workflowInstanceId, events);
     return { dependencies, activeChildWorkflows };
+  }
+
+  private async activeChildWorkflowIds(sessionId: string, agentId: string, excludeWorkflowInstanceId?: string, events?: SessionEvent[]) {
+    const allEvents = events ?? await this.store.readEvents(sessionId);
+    return (await this.workflowInstancesForSession(sessionId))
+      .filter((child) => child.callerAgentId === agentId)
+      .filter((child) => child.workflowInstanceId !== excludeWorkflowInstanceId)
+      .filter((child) => !allEvents.some((event) => ["workflow.completed", "workflow.stopped"].includes(event.type) && event.payload.workflowInstanceId === child.workflowInstanceId))
+      .map((child) => child.workflowInstanceId);
   }
 
   private async inferActiveWorkflowForAgent(sessionId: string, agentId: string) {
