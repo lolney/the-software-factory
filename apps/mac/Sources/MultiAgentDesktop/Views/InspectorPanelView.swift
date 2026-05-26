@@ -867,6 +867,12 @@ struct DebugLogPanelView: View {
             }
             .padding()
 
+            if !store.recoveredSchedulerJobs.isEmpty {
+                recoveredJobsView
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+            }
+
             if store.debugLogs.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     Label("No debug logs yet", systemImage: "text.badge.magnifyingglass")
@@ -922,6 +928,57 @@ struct DebugLogPanelView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var recoveredJobsView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Recovered Jobs", systemImage: "arrow.clockwise.circle")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(store.recoveredSchedulerJobs) { job in
+                let statusLabel = recoveredJobStatusLabel(job)
+                let statusColor = job.retried ? Color.secondary : Color.orange
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text("\(job.kind) - \(job.agentId)")
+                                .font(.caption.weight(.semibold))
+                            Text(statusLabel)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(statusColor)
+                        }
+                        Text(job.prompt.isEmpty ? job.reason : job.prompt)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                        Text(job.recoveredAt, style: .time)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    Spacer()
+                    Button(job.retried ? "Retried" : "Retry") {
+                        store.retryRecoveredJob(job)
+                    }
+                    .font(.caption)
+                    .disabled(job.retried || store.selectedSessionArchived)
+                }
+                .padding(8)
+                .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 6))
+            }
+        }
+        .padding(10)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.quaternary)
+        }
+    }
+
+    private func recoveredJobStatusLabel(_ job: RecoveredSchedulerJob) -> String {
+        if job.retryReason == "auto-resume workflow execution after daemon restart" {
+            return "Auto-resumed"
+        }
+        return job.retried ? "Retry requested" : "Needs retry"
     }
 
     private func color(for level: DebugLogLevel) -> Color {

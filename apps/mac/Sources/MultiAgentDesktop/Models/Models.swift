@@ -225,6 +225,19 @@ struct WorkspaceFileSummary: Identifiable, Hashable {
     var id: String { path }
 }
 
+struct RecoveredSchedulerJob: Identifiable, Hashable {
+    var jobId: String
+    var agentId: String
+    var kind: String
+    var prompt: String
+    var recoveredAt: Date
+    var reason: String
+    var retried: Bool
+    var retryReason: String?
+
+    var id: String { jobId }
+}
+
 enum DebugLogLevel: String, Codable, CaseIterable {
     case debug
     case info

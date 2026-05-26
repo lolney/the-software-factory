@@ -24,7 +24,7 @@ export interface SchedulerJobRecord {
   sessionId: string;
   agentId: string;
   kind: string;
-  status: "created" | "started" | "heartbeat" | "completed" | "failed" | "recovered";
+  status: "created" | "started" | "heartbeat" | "completed" | "failed" | "recovered" | "retry_requested";
   created?: SessionEvent;
   latest: SessionEvent;
   terminal?: SessionEvent;
@@ -197,7 +197,8 @@ function isSchedulerEvent(event: SessionEvent) {
     || event.type === "scheduler.job.heartbeat"
     || event.type === "scheduler.job.completed"
     || event.type === "scheduler.job.failed"
-    || event.type === "scheduler.job.recovered";
+    || event.type === "scheduler.job.recovered"
+    || event.type === "scheduler.job.retry_requested";
 }
 
 function schedulerStatus(type: SessionEvent["type"]): SchedulerJobRecord["status"] {
@@ -207,6 +208,7 @@ function schedulerStatus(type: SessionEvent["type"]): SchedulerJobRecord["status
   case "scheduler.job.completed": return "completed";
   case "scheduler.job.failed": return "failed";
   case "scheduler.job.recovered": return "recovered";
+  case "scheduler.job.retry_requested": return "retry_requested";
   default: return "created";
   }
 }

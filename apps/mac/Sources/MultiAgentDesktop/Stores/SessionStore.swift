@@ -186,6 +186,36 @@ final class SessionStore {
         }
     }
 
+    var recoveredSchedulerJobs: [RecoveredSchedulerJob] {
+        var createdByJobId: [String: TranscriptItem] = [:]
+        var retryRequests: [String: TranscriptItem] = [:]
+        for item in transcript {
+            guard let jobId = item.payload["jobId"]?.stringValue else { continue }
+            if item.type == "scheduler.job.created" {
+                createdByJobId[jobId] = item
+            }
+            if item.type == "scheduler.job.retry_requested" {
+                retryRequests[jobId] = item
+            }
+        }
+        return transcript.compactMap { item -> RecoveredSchedulerJob? in
+            guard item.type == "scheduler.job.recovered",
+                  let jobId = item.payload["jobId"]?.stringValue,
+                  let created = createdByJobId[jobId] else { return nil }
+            return RecoveredSchedulerJob(
+                jobId: jobId,
+                agentId: created.agentId ?? created.payload["agentId"]?.stringValue ?? item.agentId ?? "agent",
+                kind: created.payload["kind"]?.stringValue ?? "job",
+                prompt: created.payload["prompt"]?.stringValue ?? "",
+                recoveredAt: item.timestamp,
+                reason: item.payload["reason"]?.stringValue ?? "Recovered after daemon restart.",
+                retried: retryRequests[jobId] != nil,
+                retryReason: retryRequests[jobId]?.payload["reason"]?.stringValue
+            )
+        }
+        .sorted { $0.recoveredAt > $1.recoveredAt }
+    }
+
     var isTranscriptFiltered: Bool {
         selectedAgentId != nil || !transcriptSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -475,6 +505,11 @@ final class SessionStore {
     func resumeOrchestrator() {
         guard let selectedSessionId else { return }
         daemon.sendRequest(method: "resumeAgent", params: ["sessionId": selectedSessionId, "agentId": selectedControlAgentId])
+    }
+
+    func retryRecoveredJob(_ job: RecoveredSchedulerJob) {
+        guard let selectedSessionId else { return }
+        daemon.sendRequest(method: "retryRecoveredJob", params: ["sessionId": selectedSessionId, "jobId": job.jobId])
     }
 
     func cancelOrchestrator() {

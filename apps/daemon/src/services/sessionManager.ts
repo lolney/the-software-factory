@@ -63,6 +63,7 @@ export class SessionManager {
   private readonly actors = new ActorRegistry();
   private readonly workspaceLocks = new Map<string, Promise<void>>();
   private readonly actorScheduleLocks = new Map<string, Promise<void>>();
+  private readonly recoveredJobRetryLocks = new Map<string, Promise<void>>();
   private readonly auth = new AuthManager();
   private roleOverridesLoaded = false;
   private recoveryComplete = false;
@@ -268,6 +269,11 @@ export class SessionManager {
         await this.controlEvent(request.params.sessionId, request.params.agentId, "control.resume", "idle", publish);
         await this.drainPendingMailbox(request.params.sessionId, request.params.agentId, publish);
         return this.store.readSnapshot(request.params.sessionId);
+      case "retryRecoveredJob":
+        await this.store.assertSessionExists(request.params.sessionId);
+        this.assertSessionMutable(await this.store.readSnapshot(request.params.sessionId));
+        await this.rehydrateActors(request.params.sessionId);
+        return this.retryRecoveredJob(request.params.sessionId, request.params.jobId, publish);
       case "cancelAgent":
         await this.store.assertSessionExists(request.params.sessionId);
         this.assertSessionMutable(await this.store.readSnapshot(request.params.sessionId));
@@ -398,7 +404,8 @@ export class SessionManager {
     agentId: string,
     type: SessionEvent["type"],
     status: string,
-    publish: (event: SessionEvent) => void
+    publish: (event: SessionEvent) => void,
+    extraPayload: Record<string, unknown> = {}
   ) {
     if (type === "control.cancel") {
       this.actors.abortRun(sessionId, agentId);
@@ -409,7 +416,7 @@ export class SessionManager {
       agentId,
       timestamp: new Date().toISOString(),
       type,
-      payload: {}
+      payload: extraPayload
     }, publish);
     const message = await this.appendAndPublish({
       eventId: makeEventId(),
@@ -421,6 +428,89 @@ export class SessionManager {
       causationId: control.eventId
     }, publish);
     return this.store.rebuildSnapshot(sessionId);
+  }
+
+  private async retryRecoveredJob(sessionId: string, jobId: string, publish: (event: SessionEvent) => void) {
+    return this.withRecoveredJobRetryLock(sessionId, jobId, async () => this.retryRecoveredJobUnlocked(sessionId, jobId, publish));
+  }
+
+  private async retryRecoveredJobUnlocked(sessionId: string, jobId: string, publish: (event: SessionEvent) => void) {
+    const events = await this.store.readEvents(sessionId);
+    const created = events.find((event) => event.type === "scheduler.job.created" && event.payload.jobId === jobId);
+    if (!created) throw new Error(`Unknown scheduler job ${jobId}.`);
+    const recovered = events.find((event) => event.type === "scheduler.job.recovered" && event.payload.jobId === jobId);
+    if (!recovered) throw new Error(`Scheduler job ${jobId} has not been recovered and cannot be retried.`);
+    const existingRetry = events.find((event) => event.type === "scheduler.job.retry_requested" && event.payload.jobId === jobId);
+    if (existingRetry) {
+      return this.store.readSnapshot(sessionId);
+    }
+    const kind = typeof created.payload.kind === "string" ? created.payload.kind : "";
+    const agentId = typeof created.payload.agentId === "string" ? created.payload.agentId : created.agentId;
+    const prompt = typeof created.payload.prompt === "string" ? created.payload.prompt : "";
+    if (!agentId || !prompt) throw new Error(`Scheduler job ${jobId} is missing retry metadata.`);
+    await this.controlEvent(sessionId, agentId, "control.resume", "idle", publish, { jobId });
+    const snapshot = await this.store.readSnapshot(sessionId);
+    if (kind === "workflow-execution") {
+      if (await this.resumeWorkflowExecutionFromJob(sessionId, created, recovered.eventId, publish)) {
+        await this.markRecoveredJobRetryRequested(sessionId, jobId, agentId, "manual retry requested", recovered.eventId, publish);
+      }
+      return this.store.readSnapshot(sessionId);
+    }
+    if (kind === "workflow-agent-turn") {
+      await this.runWorkflowAgent(snapshot, agentId, prompt, recovered.eventId, publish, {
+        workflowInstanceId: typeof created.payload.workflowInstanceId === "string" ? created.payload.workflowInstanceId : undefined,
+        workflowId: typeof created.payload.workflowId === "string" ? created.payload.workflowId : undefined,
+        callerAgentId: typeof created.payload.callerAgentId === "string" ? created.payload.callerAgentId : undefined
+      });
+      await this.markRecoveredJobRetryRequested(sessionId, jobId, agentId, "manual retry requested", recovered.eventId, publish);
+      return this.store.readSnapshot(sessionId);
+    }
+    if (kind === "agent-turn") {
+      await this.recordAgentTurn(snapshot, agentId, prompt, snapshot.debugMode, publish, recovered.eventId);
+      await this.markRecoveredJobRetryRequested(sessionId, jobId, agentId, "manual retry requested", recovered.eventId, publish);
+      return this.store.readSnapshot(sessionId);
+    }
+    throw new Error(`Scheduler job ${jobId} has unsupported retry kind ${kind || "unknown"}.`);
+  }
+
+  private async withRecoveredJobRetryLock<T>(sessionId: string, jobId: string, work: () => Promise<T>): Promise<T> {
+    const key = `${sessionId}:${jobId}`;
+    const previous = this.recoveredJobRetryLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chained = previous.then(() => current, () => current);
+    this.recoveredJobRetryLocks.set(key, chained);
+    await previous.catch(() => undefined);
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.recoveredJobRetryLocks.get(key) === chained) {
+        this.recoveredJobRetryLocks.delete(key);
+      }
+    }
+  }
+
+  private async markRecoveredJobRetryRequested(
+    sessionId: string,
+    jobId: string,
+    agentId: string,
+    reason: string,
+    causationId: string | undefined,
+    publish: (event: SessionEvent) => void
+  ) {
+    return this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "scheduler.job.retry_requested",
+      payload: { jobId, reason },
+      causationId,
+      correlationId: jobId
+    }, publish);
   }
 
   private async appendAndPublish(event: SessionEvent, publish: (event: SessionEvent) => void = () => {}) {
@@ -2583,7 +2673,9 @@ export class SessionManager {
               agentId,
               recovered.eventId
             );
-            await this.resumeWorkflowExecutionFromJob(sessionId, event, recovered.eventId, publish);
+            if (await this.resumeWorkflowExecutionFromJob(sessionId, event, recovered.eventId, publish)) {
+              await this.markRecoveredJobRetryRequested(sessionId, jobId, agentId, "auto-resume workflow execution after daemon restart", recovered.eventId, publish);
+            }
             continue;
           }
           if (job.workflowInstanceId && recoveringWorkflowInstances.has(job.workflowInstanceId)) {
@@ -2724,7 +2816,7 @@ export class SessionManager {
     event: SessionEvent,
     causationId: string,
     publish: (event: SessionEvent) => void
-  ) {
+  ): Promise<boolean> {
     const workflowInstanceId = String(event.payload.workflowInstanceId ?? "");
     const workflowId = String(event.payload.workflowId ?? "");
     if (!workflowInstanceId || !workflowId) {
@@ -2738,7 +2830,7 @@ export class SessionManager {
         causationId,
         correlationId: String(event.payload.jobId ?? "")
       }, publish);
-      return;
+      return false;
     }
     const instance = (await this.workflowInstancesForSession(sessionId)).find((candidate) => candidate.workflowInstanceId === workflowInstanceId);
     if (!instance) {
@@ -2752,7 +2844,7 @@ export class SessionManager {
         causationId,
         correlationId: String(event.payload.jobId ?? "")
       }, publish);
-      return;
+      return false;
     }
     const details = objectPayload(event.payload.details);
     const planWorkflow = planWorkflowFromPayload(details.planWorkflow, workflowId);
@@ -2765,6 +2857,7 @@ export class SessionManager {
       causationId,
       callerAgentId: instance.callerAgentId
     }, publish);
+    return true;
   }
 
   private async startScheduledTurn(

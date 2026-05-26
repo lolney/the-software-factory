@@ -923,6 +923,108 @@ describe("SessionManager deterministic debug sessions", () => {
     }
   });
 
+  it("retries recovered agent-turn jobs from durable scheduler metadata", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            return [{
+              eventId: `evt_${crypto.randomUUID()}`,
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { text: `handled ${input.prompt}` }
+            }];
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_retry_recovered_session",
+        method: "createSession",
+        params: {
+          prompt: "initial",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      await waitForSchedulerIdle(manager, snapshot.sessionId);
+
+      const store = new EventStore(root);
+      const openJobId = `job_${crypto.randomUUID()}`;
+      const created = await store.append({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: "orchestrator",
+        timestamp: new Date().toISOString(),
+        type: "scheduler.job.created",
+        payload: { jobId: openJobId, kind: "agent-turn", agentId: "orchestrator", prompt: "retry me" },
+        correlationId: openJobId
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: "orchestrator",
+        timestamp: new Date().toISOString(),
+        type: "scheduler.job.started",
+        payload: { jobId: openJobId, kind: "agent-turn", agentId: "orchestrator" },
+        causationId: created.eventId,
+        correlationId: openJobId
+      });
+
+      const restarted = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            return [{
+              eventId: `evt_${crypto.randomUUID()}`,
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { text: `retried ${input.prompt}` }
+            }];
+          }
+        }
+      });
+      await restarted.handle({
+        id: "req_retry_recovered_list",
+        method: "listSessions",
+        params: { includeArchived: true }
+      });
+      await Promise.all([
+        restarted.handle({
+          id: "req_retry_recovered_job_a",
+          method: "retryRecoveredJob",
+          params: { sessionId: snapshot.sessionId, jobId: openJobId }
+        }),
+        restarted.handle({
+          id: "req_retry_recovered_job_b",
+          method: "retryRecoveredJob",
+          params: { sessionId: snapshot.sessionId, jobId: openJobId }
+        })
+      ]);
+      const replay = await waitForSchedulerIdle(restarted, snapshot.sessionId);
+      expect(replay.some((event) => event.type === "scheduler.job.recovered" && event.payload.jobId === openJobId)).toBe(true);
+      expect(replay.some((event) => event.type === "scheduler.job.retry_requested" && event.payload.jobId === openJobId && event.payload.reason === "manual retry requested")).toBe(true);
+      expect(replay.some((event) => event.type === "agent.message" && event.payload.text === "retried retry me")).toBe(true);
+      expect(replay.some((event) => event.type === "scheduler.job.completed" && event.payload.kind === "agent-turn" && event.payload.jobId !== openJobId)).toBe(true);
+      const beforeSecondRetryCount = replay.filter((event) => event.type === "scheduler.job.created" && event.payload.kind === "agent-turn").length;
+      await restarted.handle({
+        id: "req_retry_recovered_job_again",
+        method: "retryRecoveredJob",
+        params: { sessionId: snapshot.sessionId, jobId: openJobId }
+      });
+      const afterSecondRetry = await waitForSchedulerIdle(restarted, snapshot.sessionId);
+      expect(afterSecondRetry.filter((event) => event.type === "scheduler.job.created" && event.payload.kind === "agent-turn")).toHaveLength(beforeSecondRetryCount);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   it("recovers interrupted workflow execution jobs by rescheduling the workflow", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
     try {
@@ -983,7 +1085,16 @@ describe("SessionManager deterministic debug sessions", () => {
       });
       const recoveredEvents = await waitForSchedulerIdle(restarted, snapshot.sessionId);
       expect(recoveredEvents.some((event) => event.type === "scheduler.job.recovered" && event.payload.jobId === openJobId)).toBe(true);
+      expect(recoveredEvents.some((event) => event.type === "scheduler.job.retry_requested" && event.payload.jobId === openJobId && event.payload.reason === "auto-resume workflow execution after daemon restart")).toBe(true);
       expect(recoveredEvents.some((event) => event.type === "scheduler.job.created" && event.payload.kind === "workflow-execution" && event.payload.jobId !== openJobId)).toBe(true);
+      const replacementWorkflowJobs = recoveredEvents.filter((event) => event.type === "scheduler.job.created" && event.payload.kind === "workflow-execution" && event.payload.jobId !== openJobId).length;
+      await restarted.handle({
+        id: "req_retry_auto_resumed_workflow_again",
+        method: "retryRecoveredJob",
+        params: { sessionId: snapshot.sessionId, jobId: openJobId }
+      });
+      const afterManualRetry = await waitForSchedulerIdle(restarted, snapshot.sessionId);
+      expect(afterManualRetry.filter((event) => event.type === "scheduler.job.created" && event.payload.kind === "workflow-execution" && event.payload.jobId !== openJobId)).toHaveLength(replacementWorkflowJobs);
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
