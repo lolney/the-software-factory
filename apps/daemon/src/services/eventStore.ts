@@ -381,7 +381,8 @@ export class EventStore {
       throw new Error(`Session ${sessionId} has no session.created event.`);
     }
 
-    const title = String(created.payload.title ?? sessionId);
+    const renamed = [...events].reverse().find((event) => event.type === "session.renamed" && typeof event.payload.title === "string");
+    const title = String(renamed?.payload.title ?? created.payload.title ?? sessionId);
     const workspaceRoot = String(created.payload.workspaceRoot ?? process.cwd());
     const workflowId = String(created.payload.workflowId ?? "orchestrator-basic");
     const debugMode = created.payload.debugMode === true;

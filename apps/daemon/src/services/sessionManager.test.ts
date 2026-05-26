@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import type { SessionEvent, SessionSnapshot } from "@multiagent/shared";
+import { deriveActorStates } from "./concurrency.js";
 import { SessionManager } from "./sessionManager.js";
 import { EventStore, makeEventId } from "./eventStore.js";
 
@@ -90,6 +92,280 @@ describe("SessionManager deterministic debug sessions", () => {
     }
   });
 
+  it("records durable mailbox enqueue and dequeue events for delivered actor turns", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      const snapshot = await manager.handle({
+        id: "req_create_mailbox",
+        method: "createSession",
+        params: {
+          prompt: "Build and review a tiny parser",
+          workspaceRoot: root,
+          workflowId: "implementor-reviewer",
+          debugMode: true
+        }
+      }) as SessionSnapshot;
+
+      const events = await waitForSchedulerIdle(manager, snapshot.sessionId) as SessionEvent[];
+      const enqueued = events.filter((event) => event.type === "actor.mailbox.enqueued");
+      const dequeuedMessageIds = new Set(events
+        .filter((event) => event.type === "actor.mailbox.dequeued")
+        .map((event) => String(event.payload.messageEventId ?? ""))
+        .filter(Boolean));
+      const scheduledCausationIds = new Set(events
+        .filter((event) => event.type === "scheduler.job.created" && ["agent-turn", "workflow-agent-turn"].includes(String(event.payload.kind ?? "")))
+        .map((event) => String(event.causationId ?? ""))
+        .filter(Boolean));
+      const deliveredMailboxItems = enqueued.filter((event) => scheduledCausationIds.has(String(event.payload.messageEventId ?? "")));
+
+      expect(enqueued.length).toBeGreaterThan(0);
+      expect(deliveredMailboxItems.length).toBeGreaterThan(0);
+      expect(deliveredMailboxItems.every((event) => dequeuedMessageIds.has(String(event.payload.messageEventId ?? "")))).toBe(true);
+      for (const [dequeueIndex, event] of events.entries()) {
+        if (event.type !== "actor.mailbox.dequeued") continue;
+        const scheduledIndex = events.findIndex((candidate) =>
+          candidate.type === "scheduler.job.created"
+            && candidate.causationId === event.payload.messageEventId
+        );
+        expect(scheduledIndex).toBeGreaterThanOrEqual(0);
+        expect(dequeueIndex).toBeGreaterThan(scheduledIndex);
+      }
+
+      const latestSnapshot = await manager.handle({
+        id: "req_mailbox_snapshot",
+        method: "getSnapshot",
+        params: { sessionId: snapshot.sessionId }
+      }) as SessionSnapshot;
+      const actorStates = deriveActorStates(latestSnapshot, events);
+      const implementor = actorStates.find((actor) => actor.agentId === "implementor");
+      expect(implementor?.mailbox.inbound.every((event) => !scheduledCausationIds.has(String(event.payload.messageEventId ?? "")))).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("queues direct messages while an actor already has an active scheduler job", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    let releaseImplementor: () => void = () => {};
+    const implementorGate = new Promise<void>((resolve) => {
+      releaseImplementor = resolve;
+    });
+    let implementorRuns = 0;
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            if (input.agentId === "orchestrator") {
+              await input.workflowTools?.startWorkflow?.("implementor-reviewer");
+            }
+            if (input.agentId.includes("implementor")) {
+              implementorRuns += 1;
+              if (implementorRuns === 1) {
+                await implementorGate;
+              }
+            }
+            return [{
+              eventId: `evt_${crypto.randomUUID()}`,
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { text: `${input.agentId} handled ${input.prompt}` }
+            }];
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_queue_while_active",
+        method: "createSession",
+        params: {
+          prompt: "start async workflow",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as SessionSnapshot;
+      const activeEvents = await waitForEvents(manager, snapshot.sessionId, (events) =>
+        events.some((event) => event.type === "scheduler.job.started" && event.agentId?.includes("implementor"))
+      );
+      const implementorId = activeEvents.find((event) => event.type === "scheduler.job.started" && event.agentId?.includes("implementor"))?.agentId;
+      expect(implementorId).toBeTruthy();
+
+      await manager.handle({
+        id: "req_queue_active_nudge",
+        method: "sendMessage",
+        params: {
+          sessionId: snapshot.sessionId,
+          targetAgentId: implementorId,
+          text: "queued while the implementor is busy"
+        }
+      });
+      const queued = await manager.handle({
+        id: "req_queue_active_replay",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: ReplayEvent[] };
+      const queuedMessage = [...queued.events].reverse().find((event) =>
+        event.type === "message.sent"
+          && event.payload.from === "user"
+          && event.payload.to === implementorId
+          && event.payload.text === "queued while the implementor is busy"
+      );
+      expect(queuedMessage?.eventId).toBeTruthy();
+      expect(queued.events.some((event) => event.type === "actor.mailbox.enqueued" && event.payload.messageEventId === queuedMessage?.eventId)).toBe(true);
+      expect(queued.events.some((event) => event.type === "scheduler.job.created" && event.causationId === queuedMessage?.eventId)).toBe(false);
+
+      releaseImplementor();
+      const drained = await waitForEvents(manager, snapshot.sessionId, (events) =>
+        events.some((event) => event.type === "scheduler.job.created" && event.causationId === queuedMessage?.eventId)
+          && events.some((event) => event.type === "actor.mailbox.dequeued" && event.payload.messageEventId === queuedMessage?.eventId)
+      );
+      expect(drained.some((event) => event.type === "actor.mailbox.dequeued" && event.payload.messageEventId === queuedMessage?.eventId)).toBe(true);
+      await waitForSchedulerIdle(manager, snapshot.sessionId);
+    } finally {
+      releaseImplementor();
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("reschedules mailbox input whose prior scheduler job was recovered before dequeue", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      const snapshot = await manager.handle({
+        id: "req_recover_mailbox_session",
+        method: "createSession",
+        params: {
+          prompt: "recover mailbox",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: true
+        }
+      }) as SessionSnapshot;
+      await waitForSchedulerIdle(manager, snapshot.sessionId);
+
+      const store = new EventStore(root);
+      const messageEventId = makeEventId();
+      const originalJobId = `job_${crypto.randomUUID()}`;
+      await store.append({
+        eventId: messageEventId,
+        sessionId: snapshot.sessionId,
+        agentId: "orchestrator",
+        timestamp: new Date().toISOString(),
+        type: "message.sent",
+        payload: { from: "user", to: "orchestrator", text: "retry after recovery" }
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: "orchestrator",
+        timestamp: new Date().toISOString(),
+        type: "actor.mailbox.enqueued",
+        payload: { mailbox: "orchestrator", from: "user", messageEventId, messageType: "message.sent" },
+        causationId: messageEventId
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: "orchestrator",
+        timestamp: new Date().toISOString(),
+        type: "scheduler.job.created",
+        payload: { jobId: originalJobId, kind: "agent-turn", agentId: "orchestrator", prompt: "retry after recovery" },
+        causationId: messageEventId,
+        correlationId: originalJobId
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: "orchestrator",
+        timestamp: new Date().toISOString(),
+        type: "scheduler.job.started",
+        payload: { jobId: originalJobId, kind: "agent-turn", agentId: "orchestrator" },
+        correlationId: originalJobId
+      });
+
+      const restarted = new SessionManager({ sessionsRoot: root });
+      await restarted.handle({
+        id: "req_recover_mailbox_list",
+        method: "listSessions",
+        params: { includeArchived: true }
+      });
+      await restarted.handle({
+        id: "req_recover_mailbox_resume",
+        method: "resumeAgent",
+        params: { sessionId: snapshot.sessionId, agentId: "orchestrator" }
+      });
+      const events = await waitForSchedulerIdle(restarted, snapshot.sessionId);
+      const createdForMessage = events.filter((event) =>
+        event.type === "scheduler.job.created"
+          && event.causationId === messageEventId
+      );
+      expect(createdForMessage.map((event) => event.payload.jobId)).toContain(originalJobId);
+      expect(createdForMessage.some((event) => event.payload.jobId !== originalJobId)).toBe(true);
+      expect(events.some((event) => event.type === "actor.mailbox.dequeued" && event.payload.messageEventId === messageEventId)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("does not duplicate mailbox jobs when concurrent drains race on the same message", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      const snapshot = await manager.handle({
+        id: "req_concurrent_drain_session",
+        method: "createSession",
+        params: {
+          prompt: "concurrent drain",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: true
+        }
+      }) as SessionSnapshot;
+      await waitForSchedulerIdle(manager, snapshot.sessionId);
+
+      const store = new EventStore(root);
+      const messageEventId = makeEventId();
+      await store.append({
+        eventId: messageEventId,
+        sessionId: snapshot.sessionId,
+        agentId: "orchestrator",
+        timestamp: new Date().toISOString(),
+        type: "message.sent",
+        payload: { from: "user", to: "orchestrator", text: "schedule exactly once" }
+      });
+      await store.append({
+        eventId: makeEventId(),
+        sessionId: snapshot.sessionId,
+        agentId: "orchestrator",
+        timestamp: new Date().toISOString(),
+        type: "actor.mailbox.enqueued",
+        payload: { mailbox: "orchestrator", from: "user", messageEventId, messageType: "message.sent" },
+        causationId: messageEventId
+      });
+
+      await Promise.all([
+        manager.handle({
+          id: "req_concurrent_drain_resume_a",
+          method: "resumeAgent",
+          params: { sessionId: snapshot.sessionId, agentId: "orchestrator" }
+        }),
+        manager.handle({
+          id: "req_concurrent_drain_resume_b",
+          method: "resumeAgent",
+          params: { sessionId: snapshot.sessionId, agentId: "orchestrator" }
+        })
+      ]);
+      const events = await waitForSchedulerIdle(manager, snapshot.sessionId);
+      expect(events.filter((event) => event.type === "scheduler.job.created" && event.causationId === messageEventId)).toHaveLength(1);
+      expect(events.filter((event) => event.type === "actor.mailbox.dequeued" && event.payload.messageEventId === messageEventId)).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   it("lists predefined roles and workflows through the daemon protocol", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
     try {
@@ -171,6 +447,46 @@ describe("SessionManager deterministic debug sessions", () => {
         params: {}
       }) as { sessions: Array<{ id: string; archived?: boolean }> };
       expect(restored.sessions.find((session) => session.id === snapshot.sessionId)?.archived).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("renames sessions durably for lists and snapshots", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({ sessionsRoot: root });
+      const snapshot = await manager.handle({
+        id: "req_create_rename",
+        method: "createSession",
+        params: {
+          prompt: "same prompt",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: true
+        }
+      }) as { sessionId: string };
+      await waitForSchedulerIdle(manager, snapshot.sessionId);
+
+      await manager.handle({
+        id: "req_rename",
+        method: "renameSession",
+        params: { sessionId: snapshot.sessionId, title: "Fixture parser spike" }
+      });
+
+      const listed = await manager.handle({
+        id: "req_list_renamed",
+        method: "listSessions",
+        params: { includeArchived: true }
+      }) as { sessions: Array<{ id: string; title: string }> };
+      expect(listed.sessions.find((session) => session.id === snapshot.sessionId)?.title).toBe("Fixture parser spike");
+
+      const renamedSnapshot = await manager.handle({
+        id: "req_snapshot_renamed",
+        method: "getSnapshot",
+        params: { sessionId: snapshot.sessionId }
+      }) as { title: string };
+      expect(renamedSnapshot.title).toBe("Fixture parser spike");
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }

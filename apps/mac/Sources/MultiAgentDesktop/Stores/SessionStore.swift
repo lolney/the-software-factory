@@ -496,6 +496,12 @@ final class SessionStore {
         archiveSessions(sessionIds, archived: false)
     }
 
+    func renameSession(_ sessionId: String, title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sessionId.isEmpty, !trimmed.isEmpty else { return }
+        daemon.sendRequest(method: "renameSession", params: ["sessionId": sessionId, "title": trimmed])
+    }
+
     func viewSelectedSessions() {
         let ids = selectedSessionIdsForActions
         dashboardSessionFilterIds = Set(ids)
@@ -1003,6 +1009,9 @@ final class SessionStore {
                     isComposingNewSession = false
                     composerText = ""
                 }
+            } else if event.type == "session.renamed",
+                      let title = event.payload["title"]?.stringValue {
+                updateSessionTitle(sessionId: event.sessionId, title: title, updatedAt: event.timestamp)
             }
             return
         }
@@ -1034,6 +1043,10 @@ final class SessionStore {
             updateSessionArchiveState(sessionId: event.sessionId, archived: true)
         case "session.restored":
             updateSessionArchiveState(sessionId: event.sessionId, archived: false)
+        case "session.renamed":
+            if let title = event.payload["title"]?.stringValue {
+                updateSessionTitle(sessionId: event.sessionId, title: title, updatedAt: event.timestamp)
+            }
         case "graph.updated":
             if let graphValue = event.payload["graph"],
                let data = try? JSONEncoder().encode(graphValue),
@@ -1275,6 +1288,14 @@ final class SessionStore {
         }
     }
 
+    private func updateSessionTitle(sessionId: String, title: String, updatedAt: String) {
+        let allSessions = sessions + archivedSessions
+        guard var summary = allSessions.first(where: { $0.id == sessionId }) else { return }
+        summary.title = title
+        summary.updatedAt = updatedAt
+        upsertSessionSummary(summary)
+    }
+
     private func refreshSessionSummaryStatuses() {
         guard let selectedSessionId,
               let selectedIndex = sessions.firstIndex(where: { $0.id == selectedSessionId }) else { return }
@@ -1322,6 +1343,9 @@ final class SessionStore {
             let target = event.payload["to"]?.stringValue ?? "agent"
             let reason = event.payload["reason"]?.stringValue ?? "target unavailable"
             return "Message to \(target) skipped: \(reason)"
+        }
+        if event.type == "session.renamed" {
+            return "Session renamed to \(event.payload["title"]?.stringValue ?? event.sessionId)"
         }
         if let text = event.payload["text"]?.stringValue { return text }
         if let message = event.payload["message"]?.stringValue { return message }

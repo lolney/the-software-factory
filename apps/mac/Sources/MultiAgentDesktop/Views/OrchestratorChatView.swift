@@ -308,6 +308,10 @@ private struct CompactEventRow: View {
             return "\(item.sender) \(item.payload["status"]?.stringValue ?? item.text.replacingOccurrences(of: "Status: ", with: ""))"
         case "handoff.created":
             return "\(item.sender) handed off to \(item.recipient ?? "agent")"
+        case "actor.mailbox.enqueued":
+            return "\(item.payload["mailbox"]?.stringValue ?? item.sender) mailbox received \(item.payload["messageType"]?.stringValue ?? "message")"
+        case "actor.mailbox.dequeued":
+            return "\(item.payload["mailbox"]?.stringValue ?? item.sender) mailbox dequeued message"
         case "workflow.instantiated":
             return "\(item.sender) instantiated workflow"
         case "workflow.completed":

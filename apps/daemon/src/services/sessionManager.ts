@@ -11,6 +11,7 @@ import { WorkspaceCoordinator } from "./workspaceCoordinator.js";
 import { AuthManager, CODEX_PUBLIC_CLIENT_ID } from "./authManager.js";
 import { CodexIntegrationManager } from "./codexIntegrationManager.js";
 import { CapabilityBroker, type CapabilityAction } from "./capabilityBroker.js";
+import { ActorRegistry, SchedulerProjection, type ScheduledJob } from "./concurrency.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -18,6 +19,7 @@ interface WorkflowRunContext {
   workflowInstanceId?: string;
   workflowId?: string;
   callerAgentId?: string;
+  mailboxEventId?: string;
 }
 
 interface WorkflowInstance {
@@ -32,16 +34,6 @@ interface WorkflowInstance {
 interface StopAgentResult {
   stopped: boolean;
   reason: string;
-}
-
-interface ScheduledJob {
-  jobId: string;
-  kind: string;
-  createdEventId: string;
-  workflowInstanceId?: string;
-  workflowId?: string;
-  callerAgentId?: string;
-  heartbeat: ReturnType<typeof setInterval>;
 }
 
 interface WorkflowExecutionRequest {
@@ -68,8 +60,9 @@ export class SessionManager {
   private readonly workspace = new WorkspaceCoordinator();
   private readonly capabilities = new CapabilityBroker();
   private readonly integrations = new CodexIntegrationManager();
-  private readonly activeRuns = new Map<string, AbortController>();
+  private readonly actors = new ActorRegistry();
   private readonly workspaceLocks = new Map<string, Promise<void>>();
+  private readonly actorScheduleLocks = new Map<string, Promise<void>>();
   private readonly auth = new AuthManager();
   private roleOverridesLoaded = false;
   private recoveryComplete = false;
@@ -104,6 +97,31 @@ export class SessionManager {
           integrations: await this.integrations.listCatalog(),
           sessions: await this.store.listSessions({ includeArchived: request.params.includeArchived ?? false })
         };
+      case "renameSession": {
+        const title = request.params.title.trim();
+        await this.store.assertSessionExists(request.params.sessionId);
+        const event = await this.appendAndPublish({
+          eventId: makeEventId(),
+          sessionId: request.params.sessionId,
+          timestamp: new Date().toISOString(),
+          type: "session.renamed",
+          payload: { title }
+        }, publish);
+        await this.appendDebugLog(
+          request.params.sessionId,
+          "info",
+          "session",
+          "Session renamed.",
+          { eventId: event.eventId, title },
+          publishLog,
+          undefined,
+          event.eventId
+        );
+        await this.store.rebuildSnapshot(request.params.sessionId);
+        return {
+          sessions: await this.store.listSessions({ includeArchived: true })
+        };
+      }
       case "archiveSessions": {
         for (const sessionId of request.params.sessionIds) {
           await this.store.assertSessionExists(sessionId);
@@ -215,6 +233,7 @@ export class SessionManager {
       case "sendMessage": {
         await this.store.assertSessionExists(request.params.sessionId);
         const snapshot = await this.store.readSnapshot(request.params.sessionId);
+        await this.rehydrateActors(snapshot.sessionId);
         this.assertSessionMutable(snapshot);
         const targetAgentId = request.params.targetAgentId ?? "orchestrator";
         this.assertAgentCanReceive(snapshot, targetAgentId);
@@ -240,14 +259,19 @@ export class SessionManager {
       case "pauseAgent":
         await this.store.assertSessionExists(request.params.sessionId);
         this.assertSessionMutable(await this.store.readSnapshot(request.params.sessionId));
+        await this.rehydrateActors(request.params.sessionId);
         return this.controlEvent(request.params.sessionId, request.params.agentId, "control.pause", "paused", publish);
       case "resumeAgent":
         await this.store.assertSessionExists(request.params.sessionId);
         this.assertSessionMutable(await this.store.readSnapshot(request.params.sessionId));
-        return this.controlEvent(request.params.sessionId, request.params.agentId, "control.resume", "idle", publish);
+        await this.rehydrateActors(request.params.sessionId);
+        await this.controlEvent(request.params.sessionId, request.params.agentId, "control.resume", "idle", publish);
+        await this.drainPendingMailbox(request.params.sessionId, request.params.agentId, publish);
+        return this.store.readSnapshot(request.params.sessionId);
       case "cancelAgent":
         await this.store.assertSessionExists(request.params.sessionId);
         this.assertSessionMutable(await this.store.readSnapshot(request.params.sessionId));
+        await this.rehydrateActors(request.params.sessionId);
         return this.controlEvent(request.params.sessionId, request.params.agentId, "control.cancel", "cancelled", publish);
       case "ackClientEvent":
         await this.store.assertSessionExists(request.params.sessionId);
@@ -261,6 +285,7 @@ export class SessionManager {
         return this.store.rebuildSnapshot(request.params.sessionId);
       case "instantiateWorkflow":
         this.assertSessionMutable(await this.store.readSnapshot(request.params.sessionId));
+        await this.rehydrateActors(request.params.sessionId);
         return this.instantiateWorkflow(request.params.sessionId, request.params.workflowId, request.params.anchorNodeId, publish);
     }
   }
@@ -301,6 +326,7 @@ export class SessionManager {
     publish: (event: SessionEvent) => void,
     causationId?: string
   ) {
+    await this.rehydrateActors(snapshot.sessionId);
     const promptEvent = await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId: snapshot.sessionId,
@@ -314,19 +340,35 @@ export class SessionManager {
       },
       causationId
     }, publish);
+    await this.enqueueMailbox(promptEvent, publish);
+    await this.scheduleDirectMailboxTurn(snapshot, agentId, promptEvent, debugMode, publish);
+  }
+
+  private async scheduleDirectMailboxTurn(
+    snapshot: SessionSnapshot,
+    agentId: string,
+    promptEvent: SessionEvent,
+    debugMode: boolean,
+    publish: (event: SessionEvent) => void
+  ) {
+    await this.rehydrateActors(snapshot.sessionId);
+    const latest = await this.store.readSnapshot(snapshot.sessionId);
+    if (!this.canSchedule(latest, agentId)) return false;
+    const prompt = this.promptFromMailboxMessage(promptEvent);
     const role = this.resolveRole(snapshot, agentId);
     const integrationCatalog = await this.integrations.listCatalog();
     const openAI = await this.openAIConnection(debugMode);
     const job = await this.startScheduledTurn(snapshot.sessionId, agentId, publish, {
       kind: "agent-turn",
-      prompt: userText,
+      prompt,
       causationId: promptEvent.eventId
     });
     try {
+      await this.dequeueMailbox(promptEvent.eventId, snapshot.sessionId, agentId, publish);
       const events = await this.runControlledTurn(snapshot.sessionId, agentId, publish, {
         sessionId: snapshot.sessionId,
         agentId,
-        prompt: userText,
+        prompt,
         debugMode,
         roleName: role?.name,
         instructions: role?.promptTemplate,
@@ -335,17 +377,20 @@ export class SessionManager {
         apiKey: openAI?.apiKey,
         openAI,
         workflowTools: this.workflowTools(snapshot, agentId, publish),
-      mcpServers: debugMode || this.options.runtime ? [] : await this.mcpServersForRole(snapshot, agentId, role, publish),
+        mcpServers: debugMode || this.options.runtime ? [] : await this.mcpServersForRole(snapshot, agentId, role, publish),
         skills: integrationCatalog.skills,
         causationId: promptEvent.eventId
       });
       await this.appendRuntimeEvents(snapshot.sessionId, agentId, events, publish);
       await this.store.rebuildSnapshot(snapshot.sessionId);
+      await this.rehydrateActors(snapshot.sessionId);
       const error = events.find((event) => event.type === "error");
       await this.finishScheduledTurn(snapshot.sessionId, agentId, job, publish, error ? "failed" : "completed", events.length, error?.payload.message);
+      await this.drainPendingMailbox(snapshot.sessionId, agentId, publish);
     } catch (error) {
       await this.failScheduledSideEffect(snapshot.sessionId, agentId, job, publish, error, promptEvent.eventId);
     }
+    return true;
   }
 
   private async controlEvent(
@@ -356,7 +401,7 @@ export class SessionManager {
     publish: (event: SessionEvent) => void
   ) {
     if (type === "control.cancel") {
-      this.activeRuns.get(runKey(sessionId, agentId))?.abort();
+      this.actors.abortRun(sessionId, agentId);
     }
     const control = await this.appendAndPublish({
       eventId: makeEventId(),
@@ -366,7 +411,7 @@ export class SessionManager {
       type,
       payload: {}
     }, publish);
-    await this.appendAndPublish({
+    const message = await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId,
       agentId,
@@ -384,6 +429,122 @@ export class SessionManager {
     publish(appended);
     this.publish(appended, publish);
     return appended;
+  }
+
+  private async enqueueMailbox(message: SessionEvent, publish: (event: SessionEvent) => void = () => {}) {
+    const to = typeof message.payload.to === "string" ? message.payload.to : message.agentId;
+    const from = typeof message.payload.from === "string" ? message.payload.from : message.agentId;
+    if (!to) return;
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: message.sessionId,
+      agentId: to,
+      timestamp: new Date().toISOString(),
+      type: "actor.mailbox.enqueued",
+      payload: {
+        mailbox: to,
+        from,
+        messageEventId: message.eventId,
+        messageType: message.type
+      },
+      causationId: message.eventId
+    }, publish);
+  }
+
+  private async dequeueMailbox(messageEventId: string, sessionId: string, agentId: string, publish: (event: SessionEvent) => void = () => {}) {
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "actor.mailbox.dequeued",
+      payload: {
+        mailbox: agentId,
+        messageEventId
+      },
+      causationId: messageEventId
+    }, publish);
+  }
+
+  private async drainPendingMailboxes(sessionId: string, publish: (event: SessionEvent) => void = () => {}) {
+    await this.rehydrateActors(sessionId);
+    const snapshot = await this.store.readSnapshot(sessionId);
+    for (const node of snapshot.graph.nodes) {
+      await this.drainPendingMailbox(sessionId, node.id, publish);
+    }
+  }
+
+  private async drainPendingMailbox(sessionId: string, agentId: string, publish: (event: SessionEvent) => void = () => {}) {
+    for (let delivered = 0; delivered < 8; delivered += 1) {
+      await this.rehydrateActors(sessionId);
+      const snapshot = await this.store.readSnapshot(sessionId);
+      if (!this.canSchedule(snapshot, agentId)) return;
+      const actor = this.actors.actor(sessionId, agentId);
+      const mailboxItem = actor?.mailbox.inbound[0];
+      const messageEventId = mailboxItem && typeof mailboxItem.payload.messageEventId === "string" ? mailboxItem.payload.messageEventId : undefined;
+      if (!messageEventId) return;
+      const events = await this.store.readEvents(sessionId);
+      const schedulerState = this.mailboxSchedulerState(events, messageEventId);
+      if (schedulerState === "open") return;
+      if (schedulerState === "completed") {
+        await this.dequeueMailbox(messageEventId, sessionId, agentId, publish);
+        continue;
+      }
+      const message = events.find((event) => event.eventId === messageEventId);
+      if (!message) return;
+      const prompt = this.promptFromMailboxMessage(message);
+      const workflowInstanceId = typeof message.payload.workflowInstanceId === "string" ? message.payload.workflowInstanceId : undefined;
+      const workflowId = typeof message.payload.workflowId === "string" ? message.payload.workflowId : undefined;
+      if (workflowInstanceId || message.type === "handoff.created") {
+        const instance = workflowInstanceId
+          ? (await this.workflowInstancesForSession(sessionId)).find((candidate) => candidate.workflowInstanceId === workflowInstanceId)
+          : undefined;
+        try {
+          await this.runWorkflowAgent(snapshot, agentId, prompt, message.eventId, publish, {
+            workflowInstanceId,
+            workflowId: workflowId ?? instance?.workflowId,
+            callerAgentId: instance?.callerAgentId,
+            mailboxEventId: message.eventId
+          });
+        } catch (error) {
+          if (this.isScheduleBlockedError(error)) return;
+          throw error;
+        }
+      } else {
+        try {
+          await this.scheduleDirectMailboxTurn(snapshot, agentId, message, snapshot.debugMode, publish);
+        } catch (error) {
+          if (this.isScheduleBlockedError(error)) return;
+          throw error;
+        }
+      }
+    }
+  }
+
+  private promptFromMailboxMessage(message: SessionEvent) {
+    if (typeof message.payload.prompt === "string") return message.payload.prompt;
+    if (typeof message.payload.text === "string") return message.payload.text;
+    if (typeof message.payload.reason === "string") return message.payload.reason;
+    return `${message.type} ${message.eventId}`;
+  }
+
+  private isScheduleBlockedError(error: unknown) {
+    return error instanceof Error
+      && (error.message.includes("already has active or terminal scheduler state")
+        || error.message.includes("already has durable scheduler work"));
+  }
+
+  private mailboxSchedulerState(events: SessionEvent[], messageEventId: string): "open" | "completed" | "reschedule" {
+    const scheduler = SchedulerProjection.fromEvents(events[0]?.sessionId ?? "", events);
+    const scheduledJobIds = new Set(events
+      .filter((event) => event.type === "scheduler.job.created" && event.causationId === messageEventId)
+      .map((event) => String(event.payload.jobId ?? ""))
+      .filter(Boolean));
+    if (scheduledJobIds.size === 0) return "reschedule";
+    const jobs = [...scheduler.jobs.values()].filter((job) => scheduledJobIds.has(job.jobId));
+    if (jobs.some((job) => !job.terminal)) return "open";
+    if (jobs.some((job) => job.terminal?.type === "scheduler.job.completed")) return "completed";
+    return "reschedule";
   }
 
   private async withWorkspacePathLock<T>(sessionId: string, absolutePath: string, work: () => Promise<T>): Promise<T> {
@@ -530,7 +691,10 @@ export class SessionManager {
             causationId: handoff.eventId
           }, publish);
           if (edge.to !== orchestratorId) {
-            await this.runWorkflowAgent(snapshot, edge.to, transition.prompt, handoff.eventId, publish);
+            await this.enqueueMailbox(handoff, publish);
+            await this.runWorkflowAgent(snapshot, edge.to, transition.prompt, handoff.eventId, publish, {
+              mailboxEventId: handoff.eventId
+            });
             runCounts.set(edge.to, (runCounts.get(edge.to) ?? 0) + 1);
           }
         }));
@@ -567,7 +731,10 @@ export class SessionManager {
             payload: { status: snapshot.debugMode ? "waiting" : "working" },
             causationId: message.eventId
           }, publish);
-          await this.runWorkflowAgent(snapshot, edge.to, String(message.payload.prompt ?? message.payload.text), message.eventId, publish);
+          await this.enqueueMailbox(message, publish);
+          await this.runWorkflowAgent(snapshot, edge.to, String(message.payload.prompt ?? message.payload.text), message.eventId, publish, {
+            mailboxEventId: message.eventId
+          });
           runCounts.set(edge.to, (runCounts.get(edge.to) ?? 0) + 1);
         } else {
           const plan = await this.latestUninstantiatedPlan(snapshot.sessionId);
@@ -617,6 +784,7 @@ export class SessionManager {
     publish: (event: SessionEvent) => void,
     context: WorkflowRunContext = {}
   ) {
+    await this.rehydrateActors(snapshot.sessionId);
     const role = this.resolveRole(snapshot, agentId);
     const integrationCatalog = await this.integrations.listCatalog();
     const openAI = await this.openAIConnection(snapshot.debugMode);
@@ -629,6 +797,9 @@ export class SessionManager {
       causationId
     });
     try {
+      if (context.mailboxEventId) {
+        await this.dequeueMailbox(context.mailboxEventId, snapshot.sessionId, agentId, publish);
+      }
       const events = await this.runControlledTurn(snapshot.sessionId, agentId, publish, {
         sessionId: snapshot.sessionId,
         agentId,
@@ -660,8 +831,10 @@ export class SessionManager {
         causationId
       );
       await this.store.rebuildSnapshot(snapshot.sessionId);
+      await this.rehydrateActors(snapshot.sessionId);
       const error = events.find((event) => event.type === "error");
       await this.finishScheduledTurn(snapshot.sessionId, agentId, job, publish, error ? "failed" : "completed", events.length, error?.payload.message);
+      await this.drainPendingMailbox(snapshot.sessionId, agentId, publish);
     } catch (error) {
       await this.failScheduledSideEffect(snapshot.sessionId, agentId, job, publish, error, causationId);
     }
@@ -966,7 +1139,7 @@ export class SessionManager {
       if (claim.type === "workspace.conflict_detected") {
         const ownerAgentId = typeof claim.payload.ownerAgentId === "string" ? claim.payload.ownerAgentId : "another agent";
         const output = `Blocked write to ${relativePath}: file is leased by ${ownerAgentId}.`;
-        await this.appendAndPublish({
+        const sent = await this.appendAndPublish({
           eventId: makeEventId(),
           sessionId: snapshot.sessionId,
           agentId,
@@ -1413,6 +1586,7 @@ export class SessionManager {
           causationId
         }, publish);
         if (to !== orchestratorId) {
+          await this.enqueueMailbox(handoff, publish);
           await this.appendAndPublish({
             eventId: makeEventId(),
             sessionId: snapshot.sessionId,
@@ -1425,7 +1599,8 @@ export class SessionManager {
           await this.runWorkflowAgent(snapshot, to, prompt, handoff.eventId, publish, {
             workflowInstanceId,
             workflowId: spec.id,
-            callerAgentId: orchestratorId
+            callerAgentId: orchestratorId,
+            mailboxEventId: handoff.eventId
           });
           runCounts.set(to, (runCounts.get(to) ?? 0) + 1);
         }
@@ -1463,6 +1638,7 @@ export class SessionManager {
         causationId
       }, publish);
       if (to !== orchestratorId) {
+        await this.enqueueMailbox(message, publish);
         await this.appendAndPublish({
           eventId: makeEventId(),
           sessionId: snapshot.sessionId,
@@ -1475,7 +1651,8 @@ export class SessionManager {
         await this.runWorkflowAgent(snapshot, to, prompt, message.eventId, publish, {
           workflowInstanceId,
           workflowId: spec.id,
-          callerAgentId: orchestratorId
+          callerAgentId: orchestratorId,
+          mailboxEventId: message.eventId
         });
         runCounts.set(to, (runCounts.get(to) ?? 0) + 1);
       }
@@ -1544,7 +1721,7 @@ export class SessionManager {
       tools.createPlan = async (rawPlan: unknown) => {
         await this.authorizeCapability(snapshot, agentId, "plan.create", { source: "plan_create" }, publish);
         const plan = PlanSpecSchema.parse(rawPlan);
-        await this.appendAndPublish({
+        const sent = await this.appendAndPublish({
           eventId: makeEventId(),
           sessionId: snapshot.sessionId,
           agentId,
@@ -1644,7 +1821,7 @@ export class SessionManager {
           }, publish);
           return `Message not sent: ${blocker} Treat ${resolvedAgentId}'s current status as authoritative; use agent_state_inspect for current state or start a new workflow if more work is needed.`;
         }
-        await this.appendAndPublish({
+        const sent = await this.appendAndPublish({
           eventId: makeEventId(),
           sessionId: snapshot.sessionId,
           agentId,
@@ -1652,6 +1829,8 @@ export class SessionManager {
           type: "message.sent",
           payload: { from: agentId, to: resolvedAgentId, requestedTo: targetAgentId, text }
         }, publish);
+        await this.enqueueMailbox(sent, publish);
+        await this.drainPendingMailbox(snapshot.sessionId, resolvedAgentId, publish);
         return `Sent message to ${resolvedAgentId}.`;
       };
     }
@@ -1847,7 +2026,7 @@ export class SessionManager {
       .map((event) => event.agentId as string));
     for (const agentId of instance.agentIds) {
       if (stoppedAgentIds.has(agentId)) continue;
-      this.activeRuns.get(runKey(sessionId, agentId))?.abort();
+      this.actors.abortRun(sessionId, agentId);
       await this.appendAndPublish({
         eventId: makeEventId(),
         sessionId,
@@ -1921,7 +2100,7 @@ export class SessionManager {
       },
       causationId
     }, publish);
-    await this.appendAndPublish({
+    const message = await this.appendAndPublish({
       eventId: makeEventId(),
       sessionId,
       agentId: instance.callerAgentId,
@@ -1936,6 +2115,7 @@ export class SessionManager {
       },
       causationId: completed.eventId
     }, publish);
+    await this.enqueueMailbox(message, publish);
     return { status: "completed" };
   }
 
@@ -2244,12 +2424,18 @@ export class SessionManager {
 
   private canSchedule(snapshot: SessionSnapshot, agentId: string) {
     const status = snapshot.graph.nodes.find((node) => node.id === agentId)?.status ?? "idle";
-    return !["paused", "cancelled", "failed", "completed"].includes(status);
+    return this.actors.canSchedule(snapshot.sessionId, agentId, status);
   }
 
   private canEmitFrom(snapshot: SessionSnapshot, agentId: string) {
     const status = snapshot.graph.nodes.find((node) => node.id === agentId)?.status ?? "idle";
-    return !["paused", "cancelled", "failed"].includes(status);
+    return this.actors.canEmitFrom(snapshot.sessionId, agentId, status);
+  }
+
+  private async rehydrateActors(sessionId: string) {
+    const snapshot = await this.store.readSnapshot(sessionId);
+    const events = await this.store.readEvents(sessionId);
+    this.actors.rehydrate(snapshot, events);
   }
 
   private async initializeWorkspace(workspaceRoot: string, title: string) {
@@ -2298,30 +2484,17 @@ export class SessionManager {
     try {
       for (const sessionId of await this.store.listSessionIds()) {
         const events = await this.store.readEvents(sessionId);
-        const closedJobIds = new Set(events
-          .filter((event) => ["scheduler.job.completed", "scheduler.job.failed", "scheduler.job.recovered"].includes(event.type))
-          .map((event) => String(event.payload.jobId ?? ""))
+        const scheduler = SchedulerProjection.fromEvents(sessionId, events);
+        const openJobs = scheduler.openJobs();
+        const recoveringWorkflowInstances = new Set(openJobs
+          .filter((job) => job.kind === "workflow-execution")
+          .map((job) => job.workflowInstanceId ?? "")
           .filter(Boolean));
-        const openJobs = new Map<string, { created?: SessionEvent; latest: SessionEvent }>();
-        for (const event of events) {
-          if (!["scheduler.job.created", "scheduler.job.started", "scheduler.job.heartbeat"].includes(event.type)) continue;
-          const jobId = String(event.payload.jobId ?? "");
-          if (!jobId || closedJobIds.has(jobId)) continue;
-          const existing = openJobs.get(jobId);
-          openJobs.set(jobId, {
-            created: event.type === "scheduler.job.created" ? event : existing?.created,
-            latest: event
-          });
-        }
-        const recoveringWorkflowInstances = new Set([...openJobs.values()]
-          .map((record) => record.created ?? record.latest)
-          .filter((event) => event.payload.kind === "workflow-execution")
-          .map((event) => String(event.payload.workflowInstanceId ?? ""))
-          .filter(Boolean));
-        for (const [jobId, record] of openJobs) {
-          const event = record.created ?? record.latest;
-          const agentId = event.agentId ?? String(event.payload.agentId ?? "");
-          if (!agentId || this.activeRuns.has(runKey(sessionId, agentId))) continue;
+        for (const job of openJobs) {
+          const jobId = job.jobId;
+          const event = job.created ?? job.latest;
+          const agentId = job.agentId;
+          if (!agentId || this.actors.hasActiveRun(sessionId, agentId)) continue;
           const recovered = await this.appendAndPublish({
             eventId: makeEventId(),
             sessionId,
@@ -2336,13 +2509,13 @@ export class SessionManager {
             causationId: event.eventId,
             correlationId: jobId
           }, publish);
-          if (event.payload.kind === "workflow-execution") {
+          if (job.kind === "workflow-execution") {
             await this.appendDebugLog(
               sessionId,
               "warn",
               "scheduler",
               `Resuming interrupted workflow job ${jobId}.`,
-              { jobId, agentId, workflowInstanceId: event.payload.workflowInstanceId, recoveredFromEventId: event.eventId },
+              { jobId, agentId, workflowInstanceId: job.workflowInstanceId, recoveredFromEventId: event.eventId },
               publishLog,
               agentId,
               recovered.eventId
@@ -2350,7 +2523,7 @@ export class SessionManager {
             await this.resumeWorkflowExecutionFromJob(sessionId, event, recovered.eventId, publish);
             continue;
           }
-          if (recoveringWorkflowInstances.has(String(event.payload.workflowInstanceId ?? ""))) {
+          if (job.workflowInstanceId && recoveringWorkflowInstances.has(job.workflowInstanceId)) {
             await this.appendAndPublish({
               eventId: makeEventId(),
               sessionId,
@@ -2366,7 +2539,7 @@ export class SessionManager {
               "warn",
               "scheduler",
               `Recovered interrupted agent job ${jobId}; parent workflow will reschedule as needed.`,
-              { jobId, agentId, workflowInstanceId: event.payload.workflowInstanceId, recoveredFromEventId: event.eventId },
+              { jobId, agentId, workflowInstanceId: job.workflowInstanceId, recoveredFromEventId: event.eventId },
               publishLog,
               agentId,
               recovered.eventId
@@ -2435,9 +2608,10 @@ export class SessionManager {
           );
           await this.resumeWorkflowExecutionFromWaiting(sessionId, event, event.eventId, publish);
         }
-        if (openJobs.size > 0) {
+        if (openJobs.length > 0) {
           await this.store.rebuildSnapshot(sessionId);
         }
+        await this.drainPendingMailboxes(sessionId, publish);
       }
       this.recoveryComplete = true;
     } catch (error) {
@@ -2544,6 +2718,39 @@ export class SessionManager {
       details?: Record<string, unknown>;
     }
   ): Promise<ScheduledJob> {
+    if (metadata.kind === "agent-turn" || metadata.kind === "workflow-agent-turn") {
+      return this.withActorScheduleLock(sessionId, agentId, () => this.startScheduledTurnUnlocked(sessionId, agentId, publish, metadata));
+    }
+    return this.startScheduledTurnUnlocked(sessionId, agentId, publish, metadata);
+  }
+
+  private async startScheduledTurnUnlocked(
+    sessionId: string,
+    agentId: string,
+    publish: (event: SessionEvent) => void,
+    metadata: {
+      kind: string;
+      prompt: string;
+      workflowInstanceId?: string;
+      workflowId?: string;
+      callerAgentId?: string;
+      causationId?: string;
+      details?: Record<string, unknown>;
+    }
+  ): Promise<ScheduledJob> {
+    if (metadata.kind === "agent-turn" || metadata.kind === "workflow-agent-turn") {
+      await this.rehydrateActors(sessionId);
+      const snapshot = await this.store.readSnapshot(sessionId);
+      if (metadata.causationId) {
+        const causationState = this.mailboxSchedulerState(await this.store.readEvents(sessionId), metadata.causationId);
+        if (causationState === "open" || causationState === "completed") {
+          throw new Error(`Agent ${agentId} already has durable scheduler work for message ${metadata.causationId}.`);
+        }
+      }
+      if (!this.canSchedule(snapshot, agentId)) {
+        throw new Error(`Agent ${agentId} already has active or terminal scheduler state and cannot start ${metadata.kind}.`);
+      }
+    }
     const jobId = `job_${crypto.randomUUID()}`;
     const created = await this.appendAndPublish({
       eventId: makeEventId(),
@@ -2574,6 +2781,7 @@ export class SessionManager {
       causationId: created.eventId,
       correlationId: jobId
     }, publish);
+    await this.rehydrateActors(sessionId);
     const heartbeat = setInterval(() => {
       void this.appendAndPublish({
         eventId: makeEventId(),
@@ -2595,6 +2803,26 @@ export class SessionManager {
       callerAgentId: metadata.callerAgentId,
       heartbeat
     };
+  }
+
+  private async withActorScheduleLock<T>(sessionId: string, agentId: string, work: () => Promise<T>): Promise<T> {
+    const key = `${sessionId}:${agentId}`;
+    const previous = this.actorScheduleLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chained = previous.then(() => current, () => current);
+    this.actorScheduleLocks.set(key, chained);
+    await previous.catch(() => undefined);
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.actorScheduleLocks.get(key) === chained) {
+        this.actorScheduleLocks.delete(key);
+      }
+    }
   }
 
   private async finishScheduledTurn(
@@ -2628,6 +2856,7 @@ export class SessionManager {
       causationId: job.createdEventId,
       correlationId: job.jobId
     }, publish);
+    await this.rehydrateActors(sessionId);
   }
 
   private async failScheduledSideEffect(
@@ -2664,9 +2893,7 @@ export class SessionManager {
   }
 
   private async runControlledTurn(sessionId: string, agentId: string, publish: (event: SessionEvent) => void, input: Parameters<AgentRuntime["runTurn"]>[0]): Promise<SessionEvent[]> {
-    const key = runKey(sessionId, agentId);
-    const controller = new AbortController();
-    this.activeRuns.set(key, controller);
+    const controller = this.actors.startRun(sessionId, agentId);
     try {
       return await this.runtime.runTurn({
         ...input,
@@ -2698,9 +2925,7 @@ export class SessionManager {
         }
       ];
     } finally {
-      if (this.activeRuns.get(key) === controller) {
-        this.activeRuns.delete(key);
-      }
+      this.actors.finishRun(sessionId, agentId, controller);
     }
   }
 
@@ -2744,10 +2969,6 @@ function defaultTaskForRole(roleId: string, workflowId: string) {
     default:
       return `Execute the ${roleId} responsibilities in workflow ${workflowId} against the original user goal.`;
   }
-}
-
-function runKey(sessionId: string, agentId: string) {
-  return `${sessionId}:${agentId}`;
 }
 
 function unifiedDiff(relativePath: string, before: string, after: string) {

@@ -11,7 +11,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 ## UX And Product Review Follow-Ups
 
 - **P2: Improve dense workflow graph layout.** Reduce edge overlap and node crowding for multi-agent workflows, add pan/zoom or fit controls, and consider grouped workflow lanes for instantiated subgraphs.
-- **P2: Disambiguate repeated session rows.** Sidebar rows with similar prompts are difficult to distinguish; add stable creation/last-run time, completion/error status, and optional user-editable titles without changing creation-time ordering.
 
 
 ## Codex App Comparison Follow-Ups
@@ -19,6 +18,10 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 Computer Use could inspect this app, but direct Computer Use access to `com.openai.codex` was blocked by the environment. These follow-ups are based on Codex-style coding-agent features visible from the current desktop context and prior screenshots in this project thread.
 
 ## User follow-ups
+
+Crash report:
+- Investigate and fix the root cause of this crash:
+/Users/lolney/Documents/Codex/2026-05-23/let-s-plan-this-multiagent-coding/crash-reports/scrolling-orchestrator-logs-with-planner-handoff-expanded.txt
 
 Workflow graph UX improvements:
 - The graph should be zoomable and panable
@@ -90,6 +93,7 @@ Feedback from the orchestrator:
 - **2026-05-25: Make artifact actions more discoverable.** Renamed the toolbar control to Session Artifacts and surfaced copy/export/share transcript plus workspace-path actions at the top level while preserving full copy/export/share menus.
 - **2026-05-25: Improve Workspace inspector hierarchy.** Made workspace and changed-file names primary, moved full paths into secondary/copyable details, added per-file change summaries, and summarized diff headers before per-event expanded previews.
 - **2026-05-25: Preserve transcript reading position.** Added an explicit Follow Live toggle and stopped transcript search/filter changes from forcing the timeline back to the newest row.
+- **2026-05-25: Disambiguate repeated session rows.** Added status, last-activity, active/failure hints, and durable user-editable session titles to sidebar rows without changing creation-time ordering.
 
 
 
