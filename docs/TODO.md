@@ -4,7 +4,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 ## Architecture And Code Review Follow-Ups
 
-- **P2: Expand UI control and observability for autonomous workflows.** Add a first-class workflow/run inspector, criteria checklist, diff/artifact browser, per-agent control panel, reconnect/resume UI.
 ## Codex App Comparison Follow-Ups
 
 Computer Use could inspect this app, but direct Computer Use access to `com.openai.codex` was blocked by the environment. These follow-ups are based on Codex-style coding-agent features visible from the current desktop context and prior screenshots in this project thread.
@@ -72,6 +71,7 @@ https://developers.openai.com/api/docs/guides/tools-computer-use?computer_use_ac
 - **2026-05-25: Add orchestrator event inspection tools.** Added `agent_events_list` and `agent_event_inspect` so the orchestrator can inspect another agent's transcript events, tool calls, command outputs, diffs, and full event payloads.
 - **2026-05-25: Add automated Swift projection coverage.** Added a SwiftPM test target covering transcript filtering, timeline tool pairing, event-log export payloads, and session summary status projection; wired it into `npm test`.
 - **2026-05-25: Add retry UI for recovered scheduler jobs.** Added a `retryRecoveredJob` daemon protocol method using durable scheduler job metadata, plus a Debug-panel recovered-jobs surface with retry controls.
+- **2026-05-26: Expand workflow observability controls.** Added an explicit Debug-panel scheduler run inspector derived from durable scheduler job events, including run status, prompts, terminal reasons, workflow identifiers, bounded debug log rendering, and Swift projection coverage. This completes the broader observability TODO alongside the existing Plan criteria checklist, Workspace diff/artifact browser, per-agent controls, reconnect/resume actions, and recovered-job retry controls.
 
 
 

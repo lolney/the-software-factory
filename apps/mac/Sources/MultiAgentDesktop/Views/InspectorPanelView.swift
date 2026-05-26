@@ -861,73 +861,216 @@ struct DebugLogPanelView: View {
                 Text("Session Debug")
                     .font(.headline)
                 Spacer()
-                Text("\(store.debugLogs.count)")
+                Text("\(store.schedulerRuns.count) runs / \(store.debugLogs.count) logs")
                     .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                    .font(.caption)
             }
             .padding()
 
-            if !store.recoveredSchedulerJobs.isEmpty {
-                recoveredJobsView
+            if store.schedulerRuns.isEmpty && store.recoveredSchedulerJobs.isEmpty && store.debugLogs.isEmpty {
+                emptyDebugState
                     .padding(.horizontal)
-                    .padding(.bottom, 8)
-            }
-
-            if store.debugLogs.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("No debug logs yet", systemImage: "text.badge.magnifyingglass")
-                        .font(.callout.weight(.semibold))
-                    Text("Logs stream here after the session emits events or errors.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(.quaternary)
-                }
-                .padding(.horizontal)
-                .padding(.top, 4)
+                    .padding(.top, 4)
                 Spacer(minLength: 0)
             } else {
-                List(store.debugLogs) { entry in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 8) {
-                            Text(entry.level.rawValue.uppercased())
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(color(for: entry.level))
-                                .frame(width: 42, alignment: .leading)
-                            Text(entry.source)
-                                .font(.caption.weight(.semibold))
-                            if let agentId = entry.agentId {
-                                Text(agentId)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Text(format(timestamp: entry.timestamp))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if !store.schedulerRuns.isEmpty {
+                            schedulerRunsView
                         }
-                        Text(entry.message)
-                            .font(.callout)
-                            .textSelection(.enabled)
-                        if let eventType = entry.payload["eventType"]?.stringValue {
-                            Text(eventType)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        if !store.recoveredSchedulerJobs.isEmpty {
+                            recoveredJobsView
+                        }
+                        if store.debugLogs.isEmpty {
+                            emptyLogState
+                        } else {
+                            debugLogList
                         }
                     }
-                    .padding(.vertical, 4)
+                    .padding(.horizontal)
+                    .padding(.bottom)
                 }
-                .listStyle(.inset)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var emptyDebugState: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("No debug logs yet", systemImage: "text.badge.magnifyingglass")
+                .font(.callout.weight(.semibold))
+            Text("Scheduler runs and debug logs will appear here after the session starts work or emits an error.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.quaternary)
+        }
+    }
+
+    private var emptyLogState: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("No debug logs yet", systemImage: "text.badge.magnifyingglass")
+                .font(.callout.weight(.semibold))
+            Text("Scheduler runs are visible above. Debug logs will appear here after the session emits diagnostics or errors.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.quaternary)
+        }
+    }
+
+    private var schedulerRunsView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Scheduler Runs", systemImage: "list.bullet.rectangle")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(store.schedulerRuns.prefix(12)) { run in
+                schedulerRunRow(run)
+            }
+            if store.schedulerRuns.count > 12 {
+                Text("\(store.schedulerRuns.count - 12) older run\(store.schedulerRuns.count - 12 == 1 ? "" : "s") hidden.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.quaternary)
+        }
+    }
+
+    private func schedulerRunRow(_ run: SchedulerRunSummary) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(run.kind)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Text(run.agentId)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 6)
+                statusPill(run.status)
+                if let timestamp = run.updatedAt {
+                    Text(timestamp, style: .time)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                }
+            }
+            if !run.prompt.isEmpty {
+                Text(run.prompt)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            if let message = run.message, !message.isEmpty {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(messageColor(for: run.status))
+                    .lineLimit(2)
+            }
+            HStack(spacing: 6) {
+                Text(run.jobId)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+                if let workflowInstanceId = run.workflowInstanceId {
+                    Text(workflowInstanceId)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                } else if let workflowId = run.workflowId {
+                    Text(workflowId)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if let eventCount = run.eventCount {
+                    Text("\(eventCount) event\(eventCount == 1 ? "" : "s")")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func statusPill(_ status: String) -> some View {
+        Text(status)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(statusColor(status))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(statusColor(status).opacity(0.12), in: Capsule())
+    }
+
+    private var debugLogList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Debug Logs", systemImage: "text.alignleft")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(store.debugLogs.prefix(200)) { entry in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text(entry.level.rawValue.uppercased())
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(color(for: entry.level))
+                            .frame(width: 42, alignment: .leading)
+                        Text(entry.source)
+                            .font(.caption.weight(.semibold))
+                        if let agentId = entry.agentId {
+                            Text(agentId)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text(format(timestamp: entry.timestamp))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Text(entry.message)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                    if let eventType = entry.payload["eventType"]?.stringValue {
+                        Text(eventType)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(8)
+                .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 6))
+            }
+            if store.debugLogs.count > 200 {
+                Text("\(store.debugLogs.count - 200) older log\(store.debugLogs.count - 200 == 1 ? "" : "s") hidden. Export Session Artifacts for the complete debug log.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.quaternary)
+        }
     }
 
     private var recoveredJobsView: some View {
@@ -979,6 +1122,24 @@ struct DebugLogPanelView: View {
             return "Auto-resumed"
         }
         return job.retried ? "Retry requested" : "Needs retry"
+    }
+
+    private func statusColor(_ status: String) -> Color {
+        switch status {
+        case "completed": .green
+        case "failed": .red
+        case "recovered", "retry requested": .orange
+        case "running": .blue
+        default: .secondary
+        }
+    }
+
+    private func messageColor(for status: String) -> Color {
+        switch status {
+        case "failed": .red
+        case "recovered", "retry requested": .orange
+        default: .secondary
+        }
     }
 
     private func color(for level: DebugLogLevel) -> Color {

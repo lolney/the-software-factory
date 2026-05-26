@@ -216,6 +216,68 @@ final class SessionStore {
         .sorted { $0.recoveredAt > $1.recoveredAt }
     }
 
+    var schedulerRuns: [SchedulerRunSummary] {
+        var runs: [String: SchedulerRunSummary] = [:]
+        for item in transcript {
+            guard item.type.hasPrefix("scheduler.job."),
+                  let jobId = item.payload["jobId"]?.stringValue else { continue }
+            var run = runs[jobId] ?? SchedulerRunSummary(
+                jobId: jobId,
+                agentId: item.agentId ?? item.payload["agentId"]?.stringValue ?? "agent",
+                kind: item.payload["kind"]?.stringValue ?? "job",
+                status: "created",
+                prompt: item.payload["prompt"]?.stringValue ?? "",
+                createdAt: nil,
+                startedAt: nil,
+                finishedAt: nil,
+                updatedAt: nil,
+                workflowId: nil,
+                workflowInstanceId: nil,
+                message: nil,
+                eventCount: nil
+            )
+            run.agentId = item.agentId ?? item.payload["agentId"]?.stringValue ?? run.agentId
+            run.kind = item.payload["kind"]?.stringValue ?? run.kind
+            run.workflowId = item.payload["workflowId"]?.stringValue ?? run.workflowId
+            run.workflowInstanceId = item.payload["workflowInstanceId"]?.stringValue ?? run.workflowInstanceId
+            if let prompt = item.payload["prompt"]?.stringValue, !prompt.isEmpty {
+                run.prompt = prompt
+            }
+            switch item.type {
+            case "scheduler.job.created":
+                run.status = run.status == "created" ? "created" : run.status
+                run.createdAt = run.createdAt ?? item.timestamp
+            case "scheduler.job.started", "scheduler.job.heartbeat":
+                if !["completed", "failed", "recovered", "retry requested"].contains(run.status) {
+                    run.status = "running"
+                }
+                run.startedAt = run.startedAt ?? item.timestamp
+            case "scheduler.job.completed":
+                run.status = "completed"
+                run.finishedAt = item.timestamp
+            case "scheduler.job.failed":
+                run.status = "failed"
+                run.finishedAt = item.timestamp
+            case "scheduler.job.recovered":
+                run.status = "recovered"
+                run.finishedAt = item.timestamp
+            case "scheduler.job.retry_requested":
+                run.status = "retry requested"
+            default:
+                break
+            }
+            run.message = item.payload["message"]?.stringValue ?? item.payload["reason"]?.stringValue ?? run.message
+            run.eventCount = item.payload["eventCount"]?.numberValue.map(Int.init) ?? run.eventCount
+            if run.updatedAt == nil || item.timestamp > (run.updatedAt ?? .distantPast) {
+                run.updatedAt = item.timestamp
+            }
+            runs[jobId] = run
+        }
+        return runs.values.sorted { left, right in
+            (left.updatedAt ?? .distantPast) > (right.updatedAt ?? .distantPast)
+        }
+    }
+
     var isTranscriptFiltered: Bool {
         selectedAgentId != nil || !transcriptSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }

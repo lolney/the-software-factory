@@ -238,6 +238,24 @@ struct RecoveredSchedulerJob: Identifiable, Hashable {
     var id: String { jobId }
 }
 
+struct SchedulerRunSummary: Identifiable, Hashable {
+    var jobId: String
+    var agentId: String
+    var kind: String
+    var status: String
+    var prompt: String
+    var createdAt: Date?
+    var startedAt: Date?
+    var finishedAt: Date?
+    var updatedAt: Date?
+    var workflowId: String?
+    var workflowInstanceId: String?
+    var message: String?
+    var eventCount: Int?
+
+    var id: String { jobId }
+}
+
 enum DebugLogLevel: String, Codable, CaseIterable {
     case debug
     case info

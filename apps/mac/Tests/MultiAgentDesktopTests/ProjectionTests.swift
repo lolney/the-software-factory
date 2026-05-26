@@ -103,12 +103,142 @@ final class ProjectionTests: XCTestCase {
         XCTAssertEqual(projection.failureCount, 0)
     }
 
+    func testSchedulerRunProjectionCombinesLifecycleEvents() throws {
+        let store = SessionStore()
+        store.transcript = [
+            item(
+                id: "created",
+                agentId: "implementor",
+                type: "scheduler.job.created",
+                text: "created",
+                timestamp: Date(timeIntervalSince1970: 10),
+                payload: [
+                    "jobId": .string("job-1"),
+                    "agentId": .string("implementor"),
+                    "kind": .string("workflow-agent-turn"),
+                    "prompt": .string("Build the CLI"),
+                    "workflowInstanceId": .string("workflow-1")
+                ]
+            ),
+            item(
+                id: "started",
+                agentId: "implementor",
+                type: "scheduler.job.started",
+                text: "started",
+                timestamp: Date(timeIntervalSince1970: 20),
+                payload: ["jobId": .string("job-1")]
+            ),
+            item(
+                id: "completed",
+                agentId: "implementor",
+                type: "scheduler.job.completed",
+                text: "completed",
+                timestamp: Date(timeIntervalSince1970: 30),
+                payload: ["jobId": .string("job-1"), "eventCount": .number(7)]
+            )
+        ]
+
+        let run = try XCTUnwrap(store.schedulerRuns.first)
+
+        XCTAssertEqual(run.jobId, "job-1")
+        XCTAssertEqual(run.agentId, "implementor")
+        XCTAssertEqual(run.kind, "workflow-agent-turn")
+        XCTAssertEqual(run.status, "completed")
+        XCTAssertEqual(run.prompt, "Build the CLI")
+        XCTAssertEqual(run.workflowInstanceId, "workflow-1")
+        XCTAssertEqual(run.eventCount, 7)
+        XCTAssertEqual(run.startedAt, Date(timeIntervalSince1970: 20))
+        XCTAssertEqual(run.finishedAt, Date(timeIntervalSince1970: 30))
+        XCTAssertEqual(run.updatedAt, Date(timeIntervalSince1970: 30))
+    }
+
+    func testSchedulerRunProjectionPreservesFailureAndRetryReasons() throws {
+        let store = SessionStore()
+        store.transcript = [
+            item(
+                id: "failed-created",
+                agentId: "qa",
+                type: "scheduler.job.created",
+                text: "created",
+                timestamp: Date(timeIntervalSince1970: 10),
+                payload: ["jobId": .string("job-failed"), "kind": .string("workflow-agent-turn"), "prompt": .string("Run checks")]
+            ),
+            item(
+                id: "failed-started",
+                agentId: "qa",
+                type: "scheduler.job.started",
+                text: "started",
+                timestamp: Date(timeIntervalSince1970: 20),
+                payload: ["jobId": .string("job-failed")]
+            ),
+            item(
+                id: "failed-terminal",
+                agentId: "qa",
+                type: "scheduler.job.failed",
+                text: "failed",
+                timestamp: Date(timeIntervalSince1970: 30),
+                payload: ["jobId": .string("job-failed"), "message": .string("pytest exited 1")]
+            ),
+            item(
+                id: "retry-created",
+                agentId: "implementor",
+                type: "scheduler.job.created",
+                text: "created",
+                timestamp: Date(timeIntervalSince1970: 40),
+                payload: ["jobId": .string("job-retry"), "kind": .string("agent-turn"), "prompt": .string("Implement")]
+            ),
+            item(
+                id: "retry-recovered",
+                agentId: "implementor",
+                type: "scheduler.job.recovered",
+                text: "recovered",
+                timestamp: Date(timeIntervalSince1970: 50),
+                payload: ["jobId": .string("job-retry"), "reason": .string("daemon restarted")]
+            ),
+            item(
+                id: "retry-requested",
+                agentId: "implementor",
+                type: "scheduler.job.retry_requested",
+                text: "retry",
+                timestamp: Date(timeIntervalSince1970: 60),
+                payload: ["jobId": .string("job-retry"), "reason": .string("user retried")]
+            )
+        ]
+
+        let retry = try XCTUnwrap(store.schedulerRuns.first)
+        let failed = try XCTUnwrap(store.schedulerRuns.dropFirst().first)
+
+        XCTAssertEqual(retry.jobId, "job-retry")
+        XCTAssertEqual(retry.status, "retry requested")
+        XCTAssertEqual(retry.message, "user retried")
+        XCTAssertEqual(retry.updatedAt, Date(timeIntervalSince1970: 60))
+        XCTAssertEqual(failed.jobId, "job-failed")
+        XCTAssertEqual(failed.status, "failed")
+        XCTAssertEqual(failed.message, "pytest exited 1")
+    }
+
+    func testSchedulerRunProjectionDoesNotDowngradeTerminalStatusOnLateHeartbeat() throws {
+        let store = SessionStore()
+        store.transcript = [
+            item(id: "created", agentId: "qa", type: "scheduler.job.created", text: "created", timestamp: Date(timeIntervalSince1970: 10), payload: ["jobId": .string("job-1")]),
+            item(id: "failed", agentId: "qa", type: "scheduler.job.failed", text: "failed", timestamp: Date(timeIntervalSince1970: 20), payload: ["jobId": .string("job-1"), "message": .string("timed out")]),
+            item(id: "heartbeat", agentId: "qa", type: "scheduler.job.heartbeat", text: "heartbeat", timestamp: Date(timeIntervalSince1970: 30), payload: ["jobId": .string("job-1")])
+        ]
+
+        let run = try XCTUnwrap(store.schedulerRuns.first)
+
+        XCTAssertEqual(run.status, "failed")
+        XCTAssertEqual(run.message, "timed out")
+        XCTAssertEqual(run.updatedAt, Date(timeIntervalSince1970: 30))
+    }
+
     private func item(
         id: String,
         sessionId: String = "session-1",
         agentId: String?,
         type: String,
         text: String,
+        timestamp: Date = Date(timeIntervalSince1970: 0),
         payload: [String: JSONValue] = [:],
         causationId: String? = nil
     ) -> TranscriptItem {
@@ -120,7 +250,7 @@ final class ProjectionTests: XCTestCase {
             recipient: nil,
             type: type,
             text: text,
-            timestamp: Date(timeIntervalSince1970: 0),
+            timestamp: timestamp,
             rawTimestamp: "2026-05-25T00:00:00.000Z",
             payload: payload,
             causationId: causationId,
