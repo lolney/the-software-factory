@@ -264,9 +264,7 @@ private struct MessageRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             TimelineHeader(item: item, isFinalOutput: isFinalOutput)
-            Text(item.text)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+            BoundedTextBlock(text: item.text, font: .body, limit: 8_000)
         }
         .padding(10)
         .frame(maxWidth: 560, alignment: .leading)
@@ -275,6 +273,42 @@ private struct MessageRow: View {
             Rectangle()
                 .fill(color)
                 .frame(width: 3)
+        }
+    }
+}
+
+private struct BoundedTextBlock: View {
+    let text: String
+    let font: Font
+    let limit: Int
+
+    private var preview: String {
+        text.count > limit ? String(text.prefix(limit)) : text
+    }
+
+    private var omitted: Int {
+        max(0, text.count - limit)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(preview)
+                .font(font)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            if omitted > 0 {
+                HStack(spacing: 8) {
+                    Text("\(omitted) more characters omitted from inline preview")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Button("Copy Full Text") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(text, forType: .string)
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                }
+            }
         }
     }
 }
@@ -913,6 +947,9 @@ private func makeTimelineItems(from transcript: [TranscriptItem]) -> [TimelineIt
     let finalOutputId = finalOrchestratorOutputId(in: transcript)
 
     for event in transcript {
+        if event.type == "client.ack" {
+            continue
+        }
         if event.type == "agent.tool_call", let callId = event.payload["callId"]?.stringValue {
             pendingToolCalls[callId] = (items.count, event)
             items.append(.tool(call: event, result: nil))
@@ -956,6 +993,7 @@ private func isMessageEvent(_ item: TranscriptItem) -> Bool {
 }
 
 private func diffPreview(_ diff: String, limit: Int) -> (lines: [String], omitted: Int) {
+    let maxLineLength = 1_600
     var lines: [String] = []
     var current = ""
     var omitted = 0
@@ -969,7 +1007,11 @@ private func diffPreview(_ diff: String, limit: Int) -> (lines: [String], omitte
             }
             current = ""
         } else if lines.count < limit {
-            current.append(character)
+            if current.count < maxLineLength {
+                current.append(character)
+            } else {
+                omitted += 1
+            }
         }
     }
     if !current.isEmpty || diff.last == "\n" {

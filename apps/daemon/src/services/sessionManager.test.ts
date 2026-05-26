@@ -158,7 +158,9 @@ describe("SessionManager deterministic debug sessions", () => {
         runtime: {
           async runTurn(input) {
             if (input.agentId === "orchestrator") {
-              await input.workflowTools?.startWorkflow?.("implementor-reviewer");
+              if (!input.prompt.includes("Workflow implementor-reviewer completed")) {
+                await input.workflowTools?.startWorkflow?.("implementor-reviewer");
+              }
             }
             if (input.agentId.includes("implementor")) {
               implementorRuns += 1;
@@ -1459,16 +1461,28 @@ describe("SessionManager deterministic debug sessions", () => {
       releaseImplementor = resolve;
     });
     let implementorRuns = 0;
+    let orchestratorRuns = 0;
     let manager: SessionManager | undefined;
     let sessionId: string | undefined;
     try {
       manager = new SessionManager({
         sessionsRoot: root,
-        runtime: {
-          async runTurn(input) {
-            if (input.agentId === "orchestrator") {
-              const started = await input.workflowTools?.startWorkflow?.("implementor-reviewer");
-              return [{
+          runtime: {
+            async runTurn(input) {
+              if (input.agentId === "orchestrator") {
+                orchestratorRuns += 1;
+                if (input.prompt.includes("Workflow implementor-reviewer completed")) {
+                  return [{
+                    eventId: `evt_${crypto.randomUUID()}`,
+                    sessionId: input.sessionId,
+                    agentId: input.agentId,
+                    timestamp: new Date().toISOString(),
+                    type: "agent.message",
+                    payload: { text: "workflow completion observed" }
+                  }];
+                }
+                const started = await input.workflowTools?.startWorkflow?.("implementor-reviewer");
+                return [{
                 eventId: `evt_${crypto.randomUUID()}`,
                 sessionId: input.sessionId,
                 agentId: input.agentId,
@@ -1533,6 +1547,8 @@ describe("SessionManager deterministic debug sessions", () => {
       );
       const settledEvents = await waitForSchedulerIdle(manager, snapshot.sessionId);
       expect(settledEvents.some((event) => event.type === "scheduler.job.completed" && event.payload.kind === "workflow-execution")).toBe(true);
+      expect(orchestratorRuns).toBeGreaterThanOrEqual(2);
+      expect(settledEvents.some((event) => event.type === "agent.message" && event.agentId === "orchestrator" && event.payload.text === "workflow completion observed")).toBe(true);
     } finally {
       releaseImplementor();
       if (manager && sessionId) {
@@ -1659,6 +1675,80 @@ describe("SessionManager deterministic debug sessions", () => {
       expect(replay.events.some((event) => event.type === "message.sent" && event.payload.to === "planner" && event.payload.text === "late follow-up")).toBe(false);
       expect(replay.events.some((event) => event.type === "error" && String(event.payload.message).includes("cannot receive messages while completed"))).toBe(false);
       expect(replay.events.some((event) => event.type === "scheduler.job.failed" && String(event.payload.message).includes("cannot receive messages while completed"))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("lets the orchestrator inspect agent event summaries and full event payloads", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            if (input.agentId === "orchestrator" && input.prompt === "inspect implementor events") {
+              const listed = await input.workflowTools?.listAgentEvents?.("implementor", 20) as { events: Array<{ eventId: string; type: string; diffPreview?: string }> };
+              const touched = listed.events.find((event) => event.type === "workspace.file_touched");
+              const inspected = touched
+                ? await input.workflowTools?.listAgentEvents?.("implementor", 20, touched.eventId) as { inspectedEvent?: { payload?: { diff?: string } } }
+                : undefined;
+              return [{
+                eventId: `evt_${crypto.randomUUID()}`,
+                sessionId: input.sessionId,
+                agentId: input.agentId,
+                timestamp: new Date().toISOString(),
+                type: "agent.message",
+                payload: { text: JSON.stringify({ summaryCount: listed.events.length, diff: inspected?.inspectedEvent?.payload?.diff }) }
+              }];
+            }
+            return [{
+              eventId: `evt_${crypto.randomUUID()}`,
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { text: "idle" }
+            }];
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_event_inspection_create",
+        method: "createSession",
+        params: {
+          prompt: "setup inspection",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      const store = new EventStore(root);
+      const diff = "--- a/report.txt\n+++ b/report.txt\n@@\n-old\n+new\n";
+      const touchedId = makeEventId();
+      await store.append({
+        eventId: touchedId,
+        sessionId: snapshot.sessionId,
+        agentId: "implementor",
+        timestamp: new Date().toISOString(),
+        type: "workspace.file_touched",
+        payload: { path: "report.txt", diff }
+      });
+      await store.rebuildSnapshot(snapshot.sessionId);
+
+      await manager.handle({
+        id: "req_event_inspection",
+        method: "sendMessage",
+        params: { sessionId: snapshot.sessionId, text: "inspect implementor events" }
+      });
+      const replay = await manager.handle({
+        id: "req_event_inspection_replay",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: Array<{ type: string; agentId?: string; payload: Record<string, unknown> }> };
+      const message = [...replay.events].reverse().find((event) => event.type === "agent.message" && event.agentId === "orchestrator");
+      const output = JSON.parse(String(message?.payload.text)) as { diff?: string };
+      expect(output.diff).toBe(diff);
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }

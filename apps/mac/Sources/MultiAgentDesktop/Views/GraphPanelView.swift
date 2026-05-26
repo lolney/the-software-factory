@@ -91,6 +91,7 @@ struct GraphPanelView: View {
 
                 ForEach(graph.nodes) { node in
                     if let point = transformedPositions[node.id] {
+                        let size = scaledNodeSize
                         Button {
                             store.selectAgent(node.id)
                         } label: {
@@ -100,7 +101,7 @@ struct GraphPanelView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(accessibilityLabel(for: node))
-                        .frame(width: nodeSize.width, height: nodeSize.height)
+                        .frame(width: size.width, height: size.height)
                         .position(point)
                     }
                 }
@@ -176,14 +177,15 @@ struct GraphPanelView: View {
 
     private func drawEdges(context: inout GraphicsContext, size: CGSize, layout: GraphLayout) {
         var endpointCounts: [String: Int] = [:]
+        let visibleNodeSize = scaledNodeSize
         for edge in graph.edges {
             guard let startCenter = layout.positions[edge.from],
                   let endCenter = layout.positions[edge.to] else { continue }
-            let startRect = nodeRect(center: startCenter)
-            let endRect = nodeRect(center: endCenter)
+            let startRect = nodeRect(center: transform(startCenter, contentSize: layout.contentSize, in: size), size: visibleNodeSize)
+            let endRect = nodeRect(center: transform(endCenter, contentSize: layout.contentSize, in: size), size: visibleNodeSize)
             let endpoints = edgeEndpoints(from: startRect, to: endRect)
-            let start = transform(endpoints.start, contentSize: layout.contentSize, in: size)
-            let end = transform(endpoints.end, contentSize: layout.contentSize, in: size)
+            let start = endpoints.start
+            let end = endpoints.end
             var path = Path()
             path.move(to: start)
             path.addLine(to: end)
@@ -197,10 +199,11 @@ struct GraphPanelView: View {
     }
 
     private func drawNodes(context: inout GraphicsContext, size: CGSize, layout: GraphLayout) {
+        let visibleNodeSize = scaledNodeSize
         for node in graph.nodes {
             guard let point = layout.positions[node.id] else { continue }
             let center = transform(point, contentSize: layout.contentSize, in: size)
-            let rect = CGRect(x: center.x - nodeSize.width / 2, y: center.y - nodeSize.height / 2, width: nodeSize.width, height: nodeSize.height)
+            let rect = nodeRect(center: center, size: visibleNodeSize)
             let roleColor = Color(hex: node.colorHex)
             let stateColor = statusColor(node.status)
             context.fill(Path(roundedRect: rect, cornerRadius: 8), with: .color(roleColor.opacity(0.14)))
@@ -244,8 +247,12 @@ struct GraphPanelView: View {
         )
     }
 
-    private func nodeRect(center: CGPoint) -> CGRect {
-        CGRect(x: center.x - nodeSize.width / 2, y: center.y - nodeSize.height / 2, width: nodeSize.width, height: nodeSize.height)
+    private var scaledNodeSize: CGSize {
+        CGSize(width: nodeSize.width * zoom, height: nodeSize.height * zoom)
+    }
+
+    private func nodeRect(center: CGPoint, size: CGSize) -> CGRect {
+        CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
     }
 
     private func edgeEndpoints(from startRect: CGRect, to endRect: CGRect) -> (start: CGPoint, end: CGPoint) {

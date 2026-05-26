@@ -48,7 +48,7 @@ interface WorkflowExecutionRequest {
 
 type WorkflowCompletionState =
   | { status: "closed" }
-  | { status: "completed" }
+  | { status: "completed"; callerAgentId: string }
   | { status: "waiting"; workflowId: string; callerAgentId: string; pendingAgentIds: string[]; pendingCriteria: string[] };
 
 export class SessionManager {
@@ -1528,6 +1528,9 @@ export class SessionManager {
         pendingAgentIds: state.pendingAgentIds,
         pendingCriteria: state.pendingCriteria
       } : undefined);
+      if (state.status === "completed" && state.callerAgentId) {
+        await this.drainPendingMailbox(request.sessionId, state.callerAgentId, publish);
+      }
     } catch (error) {
       try {
         await this.failScheduledSideEffect(request.sessionId, request.workflowInstanceId, job, publish, error, request.causationId);
@@ -1794,6 +1797,29 @@ export class SessionManager {
         return result.stopped ? `Stopped agent ${resolvedAgentId}.` : `Agent ${resolvedAgentId} stop blocked: ${result.reason}.`;
       };
       tools.inspectAgents = async () => (await this.store.readSnapshot(snapshot.sessionId)).graph;
+      tools.listAgentEvents = async (targetAgentId?: string, limit = 30, inspectEventId?: string) => {
+        const latest = await this.store.readSnapshot(snapshot.sessionId);
+        const resolvedAgentId = targetAgentId ? this.resolveAgentTarget(latest, targetAgentId) ?? targetAgentId : undefined;
+        const boundedLimit = Math.max(1, Math.min(100, Math.floor(limit || 30)));
+        const events = await this.store.readEvents(snapshot.sessionId);
+        const summaries = events
+          .filter((event) => !resolvedAgentId || event.agentId === resolvedAgentId || event.payload.from === resolvedAgentId || event.payload.to === resolvedAgentId)
+          .slice(-boundedLimit)
+          .map((event) => this.eventSummary(event));
+        const inspectedEvent = inspectEventId ? events.find((candidate) => candidate.eventId === inspectEventId) : undefined;
+        if (inspectEventId && !inspectedEvent) {
+          throw new Error(`Unknown event ${inspectEventId} in session ${snapshot.sessionId}.`);
+        }
+        return {
+          events: summaries,
+          inspectedEvent
+        };
+      };
+      tools.inspectEvent = async (eventId: string) => {
+        const event = (await this.store.readEvents(snapshot.sessionId)).find((candidate) => candidate.eventId === eventId);
+        if (!event) throw new Error(`Unknown event ${eventId} in session ${snapshot.sessionId}. Use agent_events_list first.`);
+        return event;
+      };
       tools.readWorkspaceFile = async (relativePath: string) => this.readWorkspacePath(snapshot, agentId, relativePath, publish);
       tools.sendAgentMessage = async (targetAgentId: string, text: string) => {
         const latest = await this.store.readSnapshot(snapshot.sessionId);
@@ -1851,6 +1877,28 @@ export class SessionManager {
       return result.stopped ? `Stopped ${agentId}.` : `Stop blocked for ${agentId}: ${result.reason}.`;
     };
     return tools;
+  }
+
+  private eventSummary(event: SessionEvent) {
+    const payload = event.payload ?? {};
+    return {
+      eventId: event.eventId,
+      agentId: event.agentId,
+      timestamp: event.timestamp,
+      type: event.type,
+      from: payload.from,
+      to: payload.to,
+      text: truncateForTool(payload.text),
+      message: truncateForTool(payload.message),
+      toolName: payload.toolName,
+      callId: payload.callId,
+      path: payload.path,
+      exitCode: payload.exitCode,
+      outputPreview: truncateForTool(payload.output),
+      diffPreview: truncateForTool(payload.diff),
+      causationId: event.causationId,
+      correlationId: event.correlationId
+    };
   }
 
   private async stopCurrentAgent(
@@ -2115,8 +2163,23 @@ export class SessionManager {
       },
       causationId: completed.eventId
     }, publish);
+    const snapshot = await this.store.readSnapshot(sessionId);
+    const callerStatus = snapshot.graph.nodes.find((node) => node.id === instance.callerAgentId)?.status;
+    if (callerStatus === "completed") {
+      await this.appendAndPublish({
+        eventId: makeEventId(),
+        sessionId,
+        agentId: instance.callerAgentId,
+        timestamp: new Date().toISOString(),
+        type: "agent.status",
+        payload: { status: "waiting", reason: "child workflow completed" },
+        causationId: message.eventId
+      }, publish);
+    }
     await this.enqueueMailbox(message, publish);
-    return { status: "completed" };
+    await this.store.rebuildSnapshot(sessionId);
+    await this.drainPendingMailbox(sessionId, instance.callerAgentId, publish);
+    return { status: "completed", callerAgentId: instance.callerAgentId };
   }
 
   private canHandoffFrom(
@@ -3154,6 +3217,11 @@ async function listDirectoryTree(directoryPath: string, workspaceRoot: string, d
 
 function truncateForToolResult(text: string, maxLength: number) {
   return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function truncateForTool(value: unknown, maxLength = 900) {
+  if (typeof value !== "string") return undefined;
+  return truncateForToolResult(value, maxLength);
 }
 
 function isNegativeCompletion(reason: string) {

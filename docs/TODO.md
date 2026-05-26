@@ -33,11 +33,6 @@ UI-QA role
 https://developers.openai.com/api/docs/guides/tools-computer-use?computer_use_action_handlers=playwright#option-1-run-the-built-in-computer-use-loop
 - Let's test this out with a UI development task., making sure the UI-QA agent provides useful feedback
 
-Feedback from the orchestrator:
-- "However, the implementation/review/QA agents were already in a completed state when I inspected the graph, and this environment did not provide me a way to directly run shell commands or tests myself."
-- The orchestrator should be able to list events from any agent and inspect the details on those events (including seeing commands and their output)
-
-
 ## Completed Non-Controversial Items
 
 - **2026-05-25: Add archived sessions.** Added durable `session.archived`/`session.restored` events, an Archived Sessions destination, restore actions, read-only archived sessions, and daemon tests proving logs are preserved.
@@ -82,6 +77,7 @@ Feedback from the orchestrator:
 - **2026-05-25: Disambiguate repeated session rows.** Added status, last-activity, active/failure hints, and durable user-editable session titles to sidebar rows without changing creation-time ordering.
 - **2026-05-25: Reduce expanded transcript hang risk.** Investigated the scrolling hang stackshot and capped inline expanded prompt/diff payload rendering so large planner handoff rows no longer force SwiftUI to lay out unbounded text inside the lazy transcript stack.
 - **2026-05-25: Improve workflow graph navigation and layout.** Added graph pan/zoom/reset controls, background deselection, more distinct status styling, non-overlapping grid placement, edge routing to node boundaries, arrowheads, and endpoint dots for live workflow graphs.
+- **2026-05-25: Add orchestrator event inspection tools.** Added `agent_events_list` and `agent_event_inspect` so the orchestrator can inspect another agent's transcript events, tool calls, command outputs, diffs, and full event payloads.
 
 
 

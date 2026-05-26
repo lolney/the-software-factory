@@ -30,6 +30,8 @@ export interface AgentTurnInput {
     stopAgent?: (agentId: string, reason: string, artifact?: unknown) => Promise<string>;
     stopSelf?: (reason: string, artifact?: unknown, completedCriteria?: string[]) => Promise<string>;
     inspectAgents?: () => unknown | Promise<unknown>;
+    listAgentEvents?: (agentId?: string, limit?: number, inspectEventId?: string) => unknown | Promise<unknown>;
+    inspectEvent?: (eventId: string) => unknown | Promise<unknown>;
     readWorkspaceFile?: (relativePath: string) => Promise<string>;
     writeWorkspaceFile?: (relativePath: string, content: string) => Promise<string>;
     runWorkspaceCommand?: (command: string, args?: string[], cwd?: string) => Promise<string>;
@@ -142,6 +144,22 @@ export class OpenAIAgentRuntime implements AgentRuntime {
         execute: async () => JSON.stringify(await input.workflowTools?.inspectAgents?.() ?? {})
       }));
     }
+    if (input.workflowTools?.listAgentEvents) {
+      tools.push(tool({
+        name: "agent_events_list",
+        description: "List recent transcript/session events, optionally scoped to a specific agent id. Use inspectEventId in the same call to include one full event payload for command output, tool result, diff, or error inspection.",
+        parameters: z.object({ agentId: z.string().nullable(), limit: z.number().nullable(), inspectEventId: z.string().nullable() }),
+        execute: async (args) => JSON.stringify(await input.workflowTools?.listAgentEvents?.(args.agentId ?? undefined, args.limit ?? undefined, args.inspectEventId ?? undefined) ?? {})
+      }));
+    }
+    if (input.workflowTools?.inspectEvent) {
+      tools.push(tool({
+        name: "agent_event_inspect",
+        description: "Inspect one full event by eventId, including complete payload details such as command output, tool input/result, diffs, or error metadata.",
+        parameters: z.object({ eventId: z.string() }),
+        execute: async (args) => JSON.stringify(await input.workflowTools?.inspectEvent?.(args.eventId) ?? {})
+      }));
+    }
     if (input.workflowTools?.readWorkspaceFile) {
       tools.push(tool({
         name: "workspace_read_file",
@@ -220,7 +238,7 @@ class AgentsSdkRuntimeAdapter implements RuntimeAdapter {
       instructions: input.instructions ?? defaultInstructions,
       model: input.model,
       modelSettings: { store: false, reasoning: input.reasoningEffort ? { effort: input.reasoningEffort } : undefined },
-      toolUseBehavior: input.agentId === "orchestrator" ? "stop_on_first_tool" : "run_llm_again",
+      toolUseBehavior: "run_llm_again",
       tools,
       mcpServers: input.mcpServers ?? [],
       mcpConfig: {
@@ -449,13 +467,14 @@ async function runWhamTurn(
         ? String(await localTool.invoke(new RunContext(), args, { toolCall: call as never, signal: input.signal }))
         : `Unknown tool: ${toolName}`;
       if (!emitsTranscriptEvents) {
+        const transcriptOutput = truncateForTranscript(output);
         await emitOrCollect(input, events, {
           eventId: makeEventId(),
           sessionId: input.sessionId,
           agentId: input.agentId,
           timestamp: new Date().toISOString(),
           type: "agent.tool_result",
-          payload: { callId, toolName, output },
+          payload: { callId, toolName, output: transcriptOutput.text, outputTruncated: transcriptOutput.truncated },
           causationId: input.causationId
         });
       }
@@ -612,6 +631,14 @@ function stringValue(value: unknown) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function truncateForTranscript(output: string, maxLength = 8_000) {
+  if (output.length <= maxLength) return { text: output, truncated: false };
+  return {
+    text: `${output.slice(0, maxLength)}\n... ${output.length - maxLength} more characters omitted from transcript tool result`,
+    truncated: true
+  };
 }
 
 function deterministicPlan(prompt: string, agentId: string, roleName = agentId) {
