@@ -42,6 +42,27 @@ struct SessionDetailView: View {
                 .help("Open the current session workspace")
 
                 Menu {
+                    Button {
+                        store.copyTranscript()
+                    } label: {
+                        Label("Copy Transcript", systemImage: "text.bubble")
+                    }
+                    Button {
+                        store.exportTranscript()
+                    } label: {
+                        Label("Export Transcript...", systemImage: "square.and.arrow.down")
+                    }
+                    ShareLink(item: store.transcriptExportText) {
+                        Label("Share Transcript", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(!store.hasTranscriptExport)
+                    Button {
+                        store.copyCurrentWorkspacePath()
+                    } label: {
+                        Label("Copy Workspace Path", systemImage: "folder")
+                    }
+                    .disabled(store.currentWorkspaceRoot == nil)
+                    Divider()
                     Menu("Copy") {
                         Button {
                             store.copyTranscript()
@@ -86,19 +107,20 @@ struct SessionDetailView: View {
                         ShareLink(item: store.transcriptExportText) {
                             Label("Transcript", systemImage: "square.and.arrow.up")
                         }
-                        .disabled(store.transcriptExportText.isEmpty)
+                        .disabled(!store.hasTranscriptExport)
                         ShareLink(item: store.eventLogExportText) {
                             Label("Event Log", systemImage: "square.and.arrow.up")
                         }
-                        .disabled(store.eventLogExportText.isEmpty)
+                        .disabled(!store.hasEventLogExport)
                         ShareLink(item: store.debugLogExportText) {
                             Label("Debug Log", systemImage: "square.and.arrow.up")
                         }
-                        .disabled(store.debugLogExportText.isEmpty)
+                        .disabled(!store.hasDebugLogExport)
                     }
                 } label: {
-                    Label("Artifacts", systemImage: "doc.on.doc")
+                    Label("Session Artifacts", systemImage: "tray.full")
                 }
+                .accessibilityLabel("Session Artifacts")
                 .disabled(store.selectedSessionId == nil || store.isLoadingSelection)
                 .help("Copy, export, or share session artifacts")
 

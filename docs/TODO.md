@@ -12,7 +12,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 - **P2: Improve dense workflow graph layout.** Reduce edge overlap and node crowding for multi-agent workflows, add pan/zoom or fit controls, and consider grouped workflow lanes for instantiated subgraphs.
 - **P2: Disambiguate repeated session rows.** Sidebar rows with similar prompts are difficult to distinguish; add stable creation/last-run time, completion/error status, and optional user-editable titles without changing creation-time ordering.
-- **P2: Make artifact actions more discoverable.** Revisit the toolbar/menu affordance for copy, export, share, and workspace-path actions so the menu is exposed as session artifacts rather than a generic copy control.
 - **P2: Improve Workspace inspector path and diff hierarchy.** Prefer relative file labels, summarize large diffs before expansion, and keep absolute paths/copy actions available as secondary details.
 - **P3: Preserve reading position while reviewing transcript history.** Auto-scroll only when the user is already following the live tail, not after search/filter changes or when reading older rows.
 
@@ -90,6 +89,7 @@ Feedback from the orchestrator:
 - **2026-05-25: Add copy/share/export actions for session artifacts.** Added toolbar artifact actions for readable transcripts, schema-shaped event JSONL, debug JSONL, workspace paths, system sharing, and Save Panel export, alongside existing per-file path and diff copy actions.
 - **2026-05-25: Preserve tool pairing across timeline truncation.** Changed timeline rendering to group tool calls/results before limiting visible rows, so completed tool rows keep their paired call and result even near the render boundary.
 - **2026-05-25: Improve dashboard status triage.** Added session dashboard status chips with counts and filters for active, paused, failed, completed, cancelled, idle, and archived sessions.
+- **2026-05-25: Make artifact actions more discoverable.** Renamed the toolbar control to Session Artifacts and surfaced copy/export/share transcript plus workspace-path actions at the top level while preserving full copy/export/share menus.
 
 
 

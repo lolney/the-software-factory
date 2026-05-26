@@ -634,12 +634,24 @@ final class SessionStore {
         transcript.map(transcriptLine).joined(separator: "\n\n")
     }
 
+    var hasTranscriptExport: Bool {
+        !transcript.isEmpty
+    }
+
     var eventLogExportText: String {
         transcript.map(eventLogLine).joined(separator: "\n")
     }
 
+    var hasEventLogExport: Bool {
+        !transcript.isEmpty
+    }
+
     var debugLogExportText: String {
         debugLogs.map(debugLogLine).joined(separator: "\n")
+    }
+
+    var hasDebugLogExport: Bool {
+        !debugLogs.isEmpty
     }
 
     func instantiateWorkflow(_ workflowId: String) {
