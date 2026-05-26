@@ -19,10 +19,6 @@ Computer Use could inspect this app, but direct Computer Use access to `com.open
 
 ## User follow-ups
 
-Crash report:
-- Investigate and fix the root cause of this crash:
-/Users/lolney/Documents/Codex/2026-05-23/let-s-plan-this-multiagent-coding/crash-reports/scrolling-orchestrator-logs-with-planner-handoff-expanded.txt
-
 Workflow graph UX improvements:
 - The graph should be zoomable and panable
 - Done, failed, idle, active states should be more visually distinct
@@ -94,6 +90,7 @@ Feedback from the orchestrator:
 - **2026-05-25: Improve Workspace inspector hierarchy.** Made workspace and changed-file names primary, moved full paths into secondary/copyable details, added per-file change summaries, and summarized diff headers before per-event expanded previews.
 - **2026-05-25: Preserve transcript reading position.** Added an explicit Follow Live toggle and stopped transcript search/filter changes from forcing the timeline back to the newest row.
 - **2026-05-25: Disambiguate repeated session rows.** Added status, last-activity, active/failure hints, and durable user-editable session titles to sidebar rows without changing creation-time ordering.
+- **2026-05-25: Reduce expanded transcript hang risk.** Investigated the scrolling hang stackshot and capped inline expanded prompt/diff payload rendering so large planner handoff rows no longer force SwiftUI to lay out unbounded text inside the lazy transcript stack.
 
 
 

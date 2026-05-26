@@ -722,17 +722,39 @@ private struct ToolMetadataGrid: View {
 private struct DiffPayloadBlock: View {
     let diff: String
 
+    private var previewLines: [String] {
+        diffPreview(diff, limit: 300).lines
+    }
+
+    private var omittedLineCount: Int {
+        diffPreview(diff, limit: 300).omitted
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Diff")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(diff.split(separator: "\n", omittingEmptySubsequences: false).enumerated()), id: \.offset) { _, line in
-                    Text(String(line))
+                ForEach(Array(previewLines.enumerated()), id: \.offset) { _, line in
+                    Text(line)
                         .font(.caption.monospaced())
-                        .foregroundStyle(color(for: String(line)))
+                        .foregroundStyle(color(for: line))
                         .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if omittedLineCount > 0 {
+                    HStack(spacing: 8) {
+                        Text("... at least \(omittedLineCount) more diff lines omitted from inline preview")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                        Button("Copy Full Diff") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(diff, forType: .string)
+                        }
+                        .font(.caption)
+                        .buttonStyle(.borderless)
+                    }
+                    .padding(.top, 4)
                 }
             }
             .textSelection(.enabled)
@@ -752,17 +774,38 @@ private struct ToolPayloadBlock: View {
     let title: String
     let value: JSONValue
 
+    private var renderedPreview: (text: String, omitted: Int) {
+        renderPreview(value, limit: 12_000)
+    }
+
+    private var omittedCharacterCount: Int {
+        renderedPreview.omitted
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            Text(render(value))
+            Text(renderedPreview.text)
                 .font(.caption.monospaced())
                 .textSelection(.enabled)
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+            if omittedCharacterCount > 0 {
+                HStack(spacing: 8) {
+                    Text("At least \(omittedCharacterCount) more characters omitted from inline preview")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Button("Copy Full Value") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(render(value), forType: .string)
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                }
+            }
         }
     }
 
@@ -782,6 +825,7 @@ private struct ToolPayloadBlock: View {
             return object.map { "\($0.key): \(render($0.value))" }.sorted().joined(separator: "\n")
         }
     }
+
 }
 
 private struct TimelineHeader: View {
@@ -909,6 +953,86 @@ private func finalOrchestratorOutputId(in transcript: [TranscriptItem]) -> Strin
 private func isMessageEvent(_ item: TranscriptItem) -> Bool {
     if item.sender == "user" { return true }
     return item.type == "message" || item.type == "agent.message" || item.type == "error"
+}
+
+private func diffPreview(_ diff: String, limit: Int) -> (lines: [String], omitted: Int) {
+    var lines: [String] = []
+    var current = ""
+    var omitted = 0
+    for character in diff {
+        if character == "\n" {
+            if lines.count < limit {
+                lines.append(current)
+            } else {
+                omitted += 1
+                if omitted > limit { break }
+            }
+            current = ""
+        } else if lines.count < limit {
+            current.append(character)
+        }
+    }
+    if !current.isEmpty || diff.last == "\n" {
+        if lines.count < limit {
+            lines.append(current)
+        } else {
+            omitted += 1
+        }
+    }
+    return (lines, omitted)
+}
+
+private func renderPreview(_ value: JSONValue, limit: Int) -> (text: String, omitted: Int) {
+    var renderer = BoundedJSONRenderer(limit: limit)
+    renderer.append(value)
+    return (renderer.text, renderer.omitted)
+}
+
+private struct BoundedJSONRenderer {
+    let limit: Int
+    private(set) var text = ""
+    private(set) var omitted = 0
+
+    mutating func append(_ value: JSONValue) {
+        switch value {
+        case .string(let string):
+            append(string)
+        case .number(let number):
+            append(String(number))
+        case .bool(let bool):
+            append(String(bool))
+        case .null:
+            append("null")
+        case .array(let values):
+            for (index, value) in values.enumerated() {
+                if index > 0 { append("\n") }
+                append(value)
+                if omitted > limit { break }
+            }
+        case .object(let object):
+            let keys = object.keys.sorted()
+            for (index, key) in keys.enumerated() {
+                if index > 0 { append("\n") }
+                append("\(key): ")
+                append(object[key] ?? .null)
+                if omitted > limit { break }
+            }
+        }
+    }
+
+    mutating func append(_ string: String) {
+        guard text.count < limit else {
+            omitted += string.count
+            return
+        }
+        let remaining = limit - text.count
+        if string.count <= remaining {
+            text += string
+        } else {
+            text += String(string.prefix(remaining))
+            omitted += string.count - remaining
+        }
+    }
 }
 
 private func arrayValue(_ value: JSONValue?) -> [JSONValue]? {
