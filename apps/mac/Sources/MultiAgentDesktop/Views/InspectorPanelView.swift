@@ -513,13 +513,17 @@ struct WorkspacePanelView: View {
             if let root = store.currentWorkspaceRoot {
                 VStack(alignment: .leading, spacing: 0) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Root")
+                        Text(rootName(root))
+                            .font(.callout.weight(.semibold))
+                            .lineLimit(1)
+                        Text("Workspace root")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
-                        Text(root)
+                        Text(abbreviatedPath(root))
                             .font(.caption.monospaced())
                             .textSelection(.enabled)
-                            .lineLimit(3)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
                     }
                     .padding(.horizontal)
                     .padding(.bottom, 12)
@@ -546,6 +550,7 @@ struct WorkspacePanelView: View {
                         List(store.touchedWorkspaceFiles) { file in
                             WorkspaceFileReviewRow(
                                 file: file,
+                                workspaceRoot: root,
                                 events: diffEventsByPath[file.path] ?? [],
                                 copyPath: { store.copyWorkspaceFilePath(file.path) },
                                 copyDiff: { store.copyWorkspaceDiff(for: file.path) }
@@ -596,10 +601,25 @@ struct WorkspacePanelView: View {
         .padding(.horizontal)
         .padding(.top, 4)
     }
+
+    private func rootName(_ path: String) -> String {
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        return name.isEmpty ? "Workspace" : name
+    }
+
+    private func abbreviatedPath(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") {
+            return "~" + String(path.dropFirst(home.count))
+        }
+        return path
+    }
 }
 
 private struct WorkspaceFileReviewRow: View {
     let file: WorkspaceFileSummary
+    let workspaceRoot: String
     let events: [TranscriptItem]
     let copyPath: () -> Void
     let copyDiff: () -> Void
@@ -609,6 +629,18 @@ private struct WorkspaceFileReviewRow: View {
         DisclosureGroup(isExpanded: $expanded) {
             if expanded {
                 VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(displayPath)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                        Text(changeSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     HStack(spacing: 8) {
                         Button {
                             copyPath()
@@ -639,10 +671,20 @@ private struct WorkspaceFileReviewRow: View {
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
-                    Text(file.path)
-                        .font(.callout.monospaced())
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    Image(systemName: file.conflictCount > 0 ? "exclamationmark.triangle.fill" : "doc.text")
+                        .foregroundStyle(file.conflictCount > 0 ? .red : .secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(fileName)
+                            .font(.callout.weight(.medium))
+                            .lineLimit(1)
+                        if !directoryName.isEmpty {
+                            Text(directoryName)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
                     Spacer(minLength: 8)
                     if file.conflictCount > 0 {
                         Text("!\(file.conflictCount)")
@@ -671,26 +713,76 @@ private struct WorkspaceFileReviewRow: View {
     private var diffColor: Color {
         file.deletions > file.additions ? .orange : .green
     }
+
+    private var fileName: String {
+        let name = (displayPath as NSString).lastPathComponent
+        return name.isEmpty ? displayPath : name
+    }
+
+    private var directoryName: String {
+        let directory = (displayPath as NSString).deletingLastPathComponent
+        if directory == "." || directory == "/" || directory == displayPath { return "" }
+        return directory
+    }
+
+    private var displayPath: String {
+        guard file.path.hasPrefix("/") else { return file.path }
+        let root = workspaceRoot.hasSuffix("/") ? String(workspaceRoot.dropLast()) : workspaceRoot
+        if file.path == root { return "." }
+        if file.path.hasPrefix(root + "/") {
+            return String(file.path.dropFirst(root.count + 1))
+        }
+        return abbreviatePath(file.path)
+    }
+
+    private func abbreviatePath(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") {
+            return "~" + String(path.dropFirst(home.count))
+        }
+        return path
+    }
+
+    private var changeSummary: String {
+        let conflictText = file.conflictCount == 0 ? "" : ", \(file.conflictCount) conflict\(file.conflictCount == 1 ? "" : "s")"
+        return "Latest: \(file.lastEventType.replacingOccurrences(of: "workspace.", with: "")) by \(file.lastAgentId ?? "system"); +\(file.additions) -\(file.deletions)\(conflictText)."
+    }
 }
 
 private struct WorkspaceDiffEventView: View {
     let event: TranscriptItem
+    @State private var expanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text(event.agentId ?? "system")
-                    .font(.caption.weight(.semibold))
-                if let stats = event.payload["diffStats"]?.objectValue {
-                    Text("+\(Int(stats["additions"]?.numberValue ?? 0)) -\(Int(stats["deletions"]?.numberValue ?? 0))")
-                        .foregroundStyle(diffColor(stats: stats))
+            DisclosureGroup(isExpanded: $expanded) {
+                if expanded {
+                    WorkspaceDiffBlock(diff: event.payload["diff"]?.stringValue ?? "")
+                        .padding(.top, 4)
                 }
-                Spacer()
-                Text(event.timestamp, style: .time)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(event.agentId ?? "system")
+                            .font(.caption.weight(.semibold))
+                        if let stats = event.payload["diffStats"]?.objectValue {
+                            Text("+\(Int(stats["additions"]?.numberValue ?? 0)) -\(Int(stats["deletions"]?.numberValue ?? 0))")
+                                .foregroundStyle(diffColor(stats: stats))
+                        }
+                        Spacer()
+                        Text(event.timestamp, style: .time)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let diff = event.payload["diff"]?.stringValue {
+                        Text(diffSummary(diff))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
             }
-            WorkspaceDiffBlock(diff: event.payload["diff"]?.stringValue ?? "")
         }
     }
 
@@ -698,6 +790,18 @@ private struct WorkspaceDiffEventView: View {
         let additions = Int(stats["additions"]?.numberValue ?? 0)
         let deletions = Int(stats["deletions"]?.numberValue ?? 0)
         return deletions > additions ? .orange : .green
+    }
+
+    private func diffSummary(_ diff: String) -> String {
+        let files = diff
+            .split(separator: "\n")
+            .filter { $0.hasPrefix("diff --git ") || $0.hasPrefix("+++ ") || $0.hasPrefix("--- ") }
+            .prefix(3)
+            .map(String.init)
+        if files.isEmpty {
+            return "\(diff.split(separator: "\n", omittingEmptySubsequences: false).count) diff lines"
+        }
+        return files.joined(separator: "  ")
     }
 }
 
