@@ -520,6 +520,9 @@ private struct ToolEventRow: View {
         DisclosureGroup(isExpanded: $expanded) {
             if expanded {
                 VStack(alignment: .leading, spacing: 8) {
+                    if !metadataPairs.isEmpty {
+                        ToolMetadataGrid(pairs: metadataPairs)
+                    }
                     if let input = call.payload["input"] {
                         ToolPayloadBlock(title: "Input", value: input)
                     }
@@ -535,18 +538,18 @@ private struct ToolEventRow: View {
             }
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: result == nil ? "hammer" : "checkmark.circle")
-                    .foregroundStyle(color)
+                Image(systemName: statusIcon)
+                    .foregroundStyle(statusColor)
                     .frame(width: 14)
                 Text(toolName)
                     .font(.callout.weight(.medium))
+                Text(statusLabel)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(statusColor)
                 if let result {
                     Text(shortResult(result))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                } else {
-                    Text("running")
-                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Text(call.timestamp, style: .time)
@@ -558,6 +561,46 @@ private struct ToolEventRow: View {
         .padding(.horizontal, 4)
     }
 
+    private var statusIcon: String {
+        guard let result else { return "hammer" }
+        if result.payload["blocked"]?.boolValue == true { return "exclamationmark.octagon" }
+        if let exitCode = result.payload["exitCode"]?.numberValue, exitCode != 0 { return "xmark.octagon" }
+        return "checkmark.circle"
+    }
+
+    private var statusColor: Color {
+        guard let result else { return color }
+        if result.payload["blocked"]?.boolValue == true { return .orange }
+        if let exitCode = result.payload["exitCode"]?.numberValue, exitCode != 0 { return .red }
+        return .green
+    }
+
+    private var statusLabel: String {
+        guard let result else { return "running" }
+        if result.payload["blocked"]?.boolValue == true { return "blocked" }
+        if let exitCode = result.payload["exitCode"]?.numberValue {
+            return exitCode == 0 ? "exit 0" : "exit \(Int(exitCode))"
+        }
+        return "done"
+    }
+
+    private var metadataPairs: [(String, String)] {
+        var pairs: [(String, String)] = []
+        if let durationMs = result?.payload["durationMs"]?.numberValue {
+            pairs.append(("Duration", formatDuration(durationMs)))
+        }
+        if let exitCode = result?.payload["exitCode"]?.numberValue {
+            pairs.append(("Exit Code", "\(Int(exitCode))"))
+        }
+        if result?.payload["blocked"]?.boolValue == true {
+            pairs.append(("Status", "Blocked"))
+        }
+        if let cwd = result?.payload["cwd"]?.stringValue ?? call.payload["input"]?.objectValue?["cwd"]?.stringValue {
+            pairs.append(("Working Directory", abbreviatePath(cwd)))
+        }
+        return pairs
+    }
+
     private func shortResult(_ result: TranscriptItem) -> String {
         if let path = result.payload["path"]?.stringValue,
            let stats = result.payload["diffStats"]?.objectValue {
@@ -565,8 +608,53 @@ private struct ToolEventRow: View {
             let deletions = Int(stats["deletions"]?.numberValue ?? 0)
             return "Edited \(path) +\(additions) -\(deletions) - Diff"
         }
+        if let durationMs = result.payload["durationMs"]?.numberValue,
+           let cwd = result.payload["cwd"]?.stringValue {
+            return "\(formatDuration(durationMs)) in \(abbreviatePath(cwd))"
+        }
+        if let durationMs = result.payload["durationMs"]?.numberValue {
+            return formatDuration(durationMs)
+        }
         guard let output = result.payload["output"]?.stringValue else { return "completed" }
         return output.split(separator: "\n").first.map(String.init) ?? "completed"
+    }
+
+    private func formatDuration(_ milliseconds: Double) -> String {
+        if milliseconds < 1_000 {
+            return "\(Int(milliseconds)) ms"
+        }
+        return String(format: "%.1f s", milliseconds / 1_000)
+    }
+
+    private func abbreviatePath(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") {
+            return "~" + String(path.dropFirst(home.count))
+        }
+        return path
+    }
+}
+
+private struct ToolMetadataGrid: View {
+    let pairs: [(String, String)]
+
+    var body: some View {
+        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+            ForEach(pairs, id: \.0) { label, value in
+                GridRow {
+                    Text(label)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(value)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                }
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
