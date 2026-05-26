@@ -9,7 +9,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 ## UX And Product Review Follow-Ups
 
-- **P3: Preserve tool call/result pairing across transcript truncation.** The timeline currently takes the latest event slice before grouping, so a result can render unpaired if its call is just outside the window; group first or extend the slice backward for matching tool calls.
 - **P2: Improve dense workflow graph layout.** Reduce edge overlap and node crowding for multi-agent workflows, add pan/zoom or fit controls, and consider grouped workflow lanes for instantiated subgraphs.
 - **P2: Disambiguate repeated session rows.** Sidebar rows with similar prompts are difficult to distinguish; add stable creation/last-run time, completion/error status, and optional user-editable titles without changing creation-time ordering.
 
@@ -85,6 +84,7 @@ Feedback from the orchestrator:
 - **2026-05-25: Avoid noisy completed-agent messaging failures.** Changed orchestrator agent-to-agent messaging to record `message.skipped` no-op events with target status guidance when the target agent is completed, failed, cancelled, or paused, instead of failing otherwise successful turns.
 - **2026-05-25: Add command/tool execution details.** Upgraded tool timeline rows with status labels/icons, command duration, exit code, working directory metadata, and preserved expandable input/output/diff details.
 - **2026-05-25: Add copy/share/export actions for session artifacts.** Added toolbar artifact actions for readable transcripts, schema-shaped event JSONL, debug JSONL, workspace paths, system sharing, and Save Panel export, alongside existing per-file path and diff copy actions.
+- **2026-05-25: Preserve tool pairing across timeline truncation.** Changed timeline rendering to group tool calls/results before limiting visible rows, so completed tool rows keep their paired call and result even near the render boundary.
 
 
 

@@ -3,6 +3,7 @@ import SwiftUI
 struct OrchestratorChatView: View {
     @Bindable var store: SessionStore
     @State private var timelineItems: [TimelineItem] = []
+    @State private var timelineIsTruncated = false
     @State private var scrollWorkItem: DispatchWorkItem?
 
     private let timelineRenderLimit = 500
@@ -11,12 +12,8 @@ struct OrchestratorChatView: View {
         store.filteredTranscript
     }
 
-    private var renderedTranscript: [TranscriptItem] {
-        Array(filteredTranscript.suffix(timelineRenderLimit))
-    }
-
     private var isTimelineTruncated: Bool {
-        filteredTranscript.count > renderedTranscript.count
+        timelineIsTruncated
     }
 
     private var timelineInputVersion: String {
@@ -105,7 +102,7 @@ struct OrchestratorChatView: View {
                                 .padding(.vertical, 24)
                         } else {
                             if isTimelineTruncated {
-                                Text("Showing latest \(timelineItems.count) of \(filteredTranscript.count) matching events")
+                                Text("Showing latest \(timelineItems.count) timeline rows from \(filteredTranscript.count) matching events")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .padding(.horizontal, 4)
@@ -150,7 +147,9 @@ struct OrchestratorChatView: View {
     }
 
     private func updateTimelineItems() {
-        timelineItems = makeTimelineItems(from: renderedTranscript)
+        let window = timelineWindow(from: filteredTranscript, limit: timelineRenderLimit)
+        timelineItems = window.items
+        timelineIsTruncated = window.isTruncated
     }
 
     private func scheduleScroll(to id: String, proxy: ScrollViewProxy) {
@@ -752,8 +751,58 @@ private struct TimelineHeader: View {
     }
 }
 
-private func makeTimelineItems(from transcript: [TranscriptItem]) -> [TimelineItem] {
+private func timelineWindow(from transcript: [TranscriptItem], limit: Int) -> (items: [TimelineItem], isTruncated: Bool) {
+    guard transcript.count > limit else {
+        return (makeTimelineItems(from: transcript), false)
+    }
+    var tailCount = min(transcript.count, max(limit * 2, limit))
     var items: [TimelineItem] = []
+    repeat {
+        let windowEvents = backfilledToolWindow(from: transcript, tailCount: tailCount)
+        items = makeTimelineItems(from: windowEvents)
+        if items.count >= limit || tailCount == transcript.count {
+            break
+        }
+        tailCount = min(transcript.count, tailCount * 2)
+    } while true
+    return (Array(items.suffix(limit)), tailCount < transcript.count || items.count > limit)
+}
+
+private func backfilledToolWindow(from transcript: [TranscriptItem], tailCount: Int) -> [TranscriptItem] {
+    let startIndex = max(0, transcript.count - tailCount)
+    let tail = transcript.enumerated().filter { $0.offset >= startIndex }
+    let resultCallIds = Set(tail.compactMap { _, item in
+        item.type == "agent.tool_result" ? item.payload["callId"]?.stringValue : nil
+    })
+    let tailCallIds = Set(tail.compactMap { _, item in
+        item.type == "agent.tool_call" ? item.payload["callId"]?.stringValue : nil
+    })
+    let missingCallIds = resultCallIds.subtracting(tailCallIds)
+    guard !missingCallIds.isEmpty else {
+        return tail.map(\.element)
+    }
+    var backfilled: [(offset: Int, element: TranscriptItem)] = []
+    var foundCallIds = Set<String>()
+    for (offset, item) in transcript.enumerated().reversed() where offset < startIndex {
+        guard item.type == "agent.tool_call",
+              let callId = item.payload["callId"]?.stringValue,
+              missingCallIds.contains(callId),
+              !foundCallIds.contains(callId) else {
+            continue
+        }
+        backfilled.append((offset, item))
+        foundCallIds.insert(callId)
+        if foundCallIds.count == missingCallIds.count {
+            break
+        }
+    }
+    return (backfilled + tail)
+        .sorted { $0.offset < $1.offset }
+        .map(\.element)
+}
+
+private func makeTimelineItems(from transcript: [TranscriptItem]) -> [TimelineItem] {
+    var items: [TimelineItem?] = []
     var pendingToolCalls: [String: (index: Int, call: TranscriptItem)] = [:]
     let finalOutputId = finalOrchestratorOutputId(in: transcript)
 
@@ -766,7 +815,8 @@ private func makeTimelineItems(from transcript: [TranscriptItem]) -> [TimelineIt
         if event.type == "agent.tool_result",
            let callId = event.payload["callId"]?.stringValue,
            let pending = pendingToolCalls[callId] {
-            items[pending.index] = .tool(call: pending.call, result: event)
+            items[pending.index] = nil
+            items.append(.tool(call: pending.call, result: event))
             pendingToolCalls.removeValue(forKey: callId)
             continue
         }
@@ -785,7 +835,7 @@ private func makeTimelineItems(from transcript: [TranscriptItem]) -> [TimelineIt
         }
     }
 
-    return items
+    return items.compactMap { $0 }
 }
 
 private func finalOrchestratorOutputId(in transcript: [TranscriptItem]) -> String? {
