@@ -5,8 +5,11 @@ struct OrchestratorChatView: View {
     @State private var timelineItems: [TimelineItem] = []
     @State private var timelineIsTruncated = false
     @State private var scrollWorkItem: DispatchWorkItem?
+    @State private var followLiveTail = true
+    @State private var tailIsVisible = true
 
     private let timelineRenderLimit = 500
+    private let timelineTailId = "timeline-tail"
 
     private var filteredTranscript: [TranscriptItem] {
         store.filteredTranscript
@@ -16,8 +19,16 @@ struct OrchestratorChatView: View {
         timelineIsTruncated
     }
 
-    private var timelineInputVersion: String {
+    private var timelineDisplayVersion: String {
         "\(filteredTranscript.count)|\(filteredTranscript.first?.id ?? "")|\(filteredTranscript.last?.id ?? "")|\(store.transcriptSearchText)|\(store.selectedAgentId ?? "")"
+    }
+
+    private var liveTranscriptVersion: String {
+        "\(store.transcript.count)|\(store.transcript.first?.id ?? "")|\(store.transcript.last?.id ?? "")"
+    }
+
+    private var transcriptFilterVersion: String {
+        "\(store.transcriptSearchText)|\(store.selectedAgentId ?? "")"
     }
 
     var body: some View {
@@ -41,6 +52,14 @@ struct OrchestratorChatView: View {
                 TextField("Search transcript", text: $store.transcriptSearchText)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 220)
+                Button {
+                    followLiveTail.toggle()
+                } label: {
+                    Label("Follow Live", systemImage: followLiveTail ? "arrow.down.circle.fill" : "arrow.down.circle")
+                }
+                .labelStyle(.iconOnly)
+                .disabled(store.isTranscriptFiltered)
+                .help(store.isTranscriptFiltered ? "Clear transcript filters to follow live events" : "Follow new transcript events")
                 Text(store.connectionStatus)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -112,22 +131,48 @@ struct OrchestratorChatView: View {
                                     .id(item.id)
                             }
                         }
+                        Color.clear
+                            .frame(height: 1)
+                            .id(timelineTailId)
+                            .onAppear {
+                                tailIsVisible = true
+                            }
+                            .onDisappear {
+                                tailIsVisible = false
+                                if followLiveTail {
+                                    followLiveTail = false
+                                }
+                            }
                     }
                     .padding()
                 }
                 .onAppear {
                     updateTimelineItems()
-                    if let last = timelineItems.last {
+                    if followLiveTail, !store.isTranscriptFiltered, let last = timelineItems.last {
                         scheduleScroll(to: last.id, proxy: proxy)
                     }
                 }
                 .onDisappear {
                     scrollWorkItem?.cancel()
                 }
-                .onChange(of: timelineInputVersion) { _, _ in
+                .onChange(of: timelineDisplayVersion) { _, _ in
                     updateTimelineItems()
-                    if let last = timelineItems.last {
-                        scheduleScroll(to: last.id, proxy: proxy)
+                }
+                .onChange(of: liveTranscriptVersion) { _, _ in
+                    updateTimelineItems()
+                    if followLiveTail, tailIsVisible, !store.isTranscriptFiltered {
+                        scheduleScroll(to: timelineTailId, proxy: proxy)
+                    }
+                }
+                .onChange(of: transcriptFilterVersion) { _, _ in
+                    if store.isTranscriptFiltered {
+                        followLiveTail = false
+                    }
+                    updateTimelineItems()
+                }
+                .onChange(of: followLiveTail) { _, isFollowing in
+                    if isFollowing, !store.isTranscriptFiltered {
+                        scheduleScroll(to: timelineTailId, proxy: proxy)
                     }
                 }
             }

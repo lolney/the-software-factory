@@ -12,7 +12,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 - **P2: Improve dense workflow graph layout.** Reduce edge overlap and node crowding for multi-agent workflows, add pan/zoom or fit controls, and consider grouped workflow lanes for instantiated subgraphs.
 - **P2: Disambiguate repeated session rows.** Sidebar rows with similar prompts are difficult to distinguish; add stable creation/last-run time, completion/error status, and optional user-editable titles without changing creation-time ordering.
-- **P3: Preserve reading position while reviewing transcript history.** Auto-scroll only when the user is already following the live tail, not after search/filter changes or when reading older rows.
 
 
 ## Codex App Comparison Follow-Ups
@@ -90,6 +89,7 @@ Feedback from the orchestrator:
 - **2026-05-25: Improve dashboard status triage.** Added session dashboard status chips with counts and filters for active, paused, failed, completed, cancelled, idle, and archived sessions.
 - **2026-05-25: Make artifact actions more discoverable.** Renamed the toolbar control to Session Artifacts and surfaced copy/export/share transcript plus workspace-path actions at the top level while preserving full copy/export/share menus.
 - **2026-05-25: Improve Workspace inspector hierarchy.** Made workspace and changed-file names primary, moved full paths into secondary/copyable details, added per-file change summaries, and summarized diff headers before per-event expanded previews.
+- **2026-05-25: Preserve transcript reading position.** Added an explicit Follow Live toggle and stopped transcript search/filter changes from forcing the timeline back to the newest row.
 
 
 
