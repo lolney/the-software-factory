@@ -183,12 +183,14 @@ struct AgentEdge: Identifiable, Hashable, Codable {
 
 struct TranscriptItem: Identifiable, Hashable {
     let id: String
+    var sessionId: String?
     var agentId: String?
     var sender: String
     var recipient: String?
     var type: String
     var text: String
     var timestamp: Date
+    var rawTimestamp: String?
     var payload: [String: JSONValue]
     var causationId: String?
     var correlationId: String?
@@ -196,6 +198,7 @@ struct TranscriptItem: Identifiable, Hashable {
     var searchText: String {
         [
             id,
+            sessionId,
             agentId,
             causationId,
             correlationId,

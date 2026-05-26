@@ -584,6 +584,54 @@ final class SessionStore {
         copyText(diffs.joined(separator: "\n\n"))
     }
 
+    func copyTranscript() {
+        guard !transcriptExportText.isEmpty else {
+            lastError = "No transcript events have been recorded for this session."
+            return
+        }
+        copyText(transcriptExportText)
+    }
+
+    func copySessionEventLog() {
+        guard !eventLogExportText.isEmpty else {
+            lastError = "No session events have been recorded for this session."
+            return
+        }
+        copyText(eventLogExportText)
+    }
+
+    func copyDebugLog() {
+        guard !debugLogExportText.isEmpty else {
+            lastError = "No debug log entries have been recorded for this session."
+            return
+        }
+        copyText(debugLogExportText)
+    }
+
+    func exportTranscript() {
+        exportText(transcriptExportText, defaultFileName: exportFileName(suffix: "transcript", fileExtension: "txt"), emptyMessage: "No transcript events have been recorded for this session.")
+    }
+
+    func exportSessionEventLog() {
+        exportText(eventLogExportText, defaultFileName: exportFileName(suffix: "events", fileExtension: "jsonl"), emptyMessage: "No session events have been recorded for this session.")
+    }
+
+    func exportDebugLog() {
+        exportText(debugLogExportText, defaultFileName: exportFileName(suffix: "debug", fileExtension: "jsonl"), emptyMessage: "No debug log entries have been recorded for this session.")
+    }
+
+    var transcriptExportText: String {
+        transcript.map(transcriptLine).joined(separator: "\n\n")
+    }
+
+    var eventLogExportText: String {
+        transcript.map(eventLogLine).joined(separator: "\n")
+    }
+
+    var debugLogExportText: String {
+        debugLogs.map(debugLogLine).joined(separator: "\n")
+    }
+
     func instantiateWorkflow(_ workflowId: String) {
         guard let selectedSessionId else {
             lastError = "Select a session before instantiating a workflow."
@@ -709,12 +757,14 @@ final class SessionStore {
         transcript = [
             TranscriptItem(
                 id: UUID().uuidString,
+                sessionId: nil,
                 agentId: "orchestrator",
                 sender: "orchestrator",
                 recipient: nil,
                 type: "message",
                 text: "Write the initial prompt below. It will be sent as the first message to the orchestrator when the session is created.",
                 timestamp: Date(),
+                rawTimestamp: nil,
                 payload: [:],
                 causationId: nil,
                 correlationId: nil
@@ -1006,12 +1056,14 @@ final class SessionStore {
         let recipient = event.payload["to"]?.stringValue
         return TranscriptItem(
             id: event.eventId,
+            sessionId: event.sessionId,
             agentId: event.agentId,
             sender: sender,
             recipient: recipient,
             type: event.type,
             text: displayText(for: event),
             timestamp: parseTimestamp(event.timestamp),
+            rawTimestamp: event.timestamp,
             payload: event.payload,
             causationId: event.causationId,
             correlationId: event.correlationId
@@ -1047,6 +1099,85 @@ final class SessionStore {
     private func copyText(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+        lastError = nil
+    }
+
+    private func exportText(_ text: String, defaultFileName: String, emptyMessage: String) {
+        guard !text.isEmpty else {
+            lastError = emptyMessage
+            return
+        }
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = defaultFileName
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+                Task { @MainActor in self?.lastError = nil }
+            } catch {
+                Task { @MainActor in
+                    self?.lastError = "Could not export \(defaultFileName): \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func exportFileName(suffix: String, fileExtension: String) -> String {
+        "\(selectedSessionId ?? "session")-\(suffix).\(fileExtension)"
+    }
+
+    private func transcriptLine(_ item: TranscriptItem) -> String {
+        [
+            "[\(eventTimestamp(item))] \(item.sender)\(item.recipient.map { " -> \($0)" } ?? "") \(item.type)",
+            item.text
+        ].joined(separator: "\n")
+    }
+
+    private func eventLogLine(_ item: TranscriptItem) -> String {
+        var fields: [String: JSONValue] = [
+            "eventId": .string(item.id),
+            "sessionId": .string(item.sessionId ?? selectedSessionId ?? ""),
+            "timestamp": .string(eventTimestamp(item)),
+            "type": .string(item.type),
+            "payload": .object(item.payload)
+        ]
+        if let agentId = item.agentId { fields["agentId"] = .string(agentId) }
+        if let causationId = item.causationId { fields["causationId"] = .string(causationId) }
+        if let correlationId = item.correlationId { fields["correlationId"] = .string(correlationId) }
+        return encodeJSONLine(.object(fields))
+    }
+
+    private func debugLogLine(_ item: DebugLogItem) -> String {
+        var fields: [String: JSONValue] = [
+            "logId": .string(item.logId),
+            "sessionId": .string(item.sessionId),
+            "timestamp": .string(item.timestamp),
+            "level": .string(item.level.rawValue),
+            "source": .string(item.source),
+            "message": .string(item.message),
+            "payload": .object(item.payload)
+        ]
+        if let agentId = item.agentId { fields["agentId"] = .string(agentId) }
+        if let causationId = item.causationId { fields["causationId"] = .string(causationId) }
+        if let correlationId = item.correlationId { fields["correlationId"] = .string(correlationId) }
+        return encodeJSONLine(.object(fields))
+    }
+
+    private func encodeJSONLine(_ value: JSONValue) -> String {
+        guard let data = try? JSONEncoder().encode(value),
+              let line = String(data: data, encoding: .utf8) else {
+            return value.searchText
+        }
+        return line
+    }
+
+    private func formatDate(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+
+    private func eventTimestamp(_ item: TranscriptItem) -> String {
+        item.rawTimestamp ?? formatDate(item.timestamp)
     }
 
     private func apply(debugLog entry: DebugLogItem) {
@@ -1078,12 +1209,14 @@ final class SessionStore {
         transcript = [
             TranscriptItem(
                 id: UUID().uuidString,
+                sessionId: nil,
                 agentId: "orchestrator",
                 sender: "orchestrator",
                 recipient: nil,
                 type: "message",
                 text: "Create a new session to connect to the daemon and launch a workflow.",
                 timestamp: Date(),
+                rawTimestamp: nil,
                 payload: [:],
                 causationId: nil,
                 correlationId: nil
@@ -1157,7 +1290,12 @@ final class SessionStore {
     }
 
     private func parseTimestamp(_ timestamp: String) -> Date {
-        ISO8601DateFormatter().date(from: timestamp) ?? Date()
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: timestamp) {
+            return date
+        }
+        return ISO8601DateFormatter().date(from: timestamp) ?? Date()
     }
 
     private func displayText(for event: SessionEvent) -> String {

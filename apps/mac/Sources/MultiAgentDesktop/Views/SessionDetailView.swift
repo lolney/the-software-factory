@@ -41,6 +41,67 @@ struct SessionDetailView: View {
                 .disabled(store.currentWorkspaceRoot == nil || store.isLoadingSelection)
                 .help("Open the current session workspace")
 
+                Menu {
+                    Menu("Copy") {
+                        Button {
+                            store.copyTranscript()
+                        } label: {
+                            Label("Transcript", systemImage: "text.bubble")
+                        }
+                        Button {
+                            store.copySessionEventLog()
+                        } label: {
+                            Label("Event Log", systemImage: "list.bullet.rectangle")
+                        }
+                        Button {
+                            store.copyDebugLog()
+                        } label: {
+                            Label("Debug Log", systemImage: "ladybug")
+                        }
+                        Divider()
+                        Button {
+                            store.copyCurrentWorkspacePath()
+                        } label: {
+                            Label("Workspace Path", systemImage: "folder")
+                        }
+                    }
+                    Menu("Export") {
+                        Button {
+                            store.exportTranscript()
+                        } label: {
+                            Label("Transcript...", systemImage: "square.and.arrow.down")
+                        }
+                        Button {
+                            store.exportSessionEventLog()
+                        } label: {
+                            Label("Event Log...", systemImage: "square.and.arrow.down")
+                        }
+                        Button {
+                            store.exportDebugLog()
+                        } label: {
+                            Label("Debug Log...", systemImage: "square.and.arrow.down")
+                        }
+                    }
+                    Menu("Share") {
+                        ShareLink(item: store.transcriptExportText) {
+                            Label("Transcript", systemImage: "square.and.arrow.up")
+                        }
+                        .disabled(store.transcriptExportText.isEmpty)
+                        ShareLink(item: store.eventLogExportText) {
+                            Label("Event Log", systemImage: "square.and.arrow.up")
+                        }
+                        .disabled(store.eventLogExportText.isEmpty)
+                        ShareLink(item: store.debugLogExportText) {
+                            Label("Debug Log", systemImage: "square.and.arrow.up")
+                        }
+                        .disabled(store.debugLogExportText.isEmpty)
+                    }
+                } label: {
+                    Label("Artifacts", systemImage: "doc.on.doc")
+                }
+                .disabled(store.selectedSessionId == nil || store.isLoadingSelection)
+                .help("Copy, export, or share session artifacts")
+
                 Button {
                     store.connectAndRefresh()
                 } label: {

@@ -18,8 +18,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 Computer Use could inspect this app, but direct Computer Use access to `com.openai.codex` was blocked by the environment. These follow-ups are based on Codex-style coding-agent features visible from the current desktop context and prior screenshots in this project thread.
 
-- **P2: Add copy/share/export actions for session artifacts.** Export transcript, event log, debug log, workspace path, and selected diffs from the session UI.
-
 ## User follow-ups
 
 Workflow graph UX improvements:
@@ -86,6 +84,7 @@ Feedback from the orchestrator:
 - **2026-05-25: Fix completed session dashboard status.** Added explicit daemon session statuses, live Swift summary refresh, dashboard labels/icons for terminal states, and stop gating so orchestrators cannot complete while child workflows are still open.
 - **2026-05-25: Avoid noisy completed-agent messaging failures.** Changed orchestrator agent-to-agent messaging to record `message.skipped` no-op events with target status guidance when the target agent is completed, failed, cancelled, or paused, instead of failing otherwise successful turns.
 - **2026-05-25: Add command/tool execution details.** Upgraded tool timeline rows with status labels/icons, command duration, exit code, working directory metadata, and preserved expandable input/output/diff details.
+- **2026-05-25: Add copy/share/export actions for session artifacts.** Added toolbar artifact actions for readable transcripts, schema-shaped event JSONL, debug JSONL, workspace paths, system sharing, and Save Panel export, alongside existing per-file path and diff copy actions.
 
 
 
