@@ -115,6 +115,14 @@ private struct RoleEditor: View {
                     get: { role.toolPolicy.canCreatePlans ?? false },
                     set: { role.toolPolicy.canCreatePlans = $0 }
                 ))
+                Toggle("Can use local browser QA", isOn: Binding(
+                    get: { role.toolPolicy.canUseBrowser ?? false },
+                    set: { role.toolPolicy.canUseBrowser = $0 }
+                ))
+                Toggle("Can request Computer Use QA", isOn: Binding(
+                    get: { role.toolPolicy.canUseComputer ?? false },
+                    set: { role.toolPolicy.canUseComputer = $0 }
+                ))
             }
 
             Section("Workspace") {

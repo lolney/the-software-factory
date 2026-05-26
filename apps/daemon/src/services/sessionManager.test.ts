@@ -1734,6 +1734,76 @@ describe("SessionManager deterministic debug sessions", () => {
     }
   });
 
+  it("exposes UI-QA Playwright and Computer Use guidance tools", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            if (input.agentId === "orchestrator") {
+              if (input.prompt.includes("Workflow ui-qa-review completed")) {
+                return [{
+                  eventId: `evt_${crypto.randomUUID()}`,
+                  sessionId: input.sessionId,
+                  agentId: input.agentId,
+                  timestamp: new Date().toISOString(),
+                  type: "agent.message",
+                  payload: { text: "ui qa completion observed" }
+                }];
+              }
+              const started = await input.workflowTools?.startWorkflow?.("ui-qa-review");
+              return [{
+                eventId: `evt_${crypto.randomUUID()}`,
+                sessionId: input.sessionId,
+                agentId: input.agentId,
+                timestamp: new Date().toISOString(),
+                type: "agent.message",
+                payload: { text: started }
+              }];
+            }
+            if (input.agentId.includes("ui_qa")) {
+              const blockedBrowser = await input.workflowTools?.runPlaywrightCheck?.("https://example.com", "Reject non-local UI QA targets.");
+              const localBrowser = await input.workflowTools?.runPlaywrightCheck?.("http://127.0.0.1:9", "Check a sample UI development task.");
+              const computer = await input.workflowTools?.computerUseGuide?.();
+              await input.workflowTools?.stopSelf?.("UI QA completed.", { blockedBrowser, localBrowser, computer }, ["ui_qa_review_complete"]);
+              return [{
+                eventId: `evt_${crypto.randomUUID()}`,
+                sessionId: input.sessionId,
+                agentId: input.agentId,
+                timestamp: new Date().toISOString(),
+                type: "agent.message",
+                payload: { text: "UI QA findings: no target URL was provided; use Playwright or Computer Use harness for visual verification." }
+              }];
+            }
+            throw new Error(`Unexpected agent run: ${input.agentId}`);
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_ui_qa_tools",
+        method: "createSession",
+        params: {
+          prompt: "test UI-QA role on a UI development task",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      const events = await waitForSchedulerIdle(manager, snapshot.sessionId);
+
+      expect(events.some((event) => event.type === "capability.checked" && String(event.agentId ?? "").includes("ui_qa") && event.payload.action === "ui.browser" && event.payload.allowed === true)).toBe(true);
+      expect(events.some((event) => event.type === "capability.checked" && String(event.agentId ?? "").includes("ui_qa") && event.payload.action === "ui.computer" && event.payload.allowed === true)).toBe(true);
+      const browserResults = events.filter((event) => event.type === "agent.tool_result" && event.payload.toolName === "ui_qa.playwright_check");
+      expect(browserResults.some((event) => String(event.payload.output ?? "").includes("Blocked Playwright UI QA target"))).toBe(true);
+      expect(browserResults.some((event) => String(event.payload.output ?? "").includes("127.0.0.1:9") && !String(event.payload.output ?? "").includes("Blocked Playwright UI QA target"))).toBe(true);
+      expect(events.some((event) => event.type === "agent.tool_result" && event.payload.toolName === "ui_qa.computer_use_guide")).toBe(true);
+      expect(events.some((event) => event.type === "workflow.completed" && event.payload.workflowId === "ui-qa-review")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   it("schedules child workflow execution outside the caller model turn", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
     let releaseImplementor: () => void = () => {};

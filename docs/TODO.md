@@ -10,10 +10,9 @@ Computer Use could inspect this app, but direct Computer Use access to `com.open
 
 ## User follow-ups
 
-UI-QA role
-- Let's add such a role, with access to Playwright and Computer use tools, according to the guidelines here:
-https://developers.openai.com/api/docs/guides/tools-computer-use?computer_use_action_handlers=playwright#option-1-run-the-built-in-computer-use-loop
-- Let's test this out with a UI development task., making sure the UI-QA agent provides useful feedback
+## Not Completed
+
+None.
 
 ## Completed Non-Controversial Items
 
@@ -64,21 +63,4 @@ https://developers.openai.com/api/docs/guides/tools-computer-use?computer_use_ac
 - **2026-05-25: Add retry UI for recovered scheduler jobs.** Added a `retryRecoveredJob` daemon protocol method using durable scheduler job metadata, plus a Debug-panel recovered-jobs surface with retry controls.
 - **2026-05-26: Expand workflow observability controls.** Added an explicit Debug-panel scheduler run inspector derived from durable scheduler job events, including run status, prompts, terminal reasons, workflow identifiers, bounded debug log rendering, and Swift projection coverage. This completes the broader observability TODO alongside the existing Plan criteria checklist, Workspace diff/artifact browser, per-agent controls, reconnect/resume actions, and recovered-job retry controls.
 - **2026-05-26: Add continuous improvement workflow.** Added TODO Generator, Continuous Implementor, and Continuous Reviewer roles; a built-in continuous-improvement workflow; graph/event/file inspection for generator/reviewer roles; a bounded sleep tool; generator-driven workflow close semantics; command write rollback for non-writing roles; and a concurrency audit in `docs/concurrency-audit.md`.
-
-
-
-## Completion Criteria:
-
-Let's represent completion criteria as a first-class concept in the workflow engine.
-
-Let's add a stop tool that agents can call when they believe they're done.
-
-If all agents in the workflow have stopped, the workflow is considered stopped, and a completion message is sent to the caller (for now, the caller is always the orchestrator, but it can be any role with the "start workflow" toolset).
-
-agents in a workflow have a dependency graph: they cannot stop or handoff until all dependencies have stopped or handed off. For example, in "implementator qa loop": the implementor isn't done until the QAer has stopped, marking acceptance criteria complete.
-
-Another criteria for stop or handoff: all workflows the agent has started have completed.
-
-This is parallel to the handoff tool, which has an artifact as input. Handoff is meant for synchronous workflow, like the planner; stop is meant for async ones.
-
-The caller can also stop the workflow itself, before it's completed. This (stop_workflow) is exposed as another tool in the "start workflow" toolset. stop_agent is another tool the orchestrator has access to, for stopping individual agents.
+- **2026-05-26: Add UI-QA role and workflow.** Added a UI-QA role with visible local browser and host-side Computer Use policy bits, a `ui-qa-review` workflow, local-only Playwright UI check tooling, Computer Use bridge guidance, and daemon tests proving the role can exercise and reject those tools appropriately on a UI development task.

@@ -53,6 +53,8 @@ struct ToolPolicy: Hashable, Codable {
     var canWrite: Bool
     var canRunCommands: Bool
     var canCreatePlans: Bool?
+    var canUseBrowser: Bool?
+    var canUseComputer: Bool?
 }
 
 struct RoleWorkspace: Hashable, Codable {

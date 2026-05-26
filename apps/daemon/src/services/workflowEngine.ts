@@ -448,6 +448,23 @@ const baseRoles: WorkflowSpec["roles"] = [
     workspace: { allowedRoots: ["."] },
     expectedOutputs: ["Implemented improvement", "Verification notes", "Review response"],
     reviewResponsibilities: []
+  },
+  {
+    id: "ui_qa",
+    name: "UI-QA",
+    color: "#00a8a8",
+    promptTemplate: [
+      "Perform adversarial UI QA for a local app or UI development task.",
+      "Use Playwright checks when a local browser URL is available.",
+      "Use the Computer Use bridge contract for visual desktop/browser QA: request host-side screenshots/action execution, send back updated screenshots, and repeat until complete.",
+      "Keep UI actions bounded and non-destructive; require human approval for authenticated, destructive, purchase, or hard-to-reverse steps.",
+      "Report visible issues, workflow blockers, accessibility concerns, layout problems, console/runtime failures, and concrete reproduction steps."
+    ].join(" "),
+    model: "gpt-5.4",
+    toolPolicy: { canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: false, canUseBrowser: true, canUseComputer: true },
+    workspace: { allowedRoots: ["."] },
+    expectedOutputs: ["UI QA findings", "Reproduction steps", "Screenshots or browser-check summary"],
+    reviewResponsibilities: ["Visual correctness", "Interaction behavior", "Accessibility", "Responsive layout", "Runtime UI errors"]
   }
 ];
 
@@ -583,5 +600,26 @@ const builtInWorkflows: WorkflowSpec[] = [
       "Caller may stop the workflow with workflow_stop.",
       "Implementor must not treat work as final until reviewer feedback is handled."
     ]
+  },
+  {
+    version: 1,
+    id: "ui-qa-review",
+    name: "UI QA Review",
+    description: "UI-QA inspects a UI development task with Playwright/browser checks and Computer Use loop guidance.",
+    roles: baseRoles,
+    nodes: [
+      { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", startsActive: true, dependencies: [] },
+      { id: "ui_qa", roleId: "ui_qa", label: "UI-QA", startsActive: false, dependencies: [] }
+    ],
+    edges: [
+      { id: "handoff-orchestrator-ui_qa", from: "orchestrator", to: "ui_qa", kind: "handoff", description: "Ask UI-QA to test the UI task and report actionable UX findings." },
+      { id: "message-ui_qa-orchestrator", from: "ui_qa", to: "orchestrator", kind: "message", description: "Return UI QA findings and recommended fixes." }
+    ],
+    concurrency: { maxActiveAgents: 2 },
+    lifecycle: { orchestratorNodeId: "orchestrator" },
+    completionCriteria: [
+      { id: "ui_qa_review_complete", ownerNodeId: "ui_qa", description: "UI-QA completes a local Playwright check or host-side Computer Use-oriented UI review and reports findings.", required: true }
+    ],
+    stopCriteria: ["UI-QA reports actionable findings or no visible blockers.", "Orchestrator summarizes the UI QA result."]
   }
 ];

@@ -6,7 +6,9 @@ export type CapabilityAction =
   | "workspace.write"
   | "workspace.command"
   | "plan.create"
-  | "mcp.use";
+  | "mcp.use"
+  | "ui.browser"
+  | "ui.computer";
 
 export interface CapabilityDecisionInput {
   sessionId: string;
@@ -55,6 +57,10 @@ export class CapabilityBroker {
         return role.toolPolicy.canCreatePlans;
       case "mcp.use":
         return role.toolPolicy.canRunCommands && role.toolPolicy.canWrite;
+      case "ui.browser":
+        return role.toolPolicy.canUseBrowser === true;
+      case "ui.computer":
+        return role.toolPolicy.canUseComputer === true;
     }
   }
 }

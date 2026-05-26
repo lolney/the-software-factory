@@ -31,7 +31,9 @@ export const RoleSpecSchema = z.object({
     canRead: z.boolean().default(true),
     canWrite: z.boolean().default(true),
     canRunCommands: z.boolean().default(true),
-    canCreatePlans: z.boolean().default(false)
+    canCreatePlans: z.boolean().default(false),
+    canUseBrowser: z.boolean().optional(),
+    canUseComputer: z.boolean().optional()
   }).prefault({}),
   workspace: z.object({
     allowedRoots: z.array(z.string()).default(["."])

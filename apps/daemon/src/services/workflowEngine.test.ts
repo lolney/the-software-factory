@@ -24,7 +24,8 @@ describe("WorkflowEngine", () => {
       "Implementor",
       "Planner",
       "Researcher",
-      "TODO Generator"
+      "TODO Generator",
+      "UI-QA"
     ]));
   });
 
@@ -54,7 +55,8 @@ describe("WorkflowEngine", () => {
     expect(workflows.map((workflow) => workflow.id)).toEqual(expect.arrayContaining([
       "implementor-qa-loop",
       "implementor-reviewer",
-      "continuous-improvement"
+      "continuous-improvement",
+      "ui-qa-review"
     ]));
     expect(workflows.find((workflow) => workflow.id === "implementor-qa-loop")?.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({ from: "implementor", to: "qa", kind: "handoff" }),
@@ -79,6 +81,11 @@ describe("WorkflowEngine", () => {
     const continuousReviewer = engine.listRoles().find((role) => role.id === "continuous_reviewer");
     expect(todoGenerator?.toolPolicy).toMatchObject({ canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: false });
     expect(continuousReviewer?.toolPolicy).toMatchObject({ canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: false });
+    const uiQA = engine.listRoles().find((role) => role.id === "ui_qa");
+    expect(uiQA?.toolPolicy).toMatchObject({ canRead: true, canWrite: false, canRunCommands: false, canUseBrowser: true, canUseComputer: true });
+    expect(workflows.find((workflow) => workflow.id === "ui-qa-review")?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "ui_qa", roleId: "ui_qa" })
+    ]));
   });
 
   it("loads personal roles and workflows from separate JSON directories", async () => {

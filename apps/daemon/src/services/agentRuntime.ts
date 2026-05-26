@@ -36,6 +36,8 @@ export interface AgentTurnInput {
     readWorkspaceFile?: (relativePath: string) => Promise<string>;
     writeWorkspaceFile?: (relativePath: string, content: string) => Promise<string>;
     runWorkspaceCommand?: (command: string, args?: string[], cwd?: string) => Promise<string>;
+    runPlaywrightCheck?: (targetUrl?: string, task?: string) => Promise<string>;
+    computerUseGuide?: () => Promise<string> | string;
     sendAgentMessage?: (agentId: string, text: string) => Promise<string>;
   };
   mcpServers?: MCPServer[];
@@ -191,6 +193,22 @@ export class OpenAIAgentRuntime implements AgentRuntime {
         description: "Run a command inside the session workspace. Provide the executable as command and arguments as args. Use this for tests, linters, and local verification.",
         parameters: z.object({ command: z.string(), args: z.array(z.string()).default([]), cwd: z.string().nullable() }),
         execute: async (args: any) => input.workflowTools?.runWorkspaceCommand?.(args.command, args.args, args.cwd ?? undefined) ?? "Command tool unavailable."
+      }));
+    }
+    if (input.workflowTools?.runPlaywrightCheck) {
+      tools.push(engineTranscriptTool({
+        name: "ui_qa_playwright_check",
+        description: "Run or prepare a bounded Playwright UI QA check. Provide targetUrl only for a local web UI on localhost, 127.0.0.1, or ::1; otherwise the tool returns a Playwright-oriented QA checklist.",
+        parameters: z.object({ targetUrl: z.string().nullable(), task: z.string().nullable() }),
+        execute: async (args: any) => input.workflowTools?.runPlaywrightCheck?.(args.targetUrl ?? undefined, args.task ?? undefined) ?? "Playwright UI QA tool unavailable."
+      }));
+    }
+    if (input.workflowTools?.computerUseGuide) {
+      tools.push(engineTranscriptTool({
+        name: "ui_qa_computer_use_guide",
+        description: "Return the host-side Computer Use bridge contract for UI QA: screenshot, computer_call actions, action execution, computer_call_output, repeat, and safety constraints.",
+        parameters: z.object({}),
+        execute: async () => input.workflowTools?.computerUseGuide?.() ?? "Computer Use guidance unavailable."
       }));
     }
     if (input.workflowTools?.sendAgentMessage) {

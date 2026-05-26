@@ -1867,6 +1867,12 @@ export class SessionManager {
         return this.runWorkspaceCommand(snapshot, agentId, command, args, cwd, publish);
       };
     }
+    if (this.hasCapability(snapshot, agentId, "ui.browser")) {
+      tools.runPlaywrightCheck = async (targetUrl?: string, task?: string) => this.runUIQAPlaywrightCheck(snapshot, agentId, targetUrl, task, publish);
+    }
+    if (this.hasCapability(snapshot, agentId, "ui.computer")) {
+      tools.computerUseGuide = async () => this.computerUseGuide(snapshot, agentId, publish);
+    }
     if (roleId === "orchestrator") {
       tools.instantiatePlan = async (planId: string) => {
         await this.instantiatePlan(snapshot.sessionId, planId, agentId, publish);
@@ -2040,6 +2046,149 @@ export class SessionManager {
         output,
         durationMs: Date.now() - startedAt
       }
+    }, publish);
+    return output;
+  }
+
+  private async runUIQAPlaywrightCheck(snapshot: SessionSnapshot, agentId: string, targetUrl: string | undefined, task: string | undefined, publish: (event: SessionEvent) => void) {
+    await this.authorizeCapability(snapshot, agentId, "ui.browser", { targetUrl: targetUrl ?? "", task: task ?? "" }, publish);
+    const callId = `call_${crypto.randomUUID()}`;
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.tool_call",
+      payload: {
+        callId,
+        toolName: "ui_qa.playwright_check",
+        input: { targetUrl: targetUrl ?? "", task: task ?? "" }
+      }
+    }, publish);
+    let output: string;
+    if (!targetUrl) {
+      output = [
+        "No targetUrl provided. Use Playwright for local web UI QA when a URL is available.",
+        "Recommended checks: open the target URL, capture console errors, verify primary workflow selectors, check responsive viewport sizes, and record screenshots or accessibility blockers.",
+        task ? `Task focus: ${task}` : undefined
+      ].filter(Boolean).join("\n");
+    } else {
+      const target = this.validateUIQATargetUrl(targetUrl);
+      if (!target.allowed) {
+        output = [
+          `Blocked Playwright UI QA target: ${targetUrl}.`,
+          target.reason,
+          "UI-QA browser checks are limited to local development URLs: http://localhost, http://127.0.0.1, or http://[::1].",
+          task ? `Task focus: ${task}` : undefined
+        ].filter(Boolean).join("\n");
+      } else {
+        output = await this.tryRunPlaywrightSmoke(target.normalizedUrl, task);
+      }
+    }
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.tool_result",
+      payload: {
+        callId,
+        toolName: "ui_qa.playwright_check",
+        output
+      }
+    }, publish);
+    return output;
+  }
+
+  private validateUIQATargetUrl(targetUrl: string): { allowed: true; normalizedUrl: string } | { allowed: false; reason: string } {
+    let parsed: URL;
+    try {
+      parsed = new URL(targetUrl);
+    } catch {
+      return { allowed: false, reason: "The target URL is not a valid absolute URL." };
+    }
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      return { allowed: false, reason: "Only http:// and https:// local development URLs are allowed." };
+    }
+    const host = parsed.hostname.toLowerCase();
+    const localHosts = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+    if (!localHosts.has(host) && !host.endsWith(".localhost")) {
+      return { allowed: false, reason: `Host ${parsed.hostname} is outside the local UI-QA browser allowlist.` };
+    }
+    parsed.username = "";
+    parsed.password = "";
+    return { allowed: true, normalizedUrl: parsed.toString() };
+  }
+
+  private async tryRunPlaywrightSmoke(targetUrl: string, task: string | undefined) {
+    try {
+      const dynamicImport = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<{ chromium: { launch: (options: { headless: boolean }) => Promise<{
+        newPage: () => Promise<{
+          goto: (url: string, options: { waitUntil: "domcontentloaded"; timeout: number }) => Promise<unknown>;
+          title: () => Promise<string>;
+          locator: (selector: string) => { count: () => Promise<number> };
+          viewportSize: () => { width: number; height: number } | null;
+          close: () => Promise<void>;
+        }>;
+        close: () => Promise<void>;
+      }> } }>;
+      const { chromium } = await dynamicImport("playwright");
+      const browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage();
+      try {
+        await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 15_000 });
+        const title = await page.title();
+        const buttonCount = await page.locator("button").count();
+        const inputCount = await page.locator("input, textarea, select").count();
+        const viewport = page.viewportSize();
+        return [
+          `Playwright loaded ${targetUrl}.`,
+          `Title: ${title || "(empty)"}.`,
+          `Interactive controls: ${buttonCount} button(s), ${inputCount} input/select/textarea control(s).`,
+          viewport ? `Viewport: ${viewport.width}x${viewport.height}.` : undefined,
+          task ? `Task focus: ${task}` : undefined
+        ].filter(Boolean).join("\n");
+      } finally {
+        await page.close();
+        await browser.close();
+      }
+    } catch (error) {
+      return [
+        `Playwright smoke check could not run for ${targetUrl}.`,
+        `Reason: ${error instanceof Error ? error.message : String(error)}`,
+        "Install/configure Playwright browsers with `npx playwright install chromium`, or use a host-side Computer Use harness for visual UI QA.",
+        task ? `Task focus: ${task}` : undefined
+      ].filter(Boolean).join("\n");
+    }
+  }
+
+  private async computerUseGuide(snapshot: SessionSnapshot, agentId: string, publish: (event: SessionEvent) => void) {
+    await this.authorizeCapability(snapshot, agentId, "ui.computer", { source: "ui_qa_computer_use_guide" }, publish);
+    const callId = `call_${crypto.randomUUID()}`;
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.tool_call",
+      payload: { callId, toolName: "ui_qa.computer_use_guide", input: {} }
+    }, publish);
+    const output = [
+      "Computer Use UI QA bridge contract:",
+      "The daemon records and authorizes this request, but desktop control must be executed by a host-side Computer Use harness.",
+      "1. Start with a plain-language UI task and a screenshot from an isolated browser or desktop harness.",
+      "2. Inspect each returned computer_call and execute its actions in order.",
+      "3. Capture the updated screen and send it back as computer_call_output.",
+      "4. Repeat until no computer_call is returned.",
+      "Safety: keep an allowlist of domains/actions and require human approval for authenticated, destructive, purchase, or hard-to-reverse steps."
+    ].join("\n");
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.tool_result",
+      payload: { callId, toolName: "ui_qa.computer_use_guide", output }
     }, publish);
     return output;
   }
