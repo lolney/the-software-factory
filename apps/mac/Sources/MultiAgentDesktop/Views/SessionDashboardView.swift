@@ -5,48 +5,65 @@ struct SessionDashboardView: View {
     @State private var tableSelection = Set<String>()
     @State private var pendingArchiveSessionIds: [String] = []
     @State private var isConfirmingArchive = false
+    @State private var selectedStatusFilter: String? = nil
 
-    private var rows: [SessionSummary] {
+    private let statusFilterOrder = ["active", "paused", "failed", "completed", "cancelled", "idle", "archived"]
+
+    private var baseRows: [SessionSummary] {
         let all = store.sessions + store.archivedSessions
         guard !store.dashboardSessionFilterIds.isEmpty else { return all }
         return all.filter { store.dashboardSessionFilterIds.contains($0.id) }
     }
 
+    private var rows: [SessionSummary] {
+        guard let selectedStatusFilter else { return baseRows }
+        return baseRows.filter { normalizedStatus(for: $0) == selectedStatusFilter }
+    }
+
+    private var visibleSelection: [String] {
+        let visibleIds = Set(rows.map(\.id))
+        return Array(tableSelection.intersection(visibleIds))
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Session Dashboard")
-                        .font(.title2.weight(.semibold))
-                    Text(store.dashboardSessionFilterIds.isEmpty ? "All sessions" : "\(rows.count) selected sessions")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if !store.dashboardSessionFilterIds.isEmpty {
-                    Button {
-                        store.viewAllSessions()
-                    } label: {
-                        Label("Show All", systemImage: "line.3.horizontal.decrease.circle")
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Session Dashboard")
+                            .font(.title2.weight(.semibold))
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if !store.dashboardSessionFilterIds.isEmpty {
+                        Button {
+                            selectedStatusFilter = nil
+                            store.viewAllSessions()
+                        } label: {
+                            Label("Show All", systemImage: "line.3.horizontal.decrease.circle")
+                        }
+                    }
+                    if !visibleSelection.isEmpty {
+                        Button {
+                            requestArchive(visibleSelection)
+                        } label: {
+                            Label("Archive Selected", systemImage: "archivebox")
+                        }
+                        Button {
+                            store.restoreSessions(visibleSelection)
+                        } label: {
+                            Label("Restore Selected", systemImage: "arrow.uturn.backward")
+                        }
                     }
                 }
-                if !tableSelection.isEmpty {
-                    Button {
-                        requestArchive(Array(tableSelection))
-                    } label: {
-                        Label("Archive Selected", systemImage: "archivebox")
-                    }
-                    Button {
-                        store.restoreSessions(Array(tableSelection))
-                    } label: {
-                        Label("Restore Selected", systemImage: "arrow.uturn.backward")
-                    }
-                }
+                statusFilters
             }
             .padding()
 
             if rows.isEmpty {
-                ContentUnavailableView("No Sessions", systemImage: "tablecells", description: Text("Create a session or choose a different dashboard filter."))
+                ContentUnavailableView(emptyStateTitle, systemImage: "tablecells", description: Text(emptyStateDescription))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Table(rows, selection: $tableSelection) {
@@ -133,6 +150,88 @@ struct SessionDashboardView: View {
             }
         } message: {
             Text("Archived sessions are hidden from the main list and can be restored from Archived Sessions.")
+        }
+    }
+
+    private var subtitle: String {
+        if store.dashboardSessionFilterIds.isEmpty {
+            return selectedStatusFilter.map { "\(rows.count) \(statusFilterLabel($0).lowercased()) sessions" } ?? "All sessions"
+        }
+        let scoped = "\(baseRows.count) selected sessions"
+        if let selectedStatusFilter {
+            return "\(rows.count) \(statusFilterLabel(selectedStatusFilter).lowercased()) of \(scoped)"
+        }
+        return scoped
+    }
+
+    private var statusFilters: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                statusFilterButton(label: "All", count: baseRows.count, status: nil)
+                ForEach(statusFilterOrder, id: \.self) { status in
+                    statusFilterButton(label: statusFilterLabel(status), count: count(for: status), status: status)
+                }
+            }
+        }
+    }
+
+    private func statusFilterButton(label: String, count: Int, status: String?) -> some View {
+        let isSelected = selectedStatusFilter == status
+        return Button {
+            selectedStatusFilter = status
+            tableSelection.formIntersection(visibleIds(for: status))
+        } label: {
+            HStack(spacing: 5) {
+                Text(label)
+                Text("\(count)")
+                    .font(.caption2.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(isSelected ? .white.opacity(0.85) : .secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(isSelected ? Color.accentColor : Color.secondary.opacity(0.12), in: Capsule())
+            .foregroundStyle(isSelected ? .white : .primary)
+        }
+        .buttonStyle(.plain)
+        .disabled(count == 0 && status != nil)
+        .opacity(count == 0 && status != nil ? 0.45 : 1)
+    }
+
+    private var emptyStateTitle: String {
+        selectedStatusFilter == nil ? "No Sessions" : "No \(statusFilterLabel(selectedStatusFilter ?? "").lowercased()) sessions"
+    }
+
+    private var emptyStateDescription: String {
+        if selectedStatusFilter != nil {
+            return "Choose another status filter or show all sessions."
+        }
+        return "Create a session or choose a different dashboard filter."
+    }
+
+    private func count(for status: String) -> Int {
+        baseRows.filter { normalizedStatus(for: $0) == status }.count
+    }
+
+    private func visibleIds(for status: String?) -> Set<String> {
+        guard let status else { return Set(baseRows.map(\.id)) }
+        return Set(baseRows.filter { normalizedStatus(for: $0) == status }.map(\.id))
+    }
+
+    private func normalizedStatus(for session: SessionSummary) -> String {
+        if session.archived == true { return "archived" }
+        if let status = session.status, !status.isEmpty { return status }
+        return (session.activeAgents ?? 0) > 0 ? "active" : "idle"
+    }
+
+    private func statusFilterLabel(_ status: String) -> String {
+        switch status {
+        case "active": return "Active"
+        case "paused": return "Paused"
+        case "failed": return "Failed"
+        case "completed": return "Completed"
+        case "cancelled": return "Cancelled"
+        case "archived": return "Archived"
+        default: return "Idle"
         }
     }
 
