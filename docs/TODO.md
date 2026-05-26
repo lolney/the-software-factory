@@ -6,8 +6,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 
 - **P2: Expand UI control and observability for autonomous workflows.** Add a first-class workflow/run inspector, criteria checklist, diff/artifact browser, per-agent control panel, reconnect/resume UI.
 - **P2: Add retry/resume UI for recovered scheduler jobs.** Recovery currently marks interrupted jobs failed; persist enough job input and expose a retry action so users can resume work after daemon restarts.
-- **P2: Add automated Swift UI projection coverage.** Cover transcript filtering, tool pairing, artifact export payloads, and live session summary status derivation with testable Swift models or view-model seams.
-
 ## Codex App Comparison Follow-Ups
 
 Computer Use could inspect this app, but direct Computer Use access to `com.openai.codex` was blocked by the environment. These follow-ups are based on Codex-style coding-agent features visible from the current desktop context and prior screenshots in this project thread.
@@ -73,6 +71,7 @@ https://developers.openai.com/api/docs/guides/tools-computer-use?computer_use_ac
 - **2026-05-25: Reduce expanded transcript hang risk.** Investigated the scrolling hang stackshot and capped inline expanded prompt/diff payload rendering so large planner handoff rows no longer force SwiftUI to lay out unbounded text inside the lazy transcript stack.
 - **2026-05-25: Improve workflow graph navigation and layout.** Added graph pan/zoom/reset controls, background deselection, more distinct status styling, workflow-instance lanes, wrapped dense lane layout, stable edge routing to node boundaries, arrowheads, and endpoint dots for live workflow graphs.
 - **2026-05-25: Add orchestrator event inspection tools.** Added `agent_events_list` and `agent_event_inspect` so the orchestrator can inspect another agent's transcript events, tool calls, command outputs, diffs, and full event payloads.
+- **2026-05-25: Add automated Swift projection coverage.** Added a SwiftPM test target covering transcript filtering, timeline tool pairing, event-log export payloads, and session summary status projection; wired it into `npm test`.
 
 
 

@@ -1299,30 +1299,10 @@ final class SessionStore {
     private func refreshSessionSummaryStatuses() {
         guard let selectedSessionId,
               let selectedIndex = sessions.firstIndex(where: { $0.id == selectedSessionId }) else { return }
-        let failureCount = graph.nodes.reduce(0) { total, node in total + node.errorCount + (node.status == .failed ? 1 : 0) }
-        let activeCount = graph.nodes.filter { [.working, .waiting, .paused].contains($0.status) }.count
-        sessions[selectedIndex].activeAgents = activeCount
-        sessions[selectedIndex].failureCount = failureCount
-        let orchestratorStatus = latestOrchestratorStatus()
-        if failureCount > 0 || graph.nodes.contains(where: { $0.status == .failed }) {
-            sessions[selectedIndex].status = "failed"
-        } else if graph.nodes.contains(where: { [.working, .waiting].contains($0.status) }) {
-            sessions[selectedIndex].status = "active"
-        } else if graph.nodes.contains(where: { $0.status == .paused }) {
-            sessions[selectedIndex].status = "paused"
-        } else if orchestratorStatus == "cancelled" || graph.nodes.first(where: { $0.id == "orchestrator" })?.status == .cancelled {
-            sessions[selectedIndex].status = "cancelled"
-        } else if orchestratorStatus == "completed" || graph.nodes.first(where: { $0.id == "orchestrator" })?.status == .completed {
-            sessions[selectedIndex].status = "completed"
-        } else {
-            sessions[selectedIndex].status = "idle"
-        }
-    }
-
-    private func latestOrchestratorStatus() -> String? {
-        transcript.reversed().first { item in
-            item.agentId == "orchestrator" && item.type == "agent.status"
-        }?.payload["status"]?.stringValue
+        let projection = deriveSessionSummaryStatus(graph: graph, transcript: transcript)
+        sessions[selectedIndex].activeAgents = projection.activeAgents
+        sessions[selectedIndex].failureCount = projection.failureCount
+        sessions[selectedIndex].status = projection.status
     }
 
     private func selectedWorkflowId(for prompt: String) -> String {

@@ -13,6 +13,11 @@ let package = Package(
         .executableTarget(
             name: "MultiAgentDesktop",
             path: "Sources/MultiAgentDesktop"
+        ),
+        .testTarget(
+            name: "MultiAgentDesktopTests",
+            dependencies: ["MultiAgentDesktop"],
+            path: "Tests/MultiAgentDesktopTests"
         )
     ]
 )
