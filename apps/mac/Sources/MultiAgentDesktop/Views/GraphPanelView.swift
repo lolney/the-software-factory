@@ -79,6 +79,7 @@ struct GraphPanelView: View {
             let transformedPositions = layout.positions.mapValues { transform($0, contentSize: layout.contentSize, in: proxy.size) }
             ZStack {
                 Canvas { context, size in
+                    drawLanes(context: &context, size: size, layout: layout)
                     drawEdges(context: &context, size: size, layout: layout)
                     drawNodes(context: &context, size: size, layout: layout)
                 }
@@ -176,7 +177,9 @@ struct GraphPanelView: View {
     }
 
     private func drawEdges(context: inout GraphicsContext, size: CGSize, layout: GraphLayout) {
+        let bucketCounts = Dictionary(grouping: graph.edges, by: edgeBucketKey).mapValues(\.count)
         var endpointCounts: [String: Int] = [:]
+        var edgeIndexes: [String: Int] = [:]
         let visibleNodeSize = scaledNodeSize
         for edge in graph.edges {
             guard let startCenter = layout.positions[edge.from],
@@ -186,15 +189,36 @@ struct GraphPanelView: View {
             let endpoints = edgeEndpoints(from: startRect, to: endRect)
             let start = endpoints.start
             let end = endpoints.end
-            var path = Path()
-            path.move(to: start)
-            path.addLine(to: end)
+            let bucket = edgeBucketKey(edge)
+            let bucketIndex = edgeIndexes[bucket, default: 0]
+            edgeIndexes[bucket] = bucketIndex + 1
+            let route = edgeRoute(from: start, to: end, offset: CGFloat(bucketIndex) - CGFloat((bucketCounts[bucket] ?? 1) - 1) / 2)
             let style = StrokeStyle(lineWidth: edge.active ? 2.5 : 1.5, dash: edge.kind == .message ? [5, 5] : [])
-            context.stroke(path, with: .color(edge.active ? .accentColor : .secondary), style: style)
-            drawArrowhead(context: context, from: start, to: end, active: edge.active)
+            context.stroke(route.path, with: .color(edge.active ? .accentColor : .secondary), style: style)
+            drawArrowhead(context: context, from: route.arrowFrom, to: end, active: edge.active)
             endpointCounts["\(Int(end.x)):\(Int(end.y))", default: 0] += 1
             let radius = endpointCounts["\(Int(end.x)):\(Int(end.y))", default: 1] > 1 ? 4.5 : 3.5
             context.fill(Path(ellipseIn: CGRect(x: end.x - radius, y: end.y - radius, width: radius * 2, height: radius * 2)), with: .color(edge.active ? .accentColor : .secondary))
+        }
+    }
+
+    private func drawLanes(context: inout GraphicsContext, size: CGSize, layout: GraphLayout) {
+        for lane in layout.lanes {
+            let minPoint = transform(CGPoint(x: lane.rect.minX, y: lane.rect.minY), contentSize: layout.contentSize, in: size)
+            let maxPoint = transform(CGPoint(x: lane.rect.maxX, y: lane.rect.maxY), contentSize: layout.contentSize, in: size)
+            let rect = CGRect(
+                x: min(minPoint.x, maxPoint.x),
+                y: min(minPoint.y, maxPoint.y),
+                width: abs(maxPoint.x - minPoint.x),
+                height: abs(maxPoint.y - minPoint.y)
+            )
+            context.fill(Path(roundedRect: rect, cornerRadius: 10), with: .color(.secondary.opacity(0.045)))
+            context.stroke(Path(roundedRect: rect, cornerRadius: 10), with: .color(.secondary.opacity(0.12)), lineWidth: 1)
+            context.draw(
+                Text(lane.label).font(.caption2.weight(.semibold)).foregroundStyle(.secondary),
+                at: CGPoint(x: rect.minX + 12, y: rect.minY + 12),
+                anchor: .leading
+            )
         }
     }
 
@@ -211,33 +235,113 @@ struct GraphPanelView: View {
             if node.id == store.selectedAgentId {
                 context.stroke(Path(roundedRect: rect.insetBy(dx: -4, dy: -4), cornerRadius: 10), with: .color(.accentColor), lineWidth: 2.5)
             }
-            context.draw(Text(shortLabel(node.label)).font(.caption.weight(.semibold)), at: CGPoint(x: rect.midX, y: rect.midY - 12), anchor: .center)
-            context.draw(Text(node.status.rawValue).font(.caption2).foregroundStyle(stateColor), at: CGPoint(x: rect.midX, y: rect.midY + 10), anchor: .center)
+            context.draw(Text(shortLabel(node.label, maxLength: zoom < 0.75 ? 10 : 18)).font(.system(size: max(8, 12 * zoom), weight: .semibold)), at: CGPoint(x: rect.midX, y: rect.midY - 12 * zoom), anchor: .center)
+            if zoom >= 0.7 {
+                context.draw(Text(node.status.rawValue).font(.system(size: max(7, 10 * zoom))).foregroundStyle(stateColor), at: CGPoint(x: rect.midX, y: rect.midY + 10 * zoom), anchor: .center)
+            }
             if node.errorCount > 0 || node.unreadCount > 0 {
-                context.draw(Text(badgeText(for: node)).font(.caption2.weight(.bold)), at: CGPoint(x: rect.maxX - 12, y: rect.minY + 12), anchor: .center)
+                context.draw(Text(badgeText(for: node)).font(.system(size: max(7, 10 * zoom), weight: .bold)), at: CGPoint(x: rect.maxX - 12 * zoom, y: rect.minY + 12 * zoom), anchor: .center)
             }
         }
     }
 
     private func layout(size: CGSize) -> GraphLayout {
-        guard !graph.nodes.isEmpty else { return GraphLayout(contentSize: size, positions: [:]) }
-        let columns = max(1, Int(ceil(sqrt(Double(graph.nodes.count)))))
-        let rows = max(1, Int(ceil(Double(graph.nodes.count) / Double(columns))))
+        guard !graph.nodes.isEmpty else { return GraphLayout(contentSize: size, positions: [:], lanes: []) }
+        let groups = groupedNodes()
         let cell = CGSize(width: nodeSize.width + nodeGap.width, height: nodeSize.height + nodeGap.height)
+        let availableColumns = max(1, Int(floor(max(cell.width, size.width / max(zoom, 0.1) - contentPadding * 2) / cell.width)))
+        let groupColumns = groups.map { min(max(1, $0.nodes.count), availableColumns) }
+        let maxColumns = max(1, groupColumns.max() ?? 1)
+        let groupRows = zip(groups, groupColumns).map { group, columns in
+            max(1, Int(ceil(Double(group.nodes.count) / Double(columns))))
+        }
+        let totalRows = groupRows.reduce(0, +)
         let contentSize = CGSize(
-            width: max(size.width / max(zoom, 0.1), CGFloat(columns) * cell.width + contentPadding * 2),
-            height: max(size.height / max(zoom, 0.1), CGFloat(rows) * cell.height + contentPadding * 2)
+            width: max(size.width / max(zoom, 0.1), CGFloat(maxColumns) * cell.width + contentPadding * 2),
+            height: max(size.height / max(zoom, 0.1), CGFloat(totalRows) * cell.height + contentPadding * 2)
         )
         var positions: [String: CGPoint] = [:]
-        for (index, node) in graph.nodes.enumerated() {
-            let row = index / columns
-            let column = index % columns
-            positions[node.id] = CGPoint(
-                x: contentPadding + cell.width * CGFloat(column) + nodeSize.width / 2,
-                y: contentPadding + cell.height * CGFloat(row) + nodeSize.height / 2
+        var lanes: [GraphLane] = []
+        var rowOffset = 0
+        for (groupIndex, group) in groups.enumerated() {
+            let columns = groupColumns[groupIndex]
+            let rows = groupRows[groupIndex]
+            let groupWidth = CGFloat(columns) * cell.width
+            let xOffset = max(contentPadding, (contentSize.width - groupWidth) / 2)
+            let y = contentPadding + cell.height * CGFloat(rowOffset) + nodeSize.height / 2
+            lanes.append(GraphLane(
+                label: group.label,
+                rect: CGRect(
+                    x: contentPadding / 2,
+                    y: y - cell.height / 2 + 10,
+                    width: contentSize.width - contentPadding,
+                    height: CGFloat(rows) * cell.height - 20
+                )
+            ))
+            for (index, node) in group.nodes.enumerated() {
+                let row = index / columns
+                let column = index % columns
+                positions[node.id] = CGPoint(
+                    x: xOffset + cell.width * CGFloat(column) + nodeSize.width / 2,
+                    y: y + cell.height * CGFloat(row)
+                )
+            }
+            rowOffset += rows
+        }
+        return GraphLayout(contentSize: contentSize, positions: positions, lanes: lanes)
+    }
+
+    private func groupedNodes() -> [GraphNodeGroup] {
+        let memberships = workflowMemberships()
+        var groups: [String: [AgentNode]] = [:]
+        var order: [String] = []
+        for node in graph.nodes {
+            let key = memberships[node.id]?.key ?? "session"
+            if groups[key] == nil {
+                groups[key] = []
+                order.append(key)
+            }
+            groups[key, default: []].append(node)
+        }
+        order.sort { lhs, rhs in
+            if lhs == "session" { return true }
+            if rhs == "session" { return false }
+            return lhs.localizedStandardCompare(rhs) == .orderedAscending
+        }
+        return order.map { key in
+            GraphNodeGroup(
+                label: memberships.values.first { $0.key == key }?.label ?? "Session",
+                nodes: groups[key] ?? []
             )
         }
-        return GraphLayout(contentSize: contentSize, positions: positions)
+    }
+
+    private func workflowMemberships() -> [String: WorkflowMembership] {
+        var memberships: [String: WorkflowMembership] = [:]
+        var workflowCounts: [String: Int] = [:]
+        for event in store.transcript where event.type == "workflow.instantiated" {
+            guard let workflowInstanceId = event.payload["workflowInstanceId"]?.stringValue,
+                  let workflowId = event.payload["workflowId"]?.stringValue,
+                  let nodeMap = event.payload["nodeMap"]?.objectValue else { continue }
+            workflowCounts[workflowId, default: 0] += 1
+            let ordinal = workflowCounts[workflowId, default: 1]
+            let callerAgentId = event.payload["callerAgentId"]?.stringValue
+            let membership = WorkflowMembership(
+                key: workflowInstanceId,
+                label: workflowLaneLabel(workflowId: workflowId, ordinal: ordinal, instanceId: workflowInstanceId)
+            )
+            for value in nodeMap.values {
+                guard let agentId = value.stringValue, agentId != callerAgentId else { continue }
+                memberships[agentId] = membership
+            }
+        }
+        return memberships
+    }
+
+    private func workflowLaneLabel(workflowId: String, ordinal: Int, instanceId: String) -> String {
+        let base = workflowId.replacingOccurrences(of: "-", with: " ")
+        let suffix = String(instanceId.suffix(4))
+        return ordinal == 1 ? base : "\(base) \(ordinal) #\(suffix)"
     }
 
     private func transform(_ point: CGPoint, contentSize: CGSize, in viewport: CGSize) -> CGPoint {
@@ -281,6 +385,21 @@ struct GraphPanelView: View {
         ]
     }
 
+    private func edgeRoute(from start: CGPoint, to end: CGPoint, offset: CGFloat) -> (path: Path, arrowFrom: CGPoint) {
+        var path = Path()
+        path.move(to: start)
+        guard abs(start.x - end.x) > 24, abs(start.y - end.y) > 24 else {
+            path.addLine(to: end)
+            return (path, start)
+        }
+        let midY = (start.y + end.y) / 2 + offset * 10
+        let beforeEnd = CGPoint(x: end.x, y: midY)
+        path.addLine(to: CGPoint(x: start.x, y: midY))
+        path.addLine(to: beforeEnd)
+        path.addLine(to: end)
+        return (path, beforeEnd)
+    }
+
     private func drawArrowhead(context: GraphicsContext, from start: CGPoint, to end: CGPoint, active: Bool) {
         let angle = atan2(end.y - start.y, end.x - start.x)
         let length: CGFloat = 10
@@ -321,8 +440,12 @@ struct GraphPanelView: View {
         return "\(node.unreadCount)"
     }
 
-    private func shortLabel(_ label: String) -> String {
-        label.count > 18 ? "\(label.prefix(17))..." : label
+    private func edgeBucketKey(_ edge: AgentEdge) -> String {
+        [edge.from, edge.to].sorted().joined(separator: "<->") + ":\(edge.kind.rawValue)"
+    }
+
+    private func shortLabel(_ label: String, maxLength: Int = 18) -> String {
+        label.count > maxLength ? "\(label.prefix(max(1, maxLength - 1)))..." : label
     }
 
     private func accessibilityLabel(for node: AgentNode) -> String {
@@ -343,4 +466,20 @@ struct GraphPanelView: View {
 private struct GraphLayout {
     let contentSize: CGSize
     let positions: [String: CGPoint]
+    let lanes: [GraphLane]
+}
+
+private struct GraphLane {
+    let label: String
+    let rect: CGRect
+}
+
+private struct GraphNodeGroup {
+    let label: String
+    let nodes: [AgentNode]
+}
+
+private struct WorkflowMembership {
+    let key: String
+    let label: String
 }

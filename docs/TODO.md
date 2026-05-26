@@ -8,11 +8,6 @@ Backlog items proposed by adversarial architecture/code and UX/product reviews. 
 - **P2: Add retry/resume UI for recovered scheduler jobs.** Recovery currently marks interrupted jobs failed; persist enough job input and expose a retry action so users can resume work after daemon restarts.
 - **P2: Add automated Swift UI projection coverage.** Cover transcript filtering, tool pairing, artifact export payloads, and live session summary status derivation with testable Swift models or view-model seams.
 
-## UX And Product Review Follow-Ups
-
-- **P2: Improve dense workflow graph layout.** Reduce edge overlap and node crowding for multi-agent workflows, add pan/zoom or fit controls, and consider grouped workflow lanes for instantiated subgraphs.
-
-
 ## Codex App Comparison Follow-Ups
 
 Computer Use could inspect this app, but direct Computer Use access to `com.openai.codex` was blocked by the environment. These follow-ups are based on Codex-style coding-agent features visible from the current desktop context and prior screenshots in this project thread.
@@ -76,7 +71,7 @@ https://developers.openai.com/api/docs/guides/tools-computer-use?computer_use_ac
 - **2026-05-25: Preserve transcript reading position.** Added an explicit Follow Live toggle and stopped transcript search/filter changes from forcing the timeline back to the newest row.
 - **2026-05-25: Disambiguate repeated session rows.** Added status, last-activity, active/failure hints, and durable user-editable session titles to sidebar rows without changing creation-time ordering.
 - **2026-05-25: Reduce expanded transcript hang risk.** Investigated the scrolling hang stackshot and capped inline expanded prompt/diff payload rendering so large planner handoff rows no longer force SwiftUI to lay out unbounded text inside the lazy transcript stack.
-- **2026-05-25: Improve workflow graph navigation and layout.** Added graph pan/zoom/reset controls, background deselection, more distinct status styling, non-overlapping grid placement, edge routing to node boundaries, arrowheads, and endpoint dots for live workflow graphs.
+- **2026-05-25: Improve workflow graph navigation and layout.** Added graph pan/zoom/reset controls, background deselection, more distinct status styling, workflow-instance lanes, wrapped dense lane layout, stable edge routing to node boundaries, arrowheads, and endpoint dots for live workflow graphs.
 - **2026-05-25: Add orchestrator event inspection tools.** Added `agent_events_list` and `agent_event_inspect` so the orchestrator can inspect another agent's transcript events, tool calls, command outputs, diffs, and full event payloads.
 
 
