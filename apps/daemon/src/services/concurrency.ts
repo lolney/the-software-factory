@@ -71,7 +71,7 @@ export class ActorRegistry {
     const actor = this.actor(sessionId, agentId);
     const status = actor?.status ?? fallbackStatus;
     if ((actor?.activeJobIds.length ?? 0) > 0) return false;
-    return !["paused", "cancelled", "failed", "completed"].includes(status);
+    return !["paused", "cancelled", "failed"].includes(status);
   }
 
   canEmitFrom(sessionId: string, agentId: string, fallbackStatus: ActorStatus = "idle") {

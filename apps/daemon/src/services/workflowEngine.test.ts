@@ -23,7 +23,8 @@ describe("WorkflowEngine", () => {
       "Adversarial Reviewer",
       "Implementor",
       "Planner",
-      "Researcher"
+      "Researcher",
+      "TODO Generator"
     ]));
   });
 
@@ -52,7 +53,8 @@ describe("WorkflowEngine", () => {
     const workflows = engine.list();
     expect(workflows.map((workflow) => workflow.id)).toEqual(expect.arrayContaining([
       "implementor-qa-loop",
-      "implementor-reviewer"
+      "implementor-reviewer",
+      "continuous-improvement"
     ]));
     expect(workflows.find((workflow) => workflow.id === "implementor-qa-loop")?.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({ from: "implementor", to: "qa", kind: "handoff" }),
@@ -62,6 +64,21 @@ describe("WorkflowEngine", () => {
       expect.objectContaining({ from: "implementor", to: "reviewer", kind: "message" }),
       expect.objectContaining({ from: "reviewer", to: "implementor", kind: "message" })
     ]));
+    const continuous = workflows.find((workflow) => workflow.id === "continuous-improvement");
+    expect(continuous?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "todo_generator", roleId: "todo_generator" }),
+      expect.objectContaining({ id: "implementor", roleId: "continuous_implementor", dependencies: ["reviewer"] }),
+      expect.objectContaining({ id: "reviewer", roleId: "continuous_reviewer" })
+    ]));
+    expect(continuous?.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: "todo_generator", to: "implementor", kind: "handoff" }),
+      expect.objectContaining({ from: "reviewer", to: "implementor", kind: "handoff" }),
+      expect.objectContaining({ from: "implementor", to: "todo_generator", kind: "message" })
+    ]));
+    const todoGenerator = engine.listRoles().find((role) => role.id === "todo_generator");
+    const continuousReviewer = engine.listRoles().find((role) => role.id === "continuous_reviewer");
+    expect(todoGenerator?.toolPolicy).toMatchObject({ canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: false });
+    expect(continuousReviewer?.toolPolicy).toMatchObject({ canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: false });
   });
 
   it("loads personal roles and workflows from separate JSON directories", async () => {

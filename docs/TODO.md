@@ -10,15 +10,6 @@ Computer Use could inspect this app, but direct Computer Use access to `com.open
 
 ## User follow-ups
 
-Continuous improvement workflow:
-- Consists of a todo-generator, reviewer, and implementor
-- These run continuously until shut down by the orchestrator, or until the todo-generator judges the project is in an acceptable state and no further improvements can be made in the spirit of the original prompt (and calls the stop tool)
-- The roles hand off to each other in a loop:
-    - todo-generator looks for potential improvements to the project, not necessarily bounded by the original requirements, and generates a TODO list. Hands this off to the implementor as a prompt.
-    - The implementor implements and hands off to the todo-generator again, once the reviwer (which reviews asynchronously) is satisfied
-    - Todo-generator can inspect the graph state. It can sleep for x minutes if there haven't been enough changes to the project
-- There should be proper concurrency controls here so that the implementor doesn't interfere with ongoing implementation. These should already be in place to some extent, but do an audit of these.
-
 UI-QA role
 - Let's add such a role, with access to Playwright and Computer use tools, according to the guidelines here:
 https://developers.openai.com/api/docs/guides/tools-computer-use?computer_use_action_handlers=playwright#option-1-run-the-built-in-computer-use-loop
@@ -72,6 +63,7 @@ https://developers.openai.com/api/docs/guides/tools-computer-use?computer_use_ac
 - **2026-05-25: Add automated Swift projection coverage.** Added a SwiftPM test target covering transcript filtering, timeline tool pairing, event-log export payloads, and session summary status projection; wired it into `npm test`.
 - **2026-05-25: Add retry UI for recovered scheduler jobs.** Added a `retryRecoveredJob` daemon protocol method using durable scheduler job metadata, plus a Debug-panel recovered-jobs surface with retry controls.
 - **2026-05-26: Expand workflow observability controls.** Added an explicit Debug-panel scheduler run inspector derived from durable scheduler job events, including run status, prompts, terminal reasons, workflow identifiers, bounded debug log rendering, and Swift projection coverage. This completes the broader observability TODO alongside the existing Plan criteria checklist, Workspace diff/artifact browser, per-agent controls, reconnect/resume actions, and recovered-job retry controls.
+- **2026-05-26: Add continuous improvement workflow.** Added TODO Generator, Continuous Implementor, and Continuous Reviewer roles; a built-in continuous-improvement workflow; graph/event/file inspection for generator/reviewer roles; a bounded sleep tool; generator-driven workflow close semantics; command write rollback for non-writing roles; and a concurrency audit in `docs/concurrency-audit.md`.
 
 
 

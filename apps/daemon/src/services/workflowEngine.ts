@@ -402,6 +402,52 @@ const baseRoles: WorkflowSpec["roles"] = [
     workspace: { allowedRoots: ["."] },
     expectedOutputs: ["Research notes", "Cited implementation context"],
     reviewResponsibilities: ["External context", "API correctness", "Dependency risk"]
+  },
+  {
+    id: "todo_generator",
+    name: "TODO Generator",
+    color: "#6c5ce7",
+    promptTemplate: [
+      "Continuously inspect project state, workflow graph state, transcripts, TODOs, and recent implementation activity.",
+      "Generate the next concrete improvement prompt for the implementor when useful work remains.",
+      "If there have not been enough changes to judge progress, use agent_sleep for a short bounded wait before inspecting state again.",
+      "When the project is acceptable in the spirit of the original prompt and no meaningful improvements remain, call workflow_stop_self with the final assessment."
+    ].join(" "),
+    model: "gpt-5.4",
+    toolPolicy: { canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: false },
+    workspace: { allowedRoots: ["."] },
+    expectedOutputs: ["Prioritized improvement prompt", "Project-acceptable stop assessment"],
+    reviewResponsibilities: ["Backlog quality", "Original-goal fit", "Improvement prioritization"]
+  },
+  {
+    id: "continuous_reviewer",
+    name: "Continuous Reviewer",
+    color: "#d35400",
+    promptTemplate: [
+      "Review the implementor's changes during the continuous improvement loop.",
+      "Inspect transcript events, touched files, command output, and diffs.",
+      "Send concise blocking findings or explicit approval back to the implementor."
+    ].join(" "),
+    model: "gpt-5.4",
+    toolPolicy: { canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: false },
+    workspace: { allowedRoots: ["."] },
+    expectedOutputs: ["Continuous review findings", "Approval or blockers"],
+    reviewResponsibilities: ["Architecture drift", "Regression risk", "Test coverage"]
+  },
+  {
+    id: "continuous_implementor",
+    name: "Continuous Implementor",
+    color: "#2ecc71",
+    promptTemplate: [
+      "Implement the TODO Generator's current improvement prompt inside the session workspace.",
+      "Coordinate with the Continuous Reviewer before handing completion back to the TODO Generator.",
+      "Respect workspace leases and avoid touching files already claimed by another active agent."
+    ].join(" "),
+    model: "gpt-5.4",
+    toolPolicy: { canRead: true, canWrite: true, canRunCommands: true, canCreatePlans: false },
+    workspace: { allowedRoots: ["."] },
+    expectedOutputs: ["Implemented improvement", "Verification notes", "Review response"],
+    reviewResponsibilities: []
   }
 ];
 
@@ -505,5 +551,37 @@ const builtInWorkflows: WorkflowSpec[] = [
       { id: "qa_acceptance", ownerNodeId: "qa", description: "QA verifies acceptance criteria.", required: true }
     ],
     stopCriteria: ["Implementation matches the plan.", "Reviewer has no blocking findings.", "QA acceptance checks pass."]
+  },
+  {
+    version: 1,
+    id: "continuous-improvement",
+    name: "Continuous Improvement Loop",
+    description: "TODO generator, implementor, and reviewer loop until the generator decides no useful improvements remain or the caller stops the workflow.",
+    roles: baseRoles,
+    nodes: [
+      { id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", startsActive: true, dependencies: [] },
+      { id: "todo_generator", roleId: "todo_generator", label: "TODO Generator", startsActive: false, dependencies: [] },
+      { id: "implementor", roleId: "continuous_implementor", label: "Implementor", startsActive: false, dependencies: ["reviewer"] },
+      { id: "reviewer", roleId: "continuous_reviewer", label: "Reviewer", startsActive: false, dependencies: [] }
+    ],
+    edges: [
+      { id: "handoff-orchestrator-todo_generator", from: "orchestrator", to: "todo_generator", kind: "handoff", description: "Ask the TODO generator to inspect the current project state and produce the next improvement prompt." },
+      { id: "handoff-todo_generator-implementor", from: "todo_generator", to: "implementor", kind: "handoff", description: "Hand off the current prioritized improvement prompt." },
+      { id: "message-implementor-reviewer", from: "implementor", to: "reviewer", kind: "message", description: "Share touched files, verification output, and implementation notes for review." },
+      { id: "handoff-reviewer-implementor", from: "reviewer", to: "implementor", kind: "handoff", description: "Return approval or blocking review findings to the implementor." },
+      { id: "message-implementor-todo_generator", from: "implementor", to: "todo_generator", kind: "message", description: "Report implemented improvement and ask the TODO generator for the next item or final stop decision." }
+    ],
+    concurrency: { maxActiveAgents: 3 },
+    lifecycle: { orchestratorNodeId: "orchestrator" },
+    completionCriteria: [
+      { id: "continuous_assessment_complete", ownerNodeId: "todo_generator", description: "TODO generator decides the project is acceptable or produces the next useful improvement.", required: true },
+      { id: "continuous_implementation_reviewed", ownerNodeId: "implementor", description: "Implementor completes the current improvement after reviewer feedback is handled.", required: false },
+      { id: "continuous_review_complete", ownerNodeId: "reviewer", description: "Reviewer approves the current improvement or returns blockers.", required: false }
+    ],
+    stopCriteria: [
+      "TODO generator calls workflow_stop_self when no further meaningful improvements remain.",
+      "Caller may stop the workflow with workflow_stop.",
+      "Implementor must not treat work as final until reviewer feedback is handled."
+    ]
   }
 ];

@@ -32,6 +32,7 @@ export interface AgentTurnInput {
     inspectAgents?: () => unknown | Promise<unknown>;
     listAgentEvents?: (agentId?: string, limit?: number, inspectEventId?: string) => unknown | Promise<unknown>;
     inspectEvent?: (eventId: string) => unknown | Promise<unknown>;
+    sleepAgent?: (seconds: number, reason?: string) => Promise<string>;
     readWorkspaceFile?: (relativePath: string) => Promise<string>;
     writeWorkspaceFile?: (relativePath: string, content: string) => Promise<string>;
     runWorkspaceCommand?: (command: string, args?: string[], cwd?: string) => Promise<string>;
@@ -158,6 +159,14 @@ export class OpenAIAgentRuntime implements AgentRuntime {
         description: "Inspect one full event by eventId, including complete payload details such as command output, tool input/result, diffs, or error metadata.",
         parameters: z.object({ eventId: z.string() }),
         execute: async (args) => JSON.stringify(await input.workflowTools?.inspectEvent?.(args.eventId) ?? {})
+      }));
+    }
+    if (input.workflowTools?.sleepAgent) {
+      tools.push(engineTranscriptTool({
+        name: "agent_sleep",
+        description: "Pause your own agent turn for a bounded interval when waiting for more session activity before deciding the next action.",
+        parameters: z.object({ seconds: z.number().int().min(1).max(60), reason: z.string().nullable() }),
+        execute: async (args: any) => input.workflowTools?.sleepAgent?.(args.seconds, args.reason ?? undefined) ?? "Sleep tool unavailable."
       }));
     }
     if (input.workflowTools?.readWorkspaceFile) {

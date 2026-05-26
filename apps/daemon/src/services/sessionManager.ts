@@ -1300,7 +1300,7 @@ export class SessionManager {
         result.stdout ? `stdout:\n${result.stdout}` : undefined,
         result.stderr ? `stderr:\n${result.stderr}` : undefined
       ].filter(Boolean).join("\n");
-      const workspaceSummary = await this.recordCommandWorkspaceChanges(snapshot, agentId, policy, beforeFiles, publish);
+      const workspaceSummary = await this.recordCommandWorkspaceChanges(snapshot, agentId, policy, beforeFiles, publish, this.hasCapability(snapshot, agentId, "workspace.write"));
       const finalOutput = [output, workspaceSummary].filter(Boolean).join("\n");
       await this.appendAndPublish({
         eventId: makeEventId(),
@@ -1320,7 +1320,7 @@ export class SessionManager {
         processError.stderr ? `stderr:\n${processError.stderr}` : undefined,
         processError.message ? `error:\n${processError.message}` : undefined
       ].filter(Boolean).join("\n");
-      const workspaceSummary = await this.recordCommandWorkspaceChanges(snapshot, agentId, policy, beforeFiles, publish);
+      const workspaceSummary = await this.recordCommandWorkspaceChanges(snapshot, agentId, policy, beforeFiles, publish, this.hasCapability(snapshot, agentId, "workspace.write"));
       const output = [commandOutput, workspaceSummary].filter(Boolean).join("\n");
       await this.appendAndPublish({
         eventId: makeEventId(),
@@ -1339,11 +1339,16 @@ export class SessionManager {
     agentId: string,
     policy: { sessionId: string; workspaceRoot: string; allowedRoots: string[] },
     beforeFiles: Map<string, string>,
-    publish: (event: SessionEvent) => void
+    publish: (event: SessionEvent) => void,
+    allowWorkspaceWrites: boolean
   ) {
     const afterFiles = await scanWorkspaceFiles(snapshot.workspaceRoot);
     const changedFiles = changedWorkspaceFiles(beforeFiles, afterFiles);
     if (changedFiles.length === 0) return "";
+    if (!allowWorkspaceWrites) {
+      await restoreWorkspaceFiles(snapshot.workspaceRoot, beforeFiles, changedFiles);
+      return `workspace changes rolled back: command-capable role ${agentId} does not have workspace write permission.`;
+    }
 
     const events = await this.store.readEvents(snapshot.sessionId);
     this.workspace.reconstructLeases(snapshot.sessionId, events);
@@ -1642,28 +1647,54 @@ export class SessionManager {
     const orchestratorId = nodeMap.get(spec.lifecycle.orchestratorNodeId) ?? spec.lifecycle.orchestratorNodeId;
     const initialEvents = await this.store.readEvents(snapshot.sessionId);
     const runCounts = this.workflowRunCounts(initialEvents, nodeMap, orchestratorId, workflowInstanceId);
-    const processedHandoffs = this.processedWorkflowEdges(initialEvents, "handoff.created", workflowInstanceId);
-    const processedMessages = this.processedWorkflowEdges(initialEvents, "message.sent", workflowInstanceId);
-    const maxIterationsPerAgent = 2;
-    const maxSteps = Math.max(1, spec.edges.length * maxIterationsPerAgent + 4);
+    const continuousWorkflow = spec.id === "continuous-improvement";
+    const processedHandoffs = this.processedWorkflowEdges(initialEvents, "handoff.created", workflowInstanceId, continuousWorkflow);
+    const processedMessages = this.processedWorkflowEdges(initialEvents, "message.sent", workflowInstanceId, continuousWorkflow);
+    const maxIterationsPerAgent = continuousWorkflow ? Number.MAX_SAFE_INTEGER : 3;
+    const maxSteps = continuousWorkflow ? Number.MAX_SAFE_INTEGER : Math.max(1, spec.edges.length * maxIterationsPerAgent + 4);
+    const edgeProcessingKey = (edgeId: string, fromAgentId: string) => continuousWorkflow ? `${edgeId}:${runCounts.get(fromAgentId) ?? 0}` : edgeId;
+    const canRunHandoff = (fromAgentId: string, toAgentId: string) => {
+      const sourceRuns = runCounts.get(fromAgentId) ?? 0;
+      if (sourceRuns <= 0) return false;
+      if (!continuousWorkflow) return true;
+      const targetRuns = runCounts.get(toAgentId) ?? 0;
+      if (sourceRuns <= 0 || targetRuns >= maxIterationsPerAgent) return false;
+      return targetRuns < sourceRuns + 1;
+    };
+    const canRunMessage = (fromAgentId: string, toAgentId: string) => {
+      const sourceRuns = runCounts.get(fromAgentId) ?? 0;
+      const targetRuns = runCounts.get(toAgentId) ?? 0;
+      if (sourceRuns <= 0 || targetRuns >= maxIterationsPerAgent) return false;
+      return continuousWorkflow ? targetRuns < sourceRuns + 1 : true;
+    };
+    const continuousPhaseAllows = (edge: WorkflowSpec["edges"][number], fromAgentId: string) => {
+      if (!continuousWorkflow) return true;
+      const sourceRuns = runCounts.get(fromAgentId) ?? 0;
+      if (edge.id === "message-implementor-reviewer") return sourceRuns % 2 === 1;
+      if (edge.id === "message-implementor-todo_generator") return sourceRuns > 0 && sourceRuns % 2 === 0;
+      return true;
+    };
     for (let step = 0; step < maxSteps; step += 1) {
       snapshot = await this.store.readSnapshot(snapshot.sessionId);
+      await this.rehydrateActors(snapshot.sessionId);
       if (await this.isWorkflowClosed(snapshot.sessionId, workflowInstanceId)) break;
       const readyHandoff = spec.edges
         .filter((edge) => edge.kind === "handoff")
         .find((edge) => {
           const from = nodeMap.get(edge.from) ?? edge.from;
           const to = nodeMap.get(edge.to) ?? edge.to;
-          return (runCounts.get(from) ?? 0) > 0
-            && !processedHandoffs.has(edge.id)
+          return canRunHandoff(from, to)
+            && !processedHandoffs.has(edgeProcessingKey(edge.id, from))
+            && continuousPhaseAllows(edge, from)
             && this.canEmitFrom(snapshot, from)
             && this.canSchedule(snapshot, to)
             && this.canHandoffFrom(snapshot, spec, nodeMap, edge.from, edge.to, workflowInstanceId);
         });
       if (readyHandoff) {
-        processedHandoffs.add(readyHandoff.id);
         const from = nodeMap.get(readyHandoff.from) ?? readyHandoff.from;
         const to = nodeMap.get(readyHandoff.to) ?? readyHandoff.to;
+        const edgeCycleKey = edgeProcessingKey(readyHandoff.id, from);
+        processedHandoffs.add(edgeCycleKey);
         const originalGoal = await this.sessionGoal(snapshot.sessionId, snapshot.title);
         const prompt = [
           this.promptForPlanAgent(planWorkflow, readyHandoff.to, originalGoal, readyHandoff.description, this.latestAgentMessage(snapshot, from)),
@@ -1675,7 +1706,7 @@ export class SessionManager {
           agentId: from,
           timestamp: new Date().toISOString(),
           type: "handoff.created",
-          payload: { from, to, reason: `plan workflow ${planWorkflow.workflowId}: ${readyHandoff.description}`, edgeId: readyHandoff.id, originalGoal, prompt, workflowInstanceId },
+          payload: { from, to, reason: `plan workflow ${planWorkflow.workflowId}: ${readyHandoff.description}`, edgeId: readyHandoff.id, edgeCycleKey, originalGoal, prompt, workflowInstanceId },
           causationId
         }, publish);
         if (to !== orchestratorId) {
@@ -1705,17 +1736,18 @@ export class SessionManager {
         .find((edge) => {
           const from = nodeMap.get(edge.from) ?? edge.from;
           const to = nodeMap.get(edge.to) ?? edge.to;
-          return (runCounts.get(from) ?? 0) > 0
-            && (runCounts.get(to) ?? 0) < maxIterationsPerAgent
-            && !processedMessages.has(edge.id)
+          return canRunMessage(from, to)
+            && !processedMessages.has(edgeProcessingKey(edge.id, from))
+            && continuousPhaseAllows(edge, from)
             && this.canEmitFrom(snapshot, from)
             && this.canSchedule(snapshot, to)
             && this.canHandoffFrom(snapshot, spec, nodeMap, edge.from, edge.to, workflowInstanceId);
         });
       if (!readyMessage) break;
-      processedMessages.add(readyMessage.id);
       const from = nodeMap.get(readyMessage.from) ?? readyMessage.from;
       const to = nodeMap.get(readyMessage.to) ?? readyMessage.to;
+      const edgeCycleKey = edgeProcessingKey(readyMessage.id, from);
+      processedMessages.add(edgeCycleKey);
       const originalGoal = await this.sessionGoal(snapshot.sessionId, snapshot.title);
       const prompt = [
         this.promptForPlanAgent(planWorkflow, readyMessage.to, originalGoal, readyMessage.description, this.latestAgentMessage(snapshot, from)),
@@ -1727,7 +1759,7 @@ export class SessionManager {
         agentId: from,
         timestamp: new Date().toISOString(),
         type: "message.sent",
-        payload: { from, to, text: prompt, edgeId: readyMessage.id, originalGoal, prompt, workflowInstanceId, description: readyMessage.description },
+        payload: { from, to, text: prompt, edgeId: readyMessage.id, edgeCycleKey, originalGoal, prompt, workflowInstanceId, description: readyMessage.description },
         causationId
       }, publish);
       if (to !== orchestratorId) {
@@ -1782,14 +1814,14 @@ export class SessionManager {
     return runCounts;
   }
 
-  private processedWorkflowEdges(events: SessionEvent[], type: "handoff.created" | "message.sent", workflowInstanceId: string) {
+  private processedWorkflowEdges(events: SessionEvent[], type: "handoff.created" | "message.sent", workflowInstanceId: string, continuousWorkflow = false) {
     const processed = new Set<string>();
     for (const event of events) {
       if (event.type !== type || event.payload.workflowInstanceId !== workflowInstanceId) continue;
       const edgeId = String(event.payload.edgeId ?? "");
       const targetAgentId = String(event.payload.to ?? "");
       if (edgeId && targetAgentId && hasAgentProgressAfter(events, event.eventId, targetAgentId)) {
-        processed.add(edgeId);
+        processed.add(continuousWorkflow ? String(event.payload.edgeCycleKey ?? edgeId) : edgeId);
       }
     }
     return processed;
@@ -1886,6 +1918,8 @@ export class SessionManager {
         }, publish);
         return result.stopped ? `Stopped agent ${resolvedAgentId}.` : `Agent ${resolvedAgentId} stop blocked: ${result.reason}.`;
       };
+    }
+    if (["orchestrator", "todo_generator", "reviewer", "continuous_reviewer"].includes(roleId ?? "")) {
       tools.inspectAgents = async () => (await this.store.readSnapshot(snapshot.sessionId)).graph;
       tools.listAgentEvents = async (targetAgentId?: string, limit = 30, inspectEventId?: string) => {
         const latest = await this.store.readSnapshot(snapshot.sessionId);
@@ -1910,7 +1944,14 @@ export class SessionManager {
         if (!event) throw new Error(`Unknown event ${eventId} in session ${snapshot.sessionId}. Use agent_events_list first.`);
         return event;
       };
+    }
+    if (roleId === "todo_generator") {
+      tools.sleepAgent = async (seconds: number, reason?: string) => this.sleepAgent(snapshot, agentId, seconds, reason, publish);
+    }
+    if (this.hasCapability(snapshot, agentId, "workspace.read")) {
       tools.readWorkspaceFile = async (relativePath: string) => this.readWorkspacePath(snapshot, agentId, relativePath, publish);
+    }
+    if (roleId === "orchestrator") {
       tools.sendAgentMessage = async (targetAgentId: string, text: string) => {
         const latest = await this.store.readSnapshot(snapshot.sessionId);
         const resolvedAgentId = this.resolveAgentTarget(latest, targetAgentId);
@@ -1967,6 +2008,40 @@ export class SessionManager {
       return result.stopped ? `Stopped ${agentId}.` : `Stop blocked for ${agentId}: ${result.reason}.`;
     };
     return tools;
+  }
+
+  private async sleepAgent(snapshot: SessionSnapshot, agentId: string, seconds: number, reason: string | undefined, publish: (event: SessionEvent) => void) {
+    const boundedSeconds = Math.max(1, Math.min(60, Math.floor(seconds || 1)));
+    const callId = `call_${crypto.randomUUID()}`;
+    const startedAt = Date.now();
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.tool_call",
+      payload: {
+        callId,
+        toolName: "agent.sleep",
+        input: { seconds: boundedSeconds, reason: reason ?? "" }
+      }
+    }, publish);
+    await new Promise((resolve) => setTimeout(resolve, boundedSeconds * 1000));
+    const output = `Slept ${boundedSeconds}s${reason ? `: ${reason}` : "."}`;
+    await this.appendAndPublish({
+      eventId: makeEventId(),
+      sessionId: snapshot.sessionId,
+      agentId,
+      timestamp: new Date().toISOString(),
+      type: "agent.tool_result",
+      payload: {
+        callId,
+        toolName: "agent.sleep",
+        output,
+        durationMs: Date.now() - startedAt
+      }
+    }, publish);
+    return output;
   }
 
   private eventSummary(event: SessionEvent) {
@@ -2192,7 +2267,10 @@ export class SessionManager {
       .map((event) => event.agentId as string));
     const pendingAgentIds = instance.agentIds.filter((candidate) => !stoppedAgentIds.has(candidate));
     const pendingCriteria = await this.pendingRequiredCriteria(sessionId, instance);
-    if (pendingAgentIds.length > 0 || pendingCriteria.length > 0) {
+    const continuousStopAgentId = instance.workflowId === "continuous-improvement" ? instance.nodeMap.get("todo_generator") : undefined;
+    const continuousGeneratorStopped = !!continuousStopAgentId && stoppedAgentIds.has(continuousStopAgentId);
+    const shouldCompleteContinuousWorkflow = continuousGeneratorStopped && pendingCriteria.length === 0;
+    if (!shouldCompleteContinuousWorkflow && (pendingAgentIds.length > 0 || pendingCriteria.length > 0)) {
       if (options.recordWaiting) {
         await this.appendAndPublish({
           eventId: makeEventId(),
@@ -2219,6 +2297,23 @@ export class SessionManager {
         pendingAgentIds,
         pendingCriteria
       };
+    }
+    if (shouldCompleteContinuousWorkflow) {
+      for (const pendingAgentId of pendingAgentIds) {
+        await this.appendAndPublish({
+          eventId: makeEventId(),
+          sessionId,
+          agentId: pendingAgentId,
+          timestamp: new Date().toISOString(),
+          type: "agent.status",
+          payload: {
+            status: "cancelled",
+            workflowInstanceId,
+            reason: "continuous improvement loop closed by TODO generator"
+          },
+          causationId
+        }, publish);
+      }
     }
     const ledger = await this.criteriaLedger(sessionId, workflowInstanceId);
     const completed = await this.appendAndPublish({

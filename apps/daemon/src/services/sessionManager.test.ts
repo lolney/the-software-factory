@@ -1565,6 +1565,175 @@ describe("SessionManager deterministic debug sessions", () => {
     }
   });
 
+  it("closes continuous improvement when the TODO generator stops", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            if (input.agentId === "orchestrator") {
+              if (input.prompt.includes("Workflow continuous-improvement completed")) {
+                return [{
+                  eventId: `evt_${crypto.randomUUID()}`,
+                  sessionId: input.sessionId,
+                  agentId: input.agentId,
+                  timestamp: new Date().toISOString(),
+                  type: "agent.message",
+                  payload: { text: "continuous completion observed" }
+                }];
+              }
+              const started = await input.workflowTools?.startWorkflow?.("continuous-improvement");
+              return [{
+                eventId: `evt_${crypto.randomUUID()}`,
+                sessionId: input.sessionId,
+                agentId: input.agentId,
+                timestamp: new Date().toISOString(),
+                type: "agent.message",
+                payload: { text: started }
+              }];
+            }
+            if (input.agentId.includes("todo_generator")) {
+              await input.workflowTools?.stopSelf?.("Project is acceptable; no further improvements remain.", "no more useful TODOs", ["continuous_assessment_complete"]);
+              return [{
+                eventId: `evt_${crypto.randomUUID()}`,
+                sessionId: input.sessionId,
+                agentId: input.agentId,
+                timestamp: new Date().toISOString(),
+                type: "agent.message",
+                payload: { text: "continuous improvement complete" }
+              }];
+            }
+            throw new Error(`Unexpected agent run: ${input.agentId}`);
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_continuous_stop",
+        method: "createSession",
+        params: {
+          prompt: "start continuous improvement and stop when done",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      const events = await waitForSchedulerIdle(manager, snapshot.sessionId);
+
+      expect(events.some((event) => event.type === "workflow.completed" && event.payload.workflowId === "continuous-improvement")).toBe(true);
+      expect(events.some((event) => event.type === "agent.stopped" && String(event.agentId ?? "").includes("todo_generator"))).toBe(true);
+      expect(events.some((event) => event.type === "agent.status" && String(event.agentId ?? "").includes("continuous-improvement_implementor") && event.payload.status === "cancelled")).toBe(true);
+      expect(events.some((event) => event.type === "agent.status" && String(event.agentId ?? "").includes("continuous-improvement_reviewer") && event.payload.status === "cancelled")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("returns continuous improvement control to the TODO generator after review", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    let todoRuns = 0;
+    let implementorRuns = 0;
+    let reviewerRuns = 0;
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            if (input.agentId === "orchestrator") {
+              if (input.prompt.includes("Workflow continuous-improvement completed")) {
+                return [{
+                  eventId: `evt_${crypto.randomUUID()}`,
+                  sessionId: input.sessionId,
+                  agentId: input.agentId,
+                  timestamp: new Date().toISOString(),
+                  type: "agent.message",
+                  payload: { text: "continuous completion observed" }
+                }];
+              }
+              const started = await input.workflowTools?.startWorkflow?.("continuous-improvement");
+              return [{
+                eventId: `evt_${crypto.randomUUID()}`,
+                sessionId: input.sessionId,
+                agentId: input.agentId,
+                timestamp: new Date().toISOString(),
+                type: "agent.message",
+                payload: { text: started }
+              }];
+            }
+            if (input.agentId.includes("todo_generator")) {
+              todoRuns += 1;
+              if (todoRuns === 1) {
+                return [{
+                  eventId: `evt_${crypto.randomUUID()}`,
+                  sessionId: input.sessionId,
+                  agentId: input.agentId,
+                  timestamp: new Date().toISOString(),
+                  type: "agent.message",
+                  payload: { text: "Next TODO: improve the parser." }
+                }];
+              }
+              await input.workflowTools?.stopSelf?.("No further improvements remain after reviewed implementation.", "accepted", ["continuous_assessment_complete"]);
+              return [{
+                eventId: `evt_${crypto.randomUUID()}`,
+                sessionId: input.sessionId,
+                agentId: input.agentId,
+                timestamp: new Date().toISOString(),
+                type: "agent.message",
+                payload: { text: "continuous improvement complete" }
+              }];
+            }
+            if (input.agentId.includes("implementor")) {
+              implementorRuns += 1;
+              return [{
+                eventId: `evt_${crypto.randomUUID()}`,
+                sessionId: input.sessionId,
+                agentId: input.agentId,
+                timestamp: new Date().toISOString(),
+                type: "agent.message",
+                payload: { text: implementorRuns === 1 ? "implemented change for review" : "review handled, returning to todo generator" }
+              }];
+            }
+            if (input.agentId.includes("reviewer")) {
+              reviewerRuns += 1;
+              await input.workflowTools?.stopSelf?.("review approved", "approved", []);
+              return [{
+                eventId: `evt_${crypto.randomUUID()}`,
+                sessionId: input.sessionId,
+                agentId: input.agentId,
+                timestamp: new Date().toISOString(),
+                type: "agent.message",
+                payload: { text: "approved with no blockers" }
+              }];
+            }
+            throw new Error(`Unexpected agent run: ${input.agentId}`);
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_continuous_loop",
+        method: "createSession",
+        params: {
+          prompt: "start continuous improvement with one reviewed item",
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      const events = await waitForSchedulerIdle(manager, snapshot.sessionId);
+
+      expect(todoRuns).toBe(2);
+      expect(implementorRuns).toBe(2);
+      expect(reviewerRuns).toBe(1);
+      const messageEdges = events
+        .filter((event) => event.type === "message.sent" && event.payload.workflowId !== "continuous-improvement")
+        .map((event) => event.payload.edgeId);
+      expect(messageEdges).toEqual(expect.arrayContaining(["message-implementor-reviewer", "message-implementor-todo_generator"]));
+      expect(events.some((event) => event.type === "workflow.completed" && event.payload.workflowId === "continuous-improvement")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   it("schedules child workflow execution outside the caller model turn", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
     let releaseImplementor: () => void = () => {};
