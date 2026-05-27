@@ -101,6 +101,13 @@ open_app() {
 }
 
 open_mockup_fixture() {
+  local attempt
+  for attempt in 1 2 3; do
+    if /usr/bin/open -n -g "$APP_BUNDLE" --args --software-factory-mockup-fixture; then
+      return
+    fi
+    sleep 0.5
+  done
   /usr/bin/open -n -g "$APP_BUNDLE" --args --software-factory-mockup-fixture
 }
 

@@ -58,7 +58,7 @@ magick artifacts/design-mockups/current-fixture-window-1586.png -background whit
 magick artifacts/design-mockups/current-fixture-window-1586.png -crop 282x920+0+72 +repage artifacts/design-mockups/fidelity/current-sidebar-content.png
 magick artifacts/design-mockups/current-fixture-window-1586.png -crop 873x100+282+72 +repage artifacts/design-mockups/fidelity/current-upper-band-only.png
 magick artifacts/design-mockups/current-fixture-window-1586.png -crop 873x128+282+72 +repage artifacts/design-mockups/fidelity/current-upper-content.png
-magick artifacts/design-mockups/current-fixture-window-1586.png -crop 282x130+0+194 +repage artifacts/design-mockups/fidelity/current-selected-row-band.png
+magick artifacts/design-mockups/fidelity/current-sidebar-content.png -crop 282x130+0+253 +repage artifacts/design-mockups/fidelity/current-selected-row-band.png
 magick artifacts/design-mockups/fidelity/ref-selected-row-band.png artifacts/design-mockups/fidelity/current-selected-row-band.png +append artifacts/design-mockups/fidelity/selected-row-band-comparison.png
 
 magick artifacts/design-mockups/fidelity/current-sidebar-content.png -strip artifacts/design-mockups/fidelity/current-sidebar-content.png
@@ -71,7 +71,7 @@ magick compare -metric RMSE artifacts/design-mockups/fidelity/ref-sidebar-conten
 printf '\nbottom '
 magick compare -metric RMSE <(magick artifacts/design-mockups/fidelity/ref-sidebar-content.png -crop 282x100+0+820 +repage png:-) <(magick artifacts/design-mockups/fidelity/current-sidebar-content.png -crop 282x100+0+820 +repage png:-) null: 2>&1 || true
 printf '\nselected '
-magick compare -metric RMSE <(magick artifacts/design-mockups/fidelity/ref-sidebar-content.png -crop 282x74+0+286 +repage png:-) <(magick artifacts/design-mockups/fidelity/current-sidebar-content.png -crop 282x74+0+286 +repage png:-) null: 2>&1 || true
+magick compare -metric RMSE artifacts/design-mockups/fidelity/ref-selected-row-band.png artifacts/design-mockups/fidelity/current-selected-row-band.png null: 2>&1 || true
 printf '\ntopnav '
 magick compare -metric RMSE <(magick artifacts/design-mockups/fidelity/ref-sidebar-content.png -crop 282x150+0+0 +repage png:-) <(magick artifacts/design-mockups/fidelity/current-sidebar-content.png -crop 282x150+0+0 +repage png:-) null: 2>&1 || true
 printf '\nupper-band '
@@ -87,3 +87,7 @@ magick compare -metric RMSE <(magick artifacts/design-mockups/fidelity/ref-upper
 printf '\nsearch '
 magick compare -metric RMSE <(magick artifacts/design-mockups/fidelity/ref-upper-content.png -crop 320x54+170+0 +repage png:-) <(magick artifacts/design-mockups/fidelity/current-upper-content.png -crop 320x54+170+0 +repage png:-) null: 2>&1 || true
 printf '\n'
+
+magick artifacts/design-mockups/fidelity/ref-sidebar-content.png artifacts/design-mockups/fidelity/current-sidebar-content.png artifacts/design-mockups/fidelity/diff-sidebar-content.png +append artifacts/design-mockups/fidelity/sidebar-content-comparison.png
+magick artifacts/design-mockups/fidelity/ref-upper-band-only.png artifacts/design-mockups/fidelity/current-upper-band-only.png artifacts/design-mockups/fidelity/diff-upper-band-only.png +append artifacts/design-mockups/fidelity/upper-band-only-comparison.png
+magick artifacts/design-mockups/fidelity/ref-upper-content.png artifacts/design-mockups/fidelity/current-upper-content.png artifacts/design-mockups/fidelity/diff-upper-content.png +append artifacts/design-mockups/fidelity/upper-content-comparison.png

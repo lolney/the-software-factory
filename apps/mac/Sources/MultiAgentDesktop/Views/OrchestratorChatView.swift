@@ -287,12 +287,25 @@ private struct TranscriptTopBar: View {
                 .frame(height: 1)
                 .offset(y: 20)
         }
+        .overlay(alignment: .trailing) {
+            LinearGradient(
+                stops: [
+                    .init(color: .black.opacity(0), location: 0),
+                    .init(color: .black.opacity(0.05), location: 1)
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: 24)
+            .allowsHitTesting(false)
+        }
     }
 }
 
 private struct SessionStateStrip: View {
     @Bindable var store: SessionStore
     let transcriptCountSummary: String
+    private let mockupStatusGreen = Color(.sRGB, red: 110 / 255, green: 180 / 255, blue: 119 / 255, opacity: 1)
 
     private var activeAgents: Int {
         store.graph.nodes.filter { $0.status == .working }.count
@@ -346,7 +359,7 @@ private struct SessionStateStrip: View {
             MetricCell(title: "Agents", value: agentSummary, width: 97)
             MetricCell(title: "Queue", value: "\(queuedWorkCount)", width: 92, sparkline: true, sparklineValues: [0.05, 0.05, 0.06, 0.06, 0.62, 0.08, 0.18, 0.08, 0.07, 0.07])
             MetricCell(title: "Last action", value: lastActionAge, width: 106)
-            MetricCell(title: "Failures", value: nil, width: 86, statusColor: store.sessionErrorCount > 0 ? .orange : .green)
+            MetricCell(title: "Failures", value: nil, width: 86, statusColor: store.sessionErrorCount > 0 ? .orange : mockupStatusGreen)
             MetricCell(title: "Changed files", value: "\(store.touchedWorkspaceFiles.count)", width: 112, sparkline: !store.touchedWorkspaceFiles.isEmpty, sparklineValues: [0.05, 0.05, 0.06, 0.08, 0.55, 0.08, 0.12, 0.5, 0.08, 0.6, 0.08], valueOffsetX: 0)
             MetricCell(title: "Mode", value: "Auto", width: 96, showsChevron: true)
             MetricCell(title: "Runtime", value: runtimeLabel, width: 111, valueOffsetX: 0)
@@ -354,7 +367,7 @@ private struct SessionStateStrip: View {
                 title: "Connection",
                 value: store.connectionStatus == "Connected" ? "Local" : store.connectionStatus,
                 width: 116,
-                statusColor: store.connectionStatus == "Connected" ? .green : .secondary,
+                statusColor: store.connectionStatus == "Connected" ? mockupStatusGreen : .secondary,
                 valueOffsetX: 0
             )
         }
@@ -401,7 +414,7 @@ private struct MetricCell: View {
                     if let value {
                         Text(value)
                             .font(.system(size: 14))
-                            .foregroundStyle(.primary.opacity(0.80))
+                            .foregroundStyle(.primary.opacity(0.86))
                             .lineLimit(1)
                             .monospacedDigit()
                     }

@@ -206,7 +206,7 @@ struct SidebarView: View {
                 .background(Color(.sRGB, red: 242 / 255, green: 242 / 255, blue: 243 / 255, opacity: 1), in: RoundedRectangle(cornerRadius: 7))
                 .overlay {
                     RoundedRectangle(cornerRadius: 7)
-                        .stroke(.separator.opacity(0.8))
+                        .stroke(.separator.opacity(0.65))
                 }
                 .help("Create a session from an initial prompt")
             }
@@ -296,7 +296,7 @@ struct SessionSidebarRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: rowIcon)
-                .font(.system(size: 10, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.primary.opacity(0.5))
                 .frame(width: 16)
 
@@ -304,10 +304,10 @@ struct SessionSidebarRow: View {
                 Text(titleOverride ?? session.title)
                     .lineLimit(1)
                     .font(.system(size: 14.5))
-                    .foregroundStyle(.primary.opacity(0.50))
+                    .foregroundStyle(.primary.opacity(0.511))
                 Text(activityLabel)
                     .font(.caption)
-                    .foregroundStyle(.primary.opacity(0.46))
+                    .foregroundStyle(.primary.opacity(0.36))
                     .lineLimit(1)
                     .offset(x: -18, y: -1)
             }
@@ -371,7 +371,7 @@ private struct SidebarNavRow: View {
         Button(action: action) {
             HStack(spacing: 12) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 12, weight: .regular))
+                    .font(.system(size: 13, weight: .regular))
                     .frame(width: 18)
                 Text(title)
                     .font(.system(size: 15))
