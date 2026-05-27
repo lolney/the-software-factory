@@ -13,7 +13,7 @@ struct SidebarView: View {
             HStack {
                 Text("SESSIONS")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary.opacity(0.55))
+                    .foregroundStyle(.primary.opacity(0.36))
                 Spacer()
                 Button {
                     store.beginNewSession()
@@ -76,7 +76,7 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("RECENT SESSIONS")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.primary.opacity(0.55))
+                        .foregroundStyle(.primary.opacity(0.36))
                         .padding(.top, 18)
                         .padding(.horizontal, 20)
 
@@ -129,7 +129,7 @@ struct SidebarView: View {
                     if let archived = store.selectedArchivedSession {
                         Text("ARCHIVED")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.primary.opacity(0.55))
+                            .foregroundStyle(.primary.opacity(0.36))
                             .padding(.top, 14)
                             .padding(.horizontal, 20)
                         SidebarSessionButton(
@@ -214,14 +214,33 @@ struct SidebarView: View {
             .padding(.bottom, 29)
         }
         .background {
-            LinearGradient(
-                colors: [
-                    Color(.sRGB, red: 244 / 255, green: 244 / 255, blue: 245 / 255, opacity: 1),
-                    Color(.sRGB, red: 246 / 255, green: 247 / 255, blue: 248 / 255, opacity: 1)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        Color(.sRGB, red: 244 / 255, green: 244 / 255, blue: 245 / 255, opacity: 1),
+                        Color(.sRGB, red: 246 / 255, green: 247 / 255, blue: 248 / 255, opacity: 1)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                LinearGradient(
+                    stops: [
+                        .init(color: .white.opacity(0.03), location: 0),
+                        .init(color: .white.opacity(0.07), location: 0.5),
+                        .init(color: .white.opacity(0.16), location: 1)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                LinearGradient(
+                    colors: [
+                        .black.opacity(0.005),
+                        .black.opacity(0)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            }
         }
         .confirmationDialog("Archive selected sessions?", isPresented: $showingArchiveConfirmation) {
             Button("Archive \(pendingArchiveIds.count) Sessions", role: .destructive) {
@@ -284,6 +303,7 @@ struct SessionSidebarRow: View {
                 Text(titleOverride ?? session.title)
                     .lineLimit(1)
                     .font(.system(size: 14.5))
+                    .foregroundStyle(.primary.opacity(0.50))
                 Text(activityLabel)
                     .font(.caption)
                     .foregroundStyle(.primary.opacity(0.46))
@@ -356,7 +376,7 @@ private struct SidebarNavRow: View {
                     .font(.system(size: 15))
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(.primary)
+            .foregroundStyle(.primary.opacity(0.58))
             .padding(.horizontal, 10)
             .frame(height: 34)
             .background {
@@ -386,7 +406,7 @@ private struct SidebarSessionButton<Content: View>: View {
                 .background {
                     if isSelected {
                         RoundedRectangle(cornerRadius: 7)
-                            .fill(.quaternary.opacity(0.65))
+                            .fill(.quaternary.opacity(0.48))
                     }
                 }
         }

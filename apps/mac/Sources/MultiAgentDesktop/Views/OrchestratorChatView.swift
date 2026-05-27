@@ -218,14 +218,14 @@ private struct TranscriptTopBar: View {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 15))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondary.opacity(0.62))
                     TextField("Search transcript", text: $store.transcriptSearchText)
                         .textFieldStyle(.plain)
                     Image(systemName: "command")
                         .font(.caption2.weight(.medium))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.tertiary.opacity(0.62))
                         .frame(width: 18, height: 18)
-                        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 4))
+                        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 4))
                         .overlay {
                             RoundedRectangle(cornerRadius: 4)
                                 .stroke(.separator.opacity(0.35))
@@ -279,6 +279,12 @@ private struct TranscriptTopBar: View {
                 .padding(.horizontal, 40)
                 .padding(.bottom, 14)
                 .offset(x: -15, y: -4)
+        }
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color(.sRGB, white: 225 / 255, opacity: 1))
+                .frame(height: 1)
+                .offset(y: 20)
         }
     }
 }
@@ -377,7 +383,7 @@ private struct MetricCell: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(title)
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary.opacity(0.72))
                     .lineLimit(1)
                 HStack(spacing: 7) {
                     if let statusColor {
@@ -388,6 +394,7 @@ private struct MetricCell: View {
                     if let value {
                         Text(value)
                             .font(.system(size: 14))
+                            .foregroundStyle(.primary.opacity(0.80))
                             .lineLimit(1)
                             .monospacedDigit()
                     }
