@@ -365,6 +365,7 @@ private struct PlanWorkflowStatusView: View {
 private struct PlanCriterionStatusView: View {
     let row: PlanCriterionRow
     let selectOwner: () -> Void
+    @State private var showsIdentifiers = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -396,25 +397,39 @@ private struct PlanCriterionStatusView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                if let workflowInstanceId = row.workflowInstanceId {
-                    Text(workflowInstanceId)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Text(row.eventId)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
                 Spacer()
                 Text(row.timestamp, style: .time)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
+            if row.workflowInstanceId != nil || !row.eventId.isEmpty {
+                DisclosureGroup("Identifiers", isExpanded: $showsIdentifiers) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        if let workflowInstanceId = row.workflowInstanceId {
+                            identifierLine("Workflow run", workflowInstanceId)
+                        }
+                        identifierLine("Event", row.eventId)
+                    }
+                    .padding(.top, 2)
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
         }
         .padding(.vertical, 4)
+    }
+
+    private func identifierLine(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(label)
+                .foregroundStyle(.tertiary)
+            Text(value)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+        }
     }
 }
 
@@ -484,7 +499,7 @@ struct WorkspacePanelView: View {
     private var diffEventsByPath: [String: [TranscriptItem]] {
         Dictionary(grouping: store.transcript.filter { item in
             item.type == "workspace.file_touched"
-                && item.payload["diff"]?.stringValue?.isEmpty == false
+                && workspaceDiffHasContent(item)
                 && item.payload["path"]?.stringValue != nil
         }, by: { $0.payload["path"]?.stringValue ?? "" })
     }

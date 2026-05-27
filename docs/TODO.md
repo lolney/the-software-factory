@@ -10,9 +10,35 @@ Computer Use could inspect this app, but direct Computer Use access to `com.open
 
 ## User follow-ups
 
+### 2026-05-26 Deep UX And Design Audit
+
+Clear fixes to work down:
+
+- Redact credentials and token-like payloads from daemon/client error surfaces before they reach status banners, Settings, or logs intended for users.
+- Stop formatting the daemon port with locale grouping separators in Settings.
+- Make the inspector tab bar and inspector header actions adapt cleanly at narrow widths; current segmented controls and action buttons clip on Workspace/Debug.
+- Improve Workspace diff previews: hide zero-diff repeats by default, wrap or horizontally scroll long diff lines, and make latest-vs-history clearer.
+- Make Plan completion criteria scannable by hiding raw event/workflow IDs until expanded or copied.
+- Improve Roles editor responsiveness; the detail form clips horizontally and important fields disappear at common window widths.
+- Improve Settings MCP server rows; long command/auth-instruction text truncates without a way to expand or inspect details.
+- Add safer, less prominent presentation of account identifiers in Auth settings, with copy affordances for users who need exact values.
+- Make the New Session setup controls read as one coherent form; the current mode/model/workspace strip is cramped and easy to miss.
+- Add transcript result counts and an obvious active-filter summary near search, especially when an agent filter and text search are combined.
+
+Big product/design judgment calls:
+
+- Consider a command-palette/global search model for sessions, artifacts, agents, files, and transcript events, similar to Codex’s fast navigation philosophy.
+- Consider making the graph an overview/minimap rather than a full inspector default; for many workflows the useful information is status, ownership, next edge, and blockers.
+- Consider adding Codex-like workspace affordances that fit this app: branch/dirty-state awareness, test-command quick runs, diff review queue, and PR/publish actions guarded by role policy.
+- Consider moving Roles/Workflows editing out of the main session source list into Settings or a dedicated Library window to keep the primary app focused on running work.
+
 ## Not Completed
 
-None.
+- Inspector tab/header responsive layout clips at common widths.
+- Workspace diff preview still has clipped long diff lines and could make latest-vs-history clearer.
+- Roles editor still needs responsive detail work.
+- New Session setup needs a clearer form hierarchy.
+- Big product/design judgment calls from the 2026-05-26 audit remain intentionally unimplemented.
 
 ## Completed Non-Controversial Items
 
@@ -64,3 +90,7 @@ None.
 - **2026-05-26: Expand workflow observability controls.** Added an explicit Debug-panel scheduler run inspector derived from durable scheduler job events, including run status, prompts, terminal reasons, workflow identifiers, bounded debug log rendering, and Swift projection coverage. This completes the broader observability TODO alongside the existing Plan criteria checklist, Workspace diff/artifact browser, per-agent controls, reconnect/resume actions, and recovered-job retry controls.
 - **2026-05-26: Add continuous improvement workflow.** Added TODO Generator, Continuous Implementor, and Continuous Reviewer roles; a built-in continuous-improvement workflow; graph/event/file inspection for generator/reviewer roles; a bounded sleep tool; generator-driven workflow close semantics; command write rollback for non-writing roles; and a concurrency audit in `docs/concurrency-audit.md`.
 - **2026-05-26: Add UI-QA role and workflow.** Added a UI-QA role with visible local browser and host-side Computer Use policy bits, a `ui-qa-review` workflow, local-only Playwright UI check tooling, Computer Use bridge guidance, and daemon tests proving the role can exercise and reject those tools appropriately on a UI development task.
+- **2026-05-26: Fix audit-critical credential and settings display issues.** Redacted Keychain credential-write failures in the daemon and Swift status surfaces, stopped locale-grouped daemon port rendering, and shortened visible account/client identifiers in Auth settings while preserving status detail.
+- **2026-05-27: Work down second UX audit pass.** Added transcript event counts for filtered and unfiltered views, suppressed zero-diff Workspace events in previews and copy output, tucked Plan criterion identifiers behind disclosure, and added expandable MCP server detail rows for long commands/auth guidance.
+- **2026-05-27: Implement mockup 1 direction while keeping Graph.** Added a compact session state strip above the transcript, grouped dense low-level transcript events behind expandable rows, and replaced the resizable inspector split with a collapsible fixed-width detail drawer that preserves the current Workflow Graph view.
+- **2026-05-27: Tighten mockup 1 visual density.** Reduced the state strip to conditional signal, hid escaped single-row lifecycle noise from the main transcript, stopped mailbox internals from rendering as user messages, capped action summary rows, and simplified recent-session rows toward the mockup's calmer sidebar.

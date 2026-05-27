@@ -213,16 +213,19 @@ export class AuthManager {
 
   async saveTokens(tokens: OAuthTokenSet) {
     const payload = JSON.stringify(tokens);
-    await execFileAsync("security", [
-      "add-generic-password",
-      "-a",
-      this.keychainAccount,
-      "-s",
-      this.keychainService,
-      "-w",
-      payload,
-      "-U"
-    ]);
+    await runKeychainWrite(
+      [
+        "add-generic-password",
+        "-a",
+        this.keychainAccount,
+        "-s",
+        this.keychainService,
+        "-w",
+        payload,
+        "-U"
+      ],
+      "Could not store OpenAI OAuth credentials in macOS Keychain."
+    );
   }
 
   async loadTokens(): Promise<OAuthTokenSet | null> {
@@ -310,29 +313,35 @@ export class AuthManager {
   }
 
   async saveApiKey(apiKey: string) {
-    await execFileAsync("security", [
-      "add-generic-password",
-      "-a",
-      this.apiKeychainAccount,
-      "-s",
-      this.apiKeychainService,
-      "-w",
-      apiKey,
-      "-U"
-    ]);
+    await runKeychainWrite(
+      [
+        "add-generic-password",
+        "-a",
+        this.apiKeychainAccount,
+        "-s",
+        this.apiKeychainService,
+        "-w",
+        apiKey,
+        "-U"
+      ],
+      "Could not store the OpenAI API key in macOS Keychain."
+    );
   }
 
   async saveChatGPTAccountId(accountId: string) {
-    await execFileAsync("security", [
-      "add-generic-password",
-      "-a",
-      this.chatGPTAccountIdKeychainAccount,
-      "-s",
-      this.keychainService,
-      "-w",
-      accountId.trim(),
-      "-U"
-    ]);
+    await runKeychainWrite(
+      [
+        "add-generic-password",
+        "-a",
+        this.chatGPTAccountIdKeychainAccount,
+        "-s",
+        this.keychainService,
+        "-w",
+        accountId.trim(),
+        "-U"
+      ],
+      "Could not store the ChatGPT account id in macOS Keychain."
+    );
   }
 
   async loadChatGPTAccountId() {
@@ -472,6 +481,26 @@ export class AuthManager {
     }
     return {};
   }
+}
+
+async function runKeychainWrite(args: string[], publicMessage: string) {
+  try {
+    await execFileAsync("security", args);
+  } catch (error) {
+    const stderr = typeof (error as { stderr?: unknown }).stderr === "string"
+      ? (error as { stderr: string }).stderr.trim()
+      : "";
+    const suffix = stderr ? ` ${redactKeychainOutput(stderr)}` : "";
+    throw new Error(`${publicMessage}${suffix}`);
+  }
+}
+
+function redactKeychainOutput(output: string) {
+  return output
+    .replace(/(-w\s+)(\S+)/g, "$1[redacted]")
+    .replace(/(access[_-]?token["']?\s*[:=]\s*["']?)[^"',\s}]+/gi, "$1[redacted]")
+    .replace(/(refresh[_-]?token["']?\s*[:=]\s*["']?)[^"',\s}]+/gi, "$1[redacted]")
+    .replace(/(api[_-]?key["']?\s*[:=]\s*["']?)[^"',\s}]+/gi, "$1[redacted]");
 }
 
 function safeToken(length = 32) {

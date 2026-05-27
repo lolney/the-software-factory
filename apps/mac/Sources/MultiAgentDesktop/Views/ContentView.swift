@@ -6,7 +6,7 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             SidebarView(store: store)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
+                .navigationSplitViewColumnWidth(282)
         } detail: {
             switch store.selectedSidebarItem {
             case "roles":

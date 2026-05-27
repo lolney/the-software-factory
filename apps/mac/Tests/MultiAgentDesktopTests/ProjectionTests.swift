@@ -15,6 +15,45 @@ final class ProjectionTests: XCTestCase {
         XCTAssertEqual(store.filteredTranscript.map(\.id), ["call", "result"])
     }
 
+    func testStatusBannerRedactsSecretBearingCommandFailures() {
+        let store = SessionStore()
+        store.lastError = #"Command failed: security add-generic-password -a codex-public-client -s local.softwarefactory.codex-oauth -w {"accessToken":"secret-access","refreshToken":"secret-refresh"} -U"#
+
+        let banner = store.statusBannerText ?? ""
+
+        XCTAssertEqual(banner, "Could not store credentials in macOS Keychain. Open Settings and try reconnecting.")
+        XCTAssertFalse(banner.contains("secret-access"))
+        XCTAssertFalse(banner.contains("secret-refresh"))
+    }
+
+    func testWorkspaceDiffContentIgnoresHeaderOnlyDiffs() {
+        let zeroDiff = item(
+            id: "zero",
+            agentId: "implementor",
+            type: "workspace.file_touched",
+            text: "main.py",
+            payload: [
+                "path": .string("main.py"),
+                "diff": .string("--- a/main.py\n+++ b/main.py"),
+                "diffStats": .object(["additions": .number(0), "deletions": .number(0)])
+            ]
+        )
+        let changedDiff = item(
+            id: "changed",
+            agentId: "implementor",
+            type: "workspace.file_touched",
+            text: "main.py",
+            payload: [
+                "path": .string("main.py"),
+                "diff": .string("--- a/main.py\n+++ b/main.py\n+print(\"hi\")"),
+                "diffStats": .object(["additions": .number(1), "deletions": .number(0)])
+            ]
+        )
+
+        XCTAssertFalse(workspaceDiffHasContent(zeroDiff))
+        XCTAssertTrue(workspaceDiffHasContent(changedDiff))
+    }
+
     func testTimelinePairsToolCallAndResultBeforeApplyingLimit() {
         let transcript = [
             item(id: "older", agentId: "orchestrator", type: "agent.message", text: "older"),
@@ -34,6 +73,23 @@ final class ProjectionTests: XCTestCase {
         }
         XCTAssertEqual(call.id, "call")
         XCTAssertEqual(result.id, "result")
+    }
+
+    func testTimelineHidesDenseRuntimeEventBursts() {
+        let transcript = [
+            item(id: "status-1", agentId: "qa", type: "agent.status", text: "Status: waiting", payload: ["status": .string("waiting")]),
+            item(id: "mailbox", agentId: "qa", type: "actor.mailbox.enqueued", text: "message", payload: ["mailbox": .string("qa"), "messageType": .string("prompt")]),
+            item(id: "scheduler", agentId: "qa", type: "scheduler.job.started", text: "started", payload: ["jobId": .string("job-1")]),
+            item(id: "message", agentId: "qa", type: "agent.message", text: "QA finished")
+        ]
+
+        let window = timelineWindow(from: transcript, limit: 10)
+
+        XCTAssertEqual(window.items.count, 1)
+        guard case .message(let message, _) = window.items.first else {
+            return XCTFail("Expected narrative messages to stay visible")
+        }
+        XCTAssertEqual(message.id, "message")
     }
 
     func testEventLogExportPreservesStructuredPayloadFields() throws {

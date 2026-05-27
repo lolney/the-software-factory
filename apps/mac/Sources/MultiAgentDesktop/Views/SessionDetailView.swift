@@ -3,22 +3,40 @@ import SwiftUI
 struct SessionDetailView: View {
     @Bindable var store: SessionStore
     @State private var confirmCancel = false
+    @State private var inspectorVisible = true
 
     var body: some View {
-        HSplitView {
-            VStack(spacing: 0) {
-                OrchestratorChatView(store: store)
-                    .frame(minWidth: 480, maxHeight: .infinity)
-                ComposerView(store: store)
-            }
-            .frame(maxHeight: .infinity)
+        GeometryReader { proxy in
+            HStack(alignment: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    OrchestratorChatView(store: store)
+                        .frame(minWidth: 480, maxHeight: .infinity, alignment: .top)
+                    ComposerView(store: store)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-            InspectorPanelView(store: store)
-                .frame(minWidth: 360, idealWidth: 440, maxHeight: .infinity)
+                if inspectorVisible {
+                    Divider()
+                    InspectorPanelView(store: store)
+                        .frame(width: detailDrawerWidth(for: proxy.size.width))
+                        .frame(maxHeight: .infinity)
+                        .background(.regularMaterial)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .toolbar {
             ToolbarItemGroup {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        inspectorVisible.toggle()
+                    }
+                } label: {
+                    Label(inspectorVisible ? "Hide Details" : "Show Details", systemImage: inspectorVisible ? "sidebar.right" : "sidebar.right")
+                }
+                .help(inspectorVisible ? "Hide the detail drawer" : "Show the detail drawer")
+
                 Menu {
                     Button {
                         store.openWorkspace(tool: .vsCode)
@@ -184,5 +202,9 @@ struct SessionDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    private func detailDrawerWidth(for totalWidth: CGFloat) -> CGFloat {
+        min(430, max(340, totalWidth * 0.34))
     }
 }

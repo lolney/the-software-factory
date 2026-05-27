@@ -147,7 +147,7 @@ final class SessionStore {
 
     var statusBannerText: String? {
         if let lastError, !lastError.isEmpty {
-            return lastError
+            return sanitizedDisplayError(lastError)
         }
         if sessionErrorCount > 0 {
             let suffix = sessionErrorCount == 1 ? "" : "s"
@@ -688,8 +688,8 @@ final class SessionStore {
     func copyWorkspaceDiff(for relativePath: String) {
         let diffs = transcript
             .filter { $0.type == "workspace.file_touched" && $0.payload["path"]?.stringValue == relativePath }
+            .filter(workspaceDiffHasContent)
             .compactMap { $0.payload["diff"]?.stringValue }
-            .filter { !$0.isEmpty }
         guard !diffs.isEmpty else {
             lastError = "No recorded diff for \(relativePath)."
             return
@@ -928,7 +928,7 @@ final class SessionStore {
         if object["ok"] as? Bool == false {
             if let error = object["error"] as? [String: Any],
                let message = error["message"] as? String {
-                lastError = message
+                lastError = sanitizedDisplayError(message)
             }
             isCreatingSession = false
             isLoadingSelection = false
@@ -1475,6 +1475,44 @@ private func openApplication(_ appName: String, path: String) -> Bool {
         return process.terminationStatus == 0
     } catch {
         return false
+    }
+}
+
+func sanitizedDisplayError(_ message: String) -> String {
+    var redacted = message
+    let patterns = [
+        #"(?i)(access[_-]?token["']?\s*[:=]\s*["']?)[^"',\s}]+()"#,
+        #"(?i)(refresh[_-]?token["']?\s*[:=]\s*["']?)[^"',\s}]+()"#,
+        #"(?i)(api[_-]?key["']?\s*[:=]\s*["']?)[^"',\s}]+()"#,
+        #"(-w\s+)(\S+)()"#
+    ]
+    for pattern in patterns {
+        redacted = redacted.replacingOccurrences(
+            of: pattern,
+            with: "$1[redacted]$2",
+            options: .regularExpression
+        )
+    }
+    if redacted.localizedCaseInsensitiveContains("security add-generic-password") {
+        return "Could not store credentials in macOS Keychain. Open Settings and try reconnecting."
+    }
+    return redacted
+}
+
+func workspaceDiffHasContent(_ item: TranscriptItem) -> Bool {
+    guard let diff = item.payload["diff"]?.stringValue, !diff.isEmpty else {
+        return false
+    }
+    if let stats = item.payload["diffStats"]?.objectValue {
+        let additions = Int(stats["additions"]?.numberValue ?? 0)
+        let deletions = Int(stats["deletions"]?.numberValue ?? 0)
+        if additions > 0 || deletions > 0 {
+            return true
+        }
+    }
+    return diff.split(separator: "\n").contains { line in
+        (line.hasPrefix("+") && !line.hasPrefix("+++"))
+            || (line.hasPrefix("-") && !line.hasPrefix("---"))
     }
 }
 

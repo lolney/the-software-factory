@@ -97,7 +97,7 @@ sign_app() {
 sign_app
 
 open_app() {
-  /usr/bin/open -n "$APP_BUNDLE"
+  /usr/bin/open -n -g "$APP_BUNDLE"
 }
 
 case "$MODE" in

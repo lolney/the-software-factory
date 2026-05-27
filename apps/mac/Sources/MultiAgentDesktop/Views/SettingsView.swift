@@ -42,12 +42,21 @@ private struct DaemonSettingsPane: View {
     var body: some View {
         Form {
             Section("Daemon") {
-                TextField("Daemon Port", value: $daemonPort, format: .number)
+                TextField("Daemon Port", value: $daemonPort, formatter: Self.portFormatter)
                     .frame(width: 220)
             }
         }
         .formStyle(.grouped)
     }
+
+    private static let portFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .none
+        formatter.usesGroupingSeparator = false
+        formatter.minimum = 1
+        formatter.maximum = 65_535
+        return formatter
+    }()
 }
 
 private struct AuthSettingsPane: View {
@@ -103,7 +112,7 @@ private struct AuthSettingsPane: View {
                 if let accountId = store.authStatus?.chatGPTAccountId {
                     LabeledContent("ChatGPT Account ID") {
                         VStack(alignment: .trailing, spacing: 2) {
-                            Text(accountId)
+                            Text(abbreviatedIdentifier(accountId))
                                 .textSelection(.enabled)
                             if let source = store.authStatus?.chatGPTAccountIdSource {
                                 Text(source)
@@ -113,7 +122,7 @@ private struct AuthSettingsPane: View {
                         }
                     }
                 }
-                LabeledContent("Client ID", value: store.authStatus?.clientId ?? "app_EMoamEEZ73f0CkXaXp7hrann")
+                LabeledContent("Client ID", value: abbreviatedIdentifier(store.authStatus?.clientId ?? "app_EMoamEEZ73f0CkXaXp7hrann"))
                 if store.authStatus?.liveCredentialSource == "codex-oauth" {
                     LabeledContent("Runtime", value: "Codex OAuth via WHAM")
                 }
@@ -151,7 +160,7 @@ private struct AuthSettingsPane: View {
                         .foregroundStyle(.orange)
                 }
                 if let error = store.lastError {
-                    Text(error)
+                    Text(sanitizedDisplayError(error))
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
@@ -245,6 +254,7 @@ private struct MCPServersSettingsPane: View {
 private struct MCPServerRow: View {
     let server: MCPServerCatalogItem
     @Bindable var store: SessionStore
+    @State private var expanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -259,10 +269,11 @@ private struct MCPServerRow: View {
                     .font(.caption)
                     .foregroundStyle(server.status == "connected" ? .green : server.status == "failed" ? .red : .secondary)
             }
-            Text(server.url ?? ([server.command, server.args.joined(separator: " ")].compactMap { $0 }.joined(separator: " ")))
+            Text(commandSummary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .truncationMode(.middle)
             if let error = server.error {
                 Text(error)
                     .font(.caption)
@@ -283,13 +294,48 @@ private struct MCPServerRow: View {
                 }
                 .disabled(!server.authenticationSupported)
                 .help("Start authentication for this MCP server")
-                Text(server.authInstructions ?? "Reconnect retries the configured transport.")
+                Text(authRowSummary)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
+            DisclosureGroup("Details", isExpanded: $expanded) {
+                VStack(alignment: .leading, spacing: 4) {
+                    detailLine("Command", commandSummary)
+                    detailLine("Auth", server.authInstructions ?? "Authentication is handled by the configured command or server process.")
+                    detailLine("ID", server.id)
+                }
+                .padding(.top, 2)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
+    }
+
+    private var commandSummary: String {
+        server.url ?? ([server.command, server.args.joined(separator: " ")].compactMap { $0 }.joined(separator: " "))
+    }
+
+    private var authRowSummary: String {
+        if server.authenticationSupported {
+            return "OAuth setup available"
+        }
+        return "Auth handled by command"
+    }
+
+    private func detailLine(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.tertiary)
+            Text(value.isEmpty ? "Not configured" : value)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private func authLabel(_ server: MCPServerCatalogItem) -> String {
@@ -374,4 +420,9 @@ private struct SkillSourceSection: View {
             }
         }
     }
+}
+
+private func abbreviatedIdentifier(_ value: String) -> String {
+    guard value.count > 16 else { return value }
+    return "\(value.prefix(8))...\(value.suffix(4))"
 }

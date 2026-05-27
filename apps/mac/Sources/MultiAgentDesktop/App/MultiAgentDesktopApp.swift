@@ -8,7 +8,7 @@ struct TheSoftwareFactoryApp: App {
     @State private var store = SessionStore()
 
     var body: some Scene {
-        WindowGroup("Sessions", id: "main") {
+        WindowGroup("The Software Factory", id: "main") {
             ContentView(store: store)
                 .frame(minWidth: 1100, minHeight: 720)
                 .task {
