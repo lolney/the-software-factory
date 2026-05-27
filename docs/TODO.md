@@ -32,6 +32,31 @@ Big product/design judgment calls:
 - Consider adding Codex-like workspace affordances that fit this app: branch/dirty-state awareness, test-command quick runs, diff review queue, and PR/publish actions guarded by role policy.
 - Consider moving Roles/Workflows editing out of the main session source list into Settings or a dedicated Library window to keep the primary app focused on running work.
 
+### 2026-05-27 Computer Use Deep QA Pass
+
+Audited with Computer Use across transcript expansion, inspector tabs, toolbar menus, sidebar destinations, Settings panes, and macOS menus.
+
+Clear fixes to work down:
+
+- Fix the All Sessions navigation state loss in the mockup fixture; clicking All Sessions/reselecting the current session can clear the loaded transcript into a permanent "Loading session..." empty state while the selected row remains unchanged.
+- Reconcile connection status surfaces. The top bar/status strip can say Connected/Local while the session banner says "Daemon is not connected," which leaves users with no trustworthy source of truth.
+- Make the Plan inspector consume the same plan/checklist signal as the transcript. The transcript shows an expandable plan row, while the Plan pane still says "No plan yet."
+- Populate the Debug inspector for completed fixture workflows or clearly label fixture/debug-data unavailability. "0 runs / 0 logs" looks wrong next to a completed multi-agent transcript.
+- Replace the expanded grouped transcript row's raw `Plan ID` detail with useful human-facing content: collapsed event summaries, handoffs/messages, criteria state, or a path to the related Plan inspector section.
+- Make Workspace changed-file expansion consistent with its summary. Rows can show changed-line counts but expand to "No diff recorded for this file," with Copy Diff disabled.
+- Clean up the dashboard table: important values truncate heavily, empty placeholder rows look like loading skeletons after data is loaded, and tiny action icons need clearer affordances.
+- Reset or hide the inspector for New Session drafts. Leaving the prior Debug pane visible beside the draft composer makes the draft look tied to an unrelated session.
+- Make the New Session status strip draft-aware; runtime/event/connection metrics read like live session state even while the user is only configuring a new session.
+- Clarify the Workflows empty state. "No Workflows" is confusing when built-in workflows/roles exist; distinguish user-defined workflows, built-ins, and unavailable workflow libraries.
+- Remove artifact-menu duplication. Session Artifacts repeats copy/export/share transcript actions both at the top level and again inside nested Copy/Export/Share groups.
+- Rename or clarify the Embed Code toolbar control. The menu opens workspace targets such as VS Code, Finder, and iTerm, so "Open Workspace" would match the action better.
+- Tone down disabled primary buttons in Auth settings. Disabled actions such as Save API Key still look blue/primary and clickable.
+- Clarify Settings > Skills empty state. It says "0 installed / No Skills" even though the active Codex environment has plugin and user skills available; distinguish app-discoverable skills from runtime skills.
+- Add a visible transcript result count, active-filter summary, and clear-search affordance near the search field. The current filtered state is too implicit, especially when text search and agent filters combine.
+- Smooth graph zoom behavior so zooming keeps important nodes in frame. One zoom-in can crop node labels abruptly, although Reset recovers the view.
+- Add app-specific View menu commands for the visible UI: toggle inspector/details, reset/zoom graph, focus search, show dashboard, and switch common panels.
+- Make the agent filter control's behavior match its chevron. It looks like a menu, but clicking the current agent label can act like a clear/toggle action.
+
 ## Not Completed
 
 - Inspector tab/header responsive layout clips at common widths.
