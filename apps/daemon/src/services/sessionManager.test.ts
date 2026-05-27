@@ -452,7 +452,7 @@ describe("SessionManager deterministic debug sessions", () => {
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
-  });
+  }, 10_000);
 
   it("renames sessions durably for lists and snapshots", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
@@ -2156,6 +2156,73 @@ describe("SessionManager deterministic debug sessions", () => {
         event.type === "agent.message"
         && event.agentId?.includes("qa")
         && String(event.payload.text).includes(snapshot.workspaceRoot)
+      )).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("blocks workspace commands whose cwd is outside role allowed roots", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            const output = input.agentId.includes("qa")
+              ? await input.workflowTools?.runWorkspaceCommand?.("node", ["-e", "console.log('should not run')"], ".")
+              : "ok";
+            return [{
+              eventId: `evt_${crypto.randomUUID()}`,
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { text: output ?? "" }
+            }];
+          }
+        }
+      });
+      await manager.handle({
+        id: "req_scoped_qa_role",
+        method: "upsertRole",
+        params: {
+          role: {
+            id: "qa",
+            name: "QAer",
+            color: "#e74c3c",
+            promptTemplate: "Run QA checks.",
+            model: "gpt-5.4",
+            toolPolicy: { canRead: true, canWrite: false, canRunCommands: true, canCreatePlans: false },
+            workspace: { allowedRoots: ["src"] },
+            expectedOutputs: [],
+            reviewResponsibilities: []
+          }
+        }
+      });
+      const snapshot = await manager.handle({
+        id: "req_scoped_command",
+        method: "createSession",
+        params: {
+          prompt: "Run from disallowed cwd",
+          workspaceRoot: root,
+          workflowId: "implementor-qa-loop",
+          debugMode: false
+        }
+      }) as { sessionId: string };
+      const events = await waitForEvents(manager, snapshot.sessionId, (replay) =>
+        replay.some((event) =>
+          event.type === "agent.tool_result"
+            && event.payload.toolName === "workspace.run_command"
+            && event.payload.blocked === true
+        )
+      );
+
+      expect(events.some((event) =>
+        event.type === "agent.tool_result"
+          && event.payload.toolName === "workspace.run_command"
+          && event.payload.blocked === true
+          && String(event.payload.output).includes("outside allowed workspace roots")
       )).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });

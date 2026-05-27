@@ -330,6 +330,7 @@ final class SessionStore {
                 self?.isCreatingSession = false
                 self?.pendingCreatePrompt = nil
                 self?.pendingOpenAIOAuth = false
+                self?.resetSubscriptions()
                 self?.stopSessionRefreshLoop()
             }
         }
@@ -388,6 +389,10 @@ final class SessionStore {
         }
         refreshSessions()
         refreshCatalogs()
+        if let selectedSessionId {
+            subscribe(to: selectedSessionId)
+            subscribeDebugLogs(to: selectedSessionId)
+        }
         startSessionRefreshLoop()
     }
 
@@ -524,6 +529,10 @@ final class SessionStore {
 
     func selectSession(_ sessionId: String?) {
         guard let sessionId else { return }
+        if usesStaticMockupFixture {
+            selectStaticMockupSession(sessionId)
+            return
+        }
         isComposingNewSession = false
         selectedSessionId = sessionId
         selectedSidebarItem = sessionId
@@ -1069,6 +1078,11 @@ final class SessionStore {
     }
 
     private func apply(snapshot: SessionSnapshot) {
+        if let selectedSessionId,
+           selectedSessionId != snapshot.sessionId,
+           !isCreatingSession {
+            return
+        }
         selectedSessionId = snapshot.sessionId
         selectedSidebarItem = snapshot.sessionId
         selectedSidebarItems = [snapshot.sessionId]
@@ -1127,6 +1141,7 @@ final class SessionStore {
             }
             return
         }
+        guard !transcript.contains(where: { $0.id == event.eventId }) else { return }
         transcript.append(transcriptItem(event))
         switch event.type {
         case "session.created":
@@ -1449,6 +1464,47 @@ final class SessionStore {
         debugLogs = []
     }
 
+    private func selectStaticMockupSession(_ sessionId: String) {
+        selectedSessionId = sessionId
+        selectedSidebarItem = sessionId
+        selectedSidebarItems = [sessionId]
+        isComposingNewSession = false
+        isCreatingSession = false
+        isLoadingSelection = false
+        lastError = nil
+        guard let summary = (sessions + archivedSessions).first(where: { $0.id == sessionId }) else {
+            return
+        }
+        currentWorkspaceRoot = summary.workspaceRoot
+        currentSessionDebugMode = summary.debugMode
+        if transcript.first?.sessionId != sessionId {
+            resetStaticMockupSessionDetail(for: summary)
+        }
+    }
+
+    private func resetStaticMockupSessionDetail(for summary: SessionSummary) {
+        graph = GraphState(sessionId: summary.id, workflowId: summary.detail, nodes: [], edges: [])
+        transcript = [
+            TranscriptItem(
+                id: "\(summary.id)-summary",
+                sessionId: summary.id,
+                agentId: "orchestrator",
+                sender: "orchestrator",
+                recipient: nil,
+                type: "message",
+                text: "Static mockup session summary. Detailed transcript data is only bundled for the selected fixture session.",
+                timestamp: parseTimestamp(summary.updatedAt ?? summary.createdAt ?? ISO8601DateFormatter().string(from: Date())),
+                rawTimestamp: summary.updatedAt ?? summary.createdAt,
+                payload: [:],
+                causationId: nil,
+                correlationId: nil
+            )
+        ]
+        debugLogs = []
+        selectedAgentId = nil
+        controlAgentId = nil
+    }
+
     private func apply(debugLog entry: DebugLogItem) {
         guard entry.sessionId == selectedSessionId else { return }
         if !debugLogs.contains(where: { $0.logId == entry.logId }) {
@@ -1466,6 +1522,11 @@ final class SessionStore {
         guard !subscribedDebugLogSessionIds.contains(sessionId) else { return }
         subscribedDebugLogSessionIds.insert(sessionId)
         daemon.sendRequest(method: "subscribeDebugLogs", params: ["sessionId": sessionId])
+    }
+
+    private func resetSubscriptions() {
+        subscribedSessionIds.removeAll()
+        subscribedDebugLogSessionIds.removeAll()
     }
 
     private func resetPreview() {

@@ -57,6 +57,26 @@ Clear fixes to work down:
 - Add app-specific View menu commands for the visible UI: toggle inspector/details, reset/zoom graph, focus search, show dashboard, and switch common panels.
 - Make the agent filter control's behavior match its chevron. It looks like a menu, but clicking the current agent label can act like a clear/toggle action.
 
+### 2026-05-27 Adversarial Code Review
+
+Judgement-heavy follow-ups:
+
+- Make workspace authorization symlink-safe. Current path checks are lexical; reads, writes, and command change tracking need a no-follow/realpath policy that prevents allowed-root symlinks from escaping the workspace.
+- Serialize workflow graph mutation under a per-session lock. Concurrent workflow instantiation can read the same snapshot, choose overlapping node IDs, and publish graph snapshots that drop each other's changes.
+- Add a hard per-run deadline and bounded orchestrator turn limit across Agents SDK and WHAM runtimes so tool loops cannot keep scheduler jobs alive indefinitely.
+- Emit durable `agent.tool_call` and `agent.tool_result` rows for every local tool used through the Agents SDK adapter, not only engine-owned workspace tools.
+- Add WebSocket subscriber cleanup on close in the daemon; the Swift client now resubscribes after reconnect, but stale daemon-side callbacks should also be removed.
+- Clarify completed-agent scheduling semantics. Some paths treat completed agents as terminal message targets, while continuous/controller workflows intentionally re-enter completed roles; this needs an explicit lifecycle model before changing scheduler gates.
+- Replace regex/prose-based auto-completion gates with explicit tool/state transitions for criteria satisfaction.
+- Split `SessionManager` into protocol routing, scheduler/recovery, workspace tools, workflow tools, and runtime integration modules; its current size hides race boundaries.
+- Split Swift `SessionStore` transport state, projection state, fixture data, and user actions into smaller stores or coordinators.
+- Surface malformed personal role/workflow catalog diagnostics in `listRoles`/`listWorkflows` instead of silently skipping broken user-authored files.
+- Replace ad hoc Codex MCP TOML parsing with a real TOML parser and fixtures that cover quoted commas, multiline arrays, inline comments, and richer config shapes.
+- Declare `esbuild` directly and add a non-GUI packaging smoke test so the macOS bundle script does not depend on a transitive dependency.
+- Generate Swift protocol models from shared schemas or add golden JSON contract tests to catch daemon/mac drift.
+- Move built-in roles/workflows out of `workflowEngine.ts` into versioned JSON/YAML fixtures loaded through the same validation path as personal workflows.
+- Add explicit continuous-workflow budgets for cycle count, elapsed time, and total turns; `maxActiveAgents` is not enough for self-improving loops.
+
 ## Not Completed
 
 - Inspector tab/header responsive layout clips at common widths.

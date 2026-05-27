@@ -38,18 +38,16 @@ struct SidebarView: View {
                 SidebarNavRow(
                     title: "Session Dashboard",
                     systemImage: "circle.grid.2x2",
-                    isSelected: store.selectedSidebarItem == SessionStore.sessionDashboardId
+                    isSelected: store.selectedSidebarItem == SessionStore.sessionDashboardId && !store.dashboardSessionFilterIds.isEmpty
                 ) {
                     store.selectSidebarItem(SessionStore.sessionDashboardId)
                 }
                 SidebarNavRow(
                     title: "All Sessions",
                     systemImage: "tray.full",
-                    isSelected: false
+                    isSelected: store.selectedSidebarItem == SessionStore.sessionDashboardId && store.dashboardSessionFilterIds.isEmpty
                 ) {
-                    if let sessionId = store.selectedSessionId ?? store.sessions.first?.id {
-                        store.selectSession(sessionId)
-                    }
+                    store.viewAllSessions()
                 }
                 SidebarNavRow(
                     title: "Workflows",

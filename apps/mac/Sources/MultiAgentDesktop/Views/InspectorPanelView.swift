@@ -1042,7 +1042,7 @@ struct DebugLogPanelView: View {
             Label("Debug Logs", systemImage: "text.alignleft")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            ForEach(store.debugLogs.prefix(200)) { entry in
+            ForEach(store.debugLogs.suffix(200)) { entry in
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
                         Text(entry.level.rawValue.uppercased())

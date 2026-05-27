@@ -309,7 +309,7 @@ private struct SessionStateStrip: View {
     private let mockupStatusGreen = Color(.sRGB, red: 110 / 255, green: 180 / 255, blue: 119 / 255, opacity: 1)
 
     private var activeAgents: Int {
-        store.graph.nodes.filter { $0.status == .working }.count
+        store.graph.nodes.filter { [.working, .waiting, .paused].contains($0.status) }.count
     }
 
     private var waitingAgents: Int {
@@ -317,11 +317,11 @@ private struct SessionStateStrip: View {
     }
 
     private var agentSummary: String {
-        if !store.graph.nodes.isEmpty {
-            return "\(store.graph.nodes.count) active"
-        }
         if activeAgents > 0 {
             return "\(activeAgents) active"
+        }
+        if !store.graph.nodes.isEmpty {
+            return "\(store.graph.nodes.count) total"
         }
         return transcriptCountSummary
     }
@@ -699,9 +699,6 @@ private func sessionStateActionTitle(for item: TranscriptItem) -> String {
 }
 
 private func narrativeMessageText(for item: TranscriptItem, isFinalOutput: Bool) -> String {
-    if isFinalOutput {
-        return "All acceptance checks passed. Workflow complete."
-    }
     switch item.text {
     case let text where text.hasPrefix("Debug orchestrator:"):
         return "Goal received. Planning and delegating to the workflow agents."

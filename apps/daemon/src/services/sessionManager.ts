@@ -1275,7 +1275,7 @@ export class SessionManager {
     try {
       const role = await this.authorizeCapability(snapshot, agentId, "workspace.command", { command, args, cwd: cwd ?? "." }, publish);
       policy = { sessionId: snapshot.sessionId, workspaceRoot: snapshot.workspaceRoot, allowedRoots: role.workspace.allowedRoots };
-      workingDirectory = cwd ? containedPath(snapshot.workspaceRoot, cwd) : snapshot.workspaceRoot;
+      workingDirectory = this.workspace.assertAllowed(policy, cwd ?? ".");
     } catch (error) {
       const output = error instanceof Error ? error.message : String(error);
       await this.appendAndPublish({
@@ -1348,6 +1348,18 @@ export class SessionManager {
     if (!allowWorkspaceWrites) {
       await restoreWorkspaceFiles(snapshot.workspaceRoot, beforeFiles, changedFiles);
       return `workspace changes rolled back: command-capable role ${agentId} does not have workspace write permission.`;
+    }
+    const disallowedFiles = changedFiles.filter((relativePath) => {
+      try {
+        this.workspace.assertAllowed(policy, relativePath);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    if (disallowedFiles.length > 0) {
+      await restoreWorkspaceFiles(snapshot.workspaceRoot, beforeFiles, changedFiles);
+      return `workspace changes rolled back: ${disallowedFiles.length} file${disallowedFiles.length === 1 ? "" : "s"} outside allowed workspace roots.`;
     }
 
     const events = await this.store.readEvents(snapshot.sessionId);

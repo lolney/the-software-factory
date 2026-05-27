@@ -97,6 +97,18 @@ final class ProjectionTests: XCTestCase {
         XCTAssertEqual(compactRelativeTimeLabel(from: store.transcript.last?.timestamp ?? now, now: now), "2s ago")
     }
 
+    func testMockupFixtureReselectDoesNotClearTranscript() {
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let store = SessionStore(mockupFixture: true, referenceNow: now)
+        let initialTranscriptIds = store.transcript.map(\.id)
+
+        store.selectSession(store.selectedSessionId)
+
+        XCTAssertFalse(store.isLoadingSelection)
+        XCTAssertEqual(store.transcript.map(\.id), initialTranscriptIds)
+        XCTAssertEqual(store.connectionStatus, "Connected")
+    }
+
     func testTimelinePairsToolCallAndResultBeforeApplyingLimit() {
         let transcript = [
             item(id: "older", agentId: "orchestrator", type: "agent.message", text: "older"),
@@ -133,6 +145,26 @@ final class ProjectionTests: XCTestCase {
             return XCTFail("Expected narrative messages to stay visible")
         }
         XCTAssertEqual(message.id, "message")
+    }
+
+    func testTimelineKeepsSingletonCompactHandoffEvents() {
+        let transcript = [
+            item(
+                id: "handoff",
+                agentId: "orchestrator",
+                type: "handoff.created",
+                text: "Handoff to implementor",
+                payload: ["from": .string("orchestrator"), "to": .string("implementor")]
+            ),
+            item(id: "message", agentId: "implementor", type: "agent.message", text: "Started")
+        ]
+
+        let window = timelineWindow(from: transcript, limit: 10)
+
+        guard case .compact(let handoff) = window.items.first else {
+            return XCTFail("Expected the singleton handoff to remain visible as a compact event")
+        }
+        XCTAssertEqual(handoff.id, "handoff")
     }
 
     func testEventLogExportPreservesStructuredPayloadFields() throws {

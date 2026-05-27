@@ -196,6 +196,8 @@ private func groupCompactBursts(_ items: [TimelineItem]) -> [TimelineItem] {
             if group.isActionGroup {
                 grouped.append(.group(group))
             }
+        } else {
+            grouped.append(contentsOf: compactBuffer.map(TimelineItem.compact))
         }
         compactBuffer.removeAll()
     }
