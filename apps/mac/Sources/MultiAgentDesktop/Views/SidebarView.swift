@@ -30,7 +30,7 @@ struct SidebarView: View {
                 }
                 .help("Create a session from an initial prompt")
             }
-            .padding(.top, 18)
+            .padding(.top, 40)
             .padding(.horizontal, 20)
             .padding(.bottom, 8)
 
@@ -67,7 +67,7 @@ struct SidebarView: View {
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.bottom, 18)
+            .padding(.bottom, 10)
 
             Divider()
                 .opacity(0.55)
@@ -78,7 +78,7 @@ struct SidebarView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .padding(.top, 18)
-                        .padding(.horizontal, 20)
+                        .padding(.horizontal, 12)
 
                     if store.isComposingNewSession {
                         SidebarSessionButton(
@@ -96,7 +96,7 @@ struct SidebarView: View {
                         .padding(.horizontal, 10)
                     }
 
-                    ForEach(store.visibleSessions.prefix(8)) { session in
+                    ForEach(store.visibleSessions.prefix(5)) { session in
                         SidebarSessionButton(
                             isSelected: store.selectedSidebarItems.contains(session.id),
                             action: { store.selectSession(session.id) }
@@ -123,7 +123,7 @@ struct SidebarView: View {
                                 Label("Archive Session", systemImage: "archivebox")
                             }
                         }
-                        .padding(.horizontal, 10)
+                        .padding(.trailing, 10)
                     }
 
                     if let archived = store.selectedArchivedSession {
@@ -161,6 +161,7 @@ struct SidebarView: View {
                     }
                 }
                 .padding(.bottom, 20)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             VStack(spacing: 8) {
@@ -188,20 +189,40 @@ struct SidebarView: View {
                 Button {
                     store.beginNewSession()
                 } label: {
-                    Label("New Session...", systemImage: "plus")
-                        .font(.callout)
-                        .padding(.horizontal, 12)
-                        .frame(height: 38)
+                    HStack(spacing: 10) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 14, weight: .regular))
+                        Text("New Session...")
+                            .font(.callout)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 16)
+                    .frame(height: 38)
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
+                .background(Color(.sRGB, red: 248 / 255, green: 247 / 255, blue: 248 / 255, opacity: 1), in: RoundedRectangle(cornerRadius: 7))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 7)
+                        .stroke(.separator.opacity(0.5))
+                }
                 .help("Create a session from an initial prompt")
             }
             .padding(.horizontal, 20)
             .padding(.top, 12)
             .padding(.bottom, 24)
         }
-        .background(.bar)
+        .background {
+            LinearGradient(
+                colors: [
+                    Color(.sRGB, red: 244 / 255, green: 244 / 255, blue: 245 / 255, opacity: 1),
+                    Color(.sRGB, red: 246 / 255, green: 247 / 255, blue: 248 / 255, opacity: 1)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
         .confirmationDialog("Archive selected sessions?", isPresented: $showingArchiveConfirmation) {
             Button("Archive \(pendingArchiveIds.count) Sessions", role: .destructive) {
                 store.archiveSessions(pendingArchiveIds)
@@ -250,13 +271,13 @@ struct SessionSidebarRow: View {
     var titleOverride: String?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: 8) {
             Image(systemName: rowIcon)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
 
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(titleOverride ?? session.title)
                     .lineLimit(1)
                     .font(.callout)
@@ -266,69 +287,18 @@ struct SessionSidebarRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
-            HStack(spacing: 6) {
-                if showsStatusDot {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 6, height: 6)
-                }
-                if (session.failureCount ?? 0) > 0 {
-                    Text("\(session.failureCount ?? 0)")
-                        .font(.caption2.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 5)
-                        .background(.red, in: Capsule())
-                }
-            }
         }
     }
 
     private var rowIcon: String {
-        session.debugMode == true ? "figure.mind.and.body" : "rectangle.3.group.bubble"
-    }
-
-    private var showsStatusDot: Bool {
-        session.archived == true || ["active", "failed", "cancelled", "paused"].contains(session.status ?? "")
-    }
-
-    private var secondaryLine: String {
-        let status = statusLabel == "Idle" ? "" : "\(statusLabel) · "
-        return "\(status)\(activityLabel)"
-    }
-
-    private var statusColor: Color {
-        if session.archived == true { return .secondary }
-        switch session.status {
-        case "completed": return .green
-        case "failed": return .red
-        case "cancelled", "paused": return .orange
-        case "active": return .blue
-        default: return .secondary
-        }
-    }
-
-    private var statusLabel: String {
-        if session.archived == true { return "Archived" }
-        switch session.status {
-        case "completed": return "Completed"
-        case "failed": return "Failed"
-        case "cancelled": return "Cancelled"
-        case "paused": return "Paused"
-        case "active":
-            if let activeAgents = session.activeAgents, activeAgents > 0 {
-                return "Active \(activeAgents)"
-            }
-            return "Active"
-        default:
-            return "Idle"
-        }
+        sidebarSessionIconName(for: titleOverride ?? session.title, debugMode: session.debugMode == true)
     }
 
     private var activityLabel: String {
         guard let date = parseISO8601(session.updatedAt ?? session.createdAt) else {
             return "No activity"
         }
-        return date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
+        return compactRelativeTimeLabel(from: date)
     }
 
     private func parseISO8601(_ timestamp: String?) -> Date? {
@@ -340,6 +310,29 @@ struct SessionSidebarRow: View {
         }
         return ISO8601DateFormatter().date(from: timestamp)
     }
+}
+
+func sidebarSessionIconName(for title: String, debugMode: Bool) -> String {
+    let title = title.localizedLowercase
+    if title.contains("debug") {
+        return "point.3.connected.trianglepath.dotted"
+    }
+    if title.contains("auth") {
+        return "key"
+    }
+    if title.contains("payment") {
+        return "creditcard"
+    }
+    if title.contains("pipeline") || title.contains("data") {
+        return "cylinder.split.1x2"
+    }
+    if title.contains("error") || title.contains("investigation") {
+        return "exclamationmark.magnifyingglass"
+    }
+    if title.contains("refactor") {
+        return "arrow.triangle.2.circlepath"
+    }
+    return debugMode ? "point.3.connected.trianglepath.dotted" : "rectangle.3.group.bubble"
 }
 
 private struct SidebarNavRow: View {
@@ -360,7 +353,7 @@ private struct SidebarNavRow: View {
             }
             .foregroundStyle(.primary)
             .padding(.horizontal, 10)
-            .frame(height: 38)
+            .frame(height: 34)
             .background {
                 if isSelected {
                     RoundedRectangle(cornerRadius: 7)

@@ -37,6 +37,7 @@ final class SessionStore {
     var newSessionReasoningEffort = "none"
     var isCreatingSession = false
     var lastError: String?
+    var usesStaticMockupFixture = false
     var selectedAgentId: String?
     var controlAgentId: String?
     var transcriptSearchText = ""
@@ -299,12 +300,24 @@ final class SessionStore {
         daemon.isConnected && hasActiveSession && !selectedSessionArchived && ![.cancelled, .completed].contains(orchestratorStatus)
     }
 
-    init() {
+    static func bootstrap() -> SessionStore {
+        let process = ProcessInfo.processInfo
+        let usesFixture = process.arguments.contains("--software-factory-mockup-fixture")
+            || process.environment["SOFTWARE_FACTORY_MOCKUP_FIXTURE"] == "1"
+        return SessionStore(mockupFixture: usesFixture)
+    }
+
+    init(mockupFixture: Bool = false, referenceNow: Date = Date()) {
+        usesStaticMockupFixture = mockupFixture
         sessions = []
         selectedSessionId = nil
         selectedSidebarItem = nil
         selectedAgentId = nil
-        resetPreview()
+        if mockupFixture {
+            applyMockupFixture(referenceNow: referenceNow)
+        } else {
+            resetPreview()
+        }
         daemon.onMessage = { [weak self] data in
             Task { @MainActor in
                 self?.handleDaemonMessage(data)
@@ -331,6 +344,7 @@ final class SessionStore {
     }
 
     func connectAndRefresh() {
+        guard !usesStaticMockupFixture else { return }
         Task { @MainActor in
             await connectAndRefreshAsync()
         }
@@ -347,6 +361,7 @@ final class SessionStore {
     }
 
     func refreshForAppActivation() {
+        guard !usesStaticMockupFixture else { return }
         if daemon.isConnected {
             refreshSessions()
             refreshCatalogs()
@@ -1310,6 +1325,128 @@ final class SessionStore {
 
     private func eventTimestamp(_ item: TranscriptItem) -> String {
         item.rawTimestamp ?? formatDate(item.timestamp)
+    }
+
+    private func applyMockupFixture(referenceNow now: Date) {
+        let selectedId = "mockup-debug-temperature"
+        func iso(_ offset: TimeInterval) -> String {
+            ISO8601DateFormatter().string(from: now.addingTimeInterval(offset))
+        }
+        func transcriptItem(
+            _ id: String,
+            agentId: String?,
+            sender: String? = nil,
+            recipient: String? = nil,
+            type: String,
+            text: String,
+            offset: TimeInterval,
+            payload: [String: JSONValue] = [:]
+        ) -> TranscriptItem {
+            let timestamp = now.addingTimeInterval(offset)
+            return TranscriptItem(
+                id: id,
+                sessionId: selectedId,
+                agentId: agentId,
+                sender: sender ?? agentId ?? "system",
+                recipient: recipient,
+                type: type,
+                text: text,
+                timestamp: timestamp,
+                rawTimestamp: ISO8601DateFormatter().string(from: timestamp),
+                payload: payload,
+                causationId: nil,
+                correlationId: nil
+            )
+        }
+
+        sessions = [
+            SessionSummary(id: selectedId, title: "Debug workflow: temperature converter", detail: "implementation-review-qa", createdAt: iso(-14 * 60), updatedAt: iso(-14 * 60), workspaceRoot: "/tmp/software-factory/mockup", debugMode: true, status: "completed", activeAgents: 0, failureCount: 0),
+            SessionSummary(id: "mockup-refactor-auth", title: "Refactor auth module", detail: "implementation-review-qa", createdAt: iso(-2 * 60 * 60), updatedAt: iso(-2 * 60 * 60), workspaceRoot: "/tmp/software-factory/auth", status: "completed", activeAgents: 0, failureCount: 0),
+            SessionSummary(id: "mockup-payment-flow", title: "Add payment flow", detail: "implementation-review-qa", createdAt: iso(-25 * 60 * 60), updatedAt: iso(-25 * 60 * 60), workspaceRoot: "/tmp/software-factory/payments", status: "completed", activeAgents: 0, failureCount: 0),
+            SessionSummary(id: "mockup-data-pipeline", title: "Spike: data pipeline", detail: "implementation-review-qa", createdAt: iso(-2 * 24 * 60 * 60), updatedAt: iso(-2 * 24 * 60 * 60), workspaceRoot: "/tmp/software-factory/data", status: "completed", activeAgents: 0, failureCount: 0),
+            SessionSummary(id: "mockup-api-error", title: "API error investigation", detail: "implementation-review-qa", createdAt: iso(-3 * 24 * 60 * 60), updatedAt: iso(-3 * 24 * 60 * 60), workspaceRoot: "/tmp/software-factory/api", status: "completed", activeAgents: 0, failureCount: 0)
+        ]
+        archivedSessions = []
+        selectedSessionId = selectedId
+        selectedSidebarItem = selectedId
+        selectedSidebarItems = [selectedId]
+        currentWorkspaceRoot = "/tmp/software-factory/mockup"
+        currentSessionDebugMode = true
+        connectionStatus = "Connected"
+        inspectorPanel = .graph
+        selectedAgentId = nil
+        controlAgentId = nil
+        transcriptSearchText = ""
+        isComposingNewSession = false
+        isCreatingSession = false
+        lastError = nil
+
+        graph = GraphState(
+            sessionId: selectedId,
+            workflowId: "implementation-review-qa",
+            nodes: [
+                AgentNode(id: "orchestrator", roleId: "orchestrator", label: "Orchestrator", status: .idle, colorHex: "#8e63bf", unreadCount: 3, errorCount: 0),
+                AgentNode(id: "planner", roleId: "planner", label: "Planner", status: .idle, colorHex: "#5b8fdc", unreadCount: 1, errorCount: 0),
+                AgentNode(id: "implementor", roleId: "implementor", label: "Implementor", status: .completed, colorHex: "#60bf71", unreadCount: 0, errorCount: 0),
+                AgentNode(id: "reviewer", roleId: "reviewer", label: "Reviewer", status: .completed, colorHex: "#f19a3e", unreadCount: 1, errorCount: 0),
+                AgentNode(id: "qa", roleId: "qa", label: "QA", status: .completed, colorHex: "#f45d4f", unreadCount: 2, errorCount: 0)
+            ],
+            edges: [
+                AgentEdge(id: "orchestrator-planner", from: "orchestrator", to: "planner", kind: .handoff, active: false),
+                AgentEdge(id: "planner-implementor", from: "planner", to: "implementor", kind: .handoff, active: false),
+                AgentEdge(id: "implementor-reviewer", from: "implementor", to: "reviewer", kind: .message, active: false),
+                AgentEdge(id: "implementor-qa", from: "implementor", to: "qa", kind: .message, active: false)
+            ]
+        )
+
+        transcript = [
+            transcriptItem("mockup-user-prompt", agentId: "user", sender: "user", recipient: "orchestrator", type: "agent.message", text: "Audit a small debug workflow and produce visible transcript events.", offset: -770),
+            transcriptItem("mockup-orchestrator-goal", agentId: "orchestrator", type: "agent.message", text: "Debug orchestrator: Goal received. Planning and delegating to Implementor.", offset: -720),
+            transcriptItem("mockup-planner-plan", agentId: "planner", type: "agent.message", text: "Debug planner: Selected the workflow graph, confirmed responsibilities, and handed the plan back to Orchestrator.", offset: -690),
+            transcriptItem(
+                "mockup-plan-created",
+                agentId: "planner",
+                type: "plan.created",
+                text: "Build, review, and QA the requested CLI",
+                offset: -650,
+                payload: ["planId": .string("temperature-converter-plan")]
+            ),
+            transcriptItem(
+                "mockup-implementation-file",
+                agentId: "implementor",
+                type: "workspace.file_touched",
+                text: "temperature_converter.py",
+                offset: -570,
+                payload: [
+                    "path": .string("temperature_converter.py"),
+                    "diffStats": .object(["additions": .number(25), "deletions": .number(0)])
+                ]
+            ),
+            transcriptItem(
+                "mockup-test-file",
+                agentId: "implementor",
+                type: "workspace.file_touched",
+                text: "test_temperature_converter.py",
+                offset: -560,
+                payload: [
+                    "path": .string("test_temperature_converter.py"),
+                    "diffStats": .object(["additions": .number(28), "deletions": .number(0)])
+                ]
+            ),
+            transcriptItem("mockup-implementor-message", agentId: "implementor", type: "agent.message", text: "Implemented temperature_converter.py with celsius/fahrenheit conversion helpers, a CLI, and unittest coverage.", offset: -500),
+            transcriptItem(
+                "mockup-test-run",
+                agentId: "qa",
+                type: "agent.tool_result",
+                text: "python3 -m unittest test_temperature_converter.py completed successfully.",
+                offset: -430,
+                payload: ["callId": .string("test-run"), "toolName": .string("test run"), "status": .string("done")]
+            ),
+            transcriptItem("mockup-qa-message", agentId: "qa", type: "agent.message", text: "QA acceptance passed: python3 -m unittest test_temperature_converter.py completed successfully.", offset: -310),
+            transcriptItem("mockup-reviewer-message", agentId: "reviewer", type: "agent.message", text: "Debug reviewer: Reviewed implementation and sent one follow-up to Implementor.", offset: -260),
+            transcriptItem("mockup-complete", agentId: "orchestrator", type: "workflow.completed", text: "All acceptance checks passed. Workflow complete.", offset: -2)
+        ]
+        debugLogs = []
     }
 
     private func apply(debugLog entry: DebugLogItem) {

@@ -7,7 +7,7 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             SidebarView(store: store)
-                .navigationSplitViewColumnWidth(282)
+                .navigationSplitViewColumnWidth(274)
         } detail: {
             switch store.selectedSidebarItem {
             case "roles":
@@ -23,21 +23,37 @@ struct ContentView: View {
             }
         }
         .toolbar(removing: .sidebarToggle)
-        .background(WindowToolbarConfigurator())
+        .background(WindowToolbarConfigurator(usesReferenceFrame: store.usesStaticMockupFixture))
     }
 }
 
 private struct WindowToolbarConfigurator: NSViewRepresentable {
+    let usesReferenceFrame: Bool
+
     func makeNSView(context: Context) -> ToolbarConfigurationView {
-        ToolbarConfigurationView()
+        ToolbarConfigurationView(usesReferenceFrame: usesReferenceFrame)
     }
 
     func updateNSView(_ nsView: ToolbarConfigurationView, context: Context) {
+        nsView.usesReferenceFrame = usesReferenceFrame
         nsView.configureSoon()
     }
 }
 
 private final class ToolbarConfigurationView: NSView {
+    var usesReferenceFrame: Bool
+    private var appliedReferenceFrame = false
+
+    init(usesReferenceFrame: Bool) {
+        self.usesReferenceFrame = usesReferenceFrame
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         configureSoon()
@@ -53,12 +69,25 @@ private final class ToolbarConfigurationView: NSView {
         guard let window, let toolbar = window.toolbar else { return }
         window.titleVisibility = .hidden
         window.toolbarStyle = .unified
+        applyReferenceFrameIfNeeded(to: window)
         ensureTitleAccessory(on: window)
 
         for index in toolbar.items.indices.reversed()
         where isSidebarToggle(toolbar.items[index]) {
             toolbar.removeItem(at: index)
         }
+    }
+
+    private func applyReferenceFrameIfNeeded(to window: NSWindow) {
+        guard usesReferenceFrame, !appliedReferenceFrame else { return }
+        appliedReferenceFrame = true
+        let targetSize = NSSize(width: 1586, height: 992)
+        let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame
+        let origin = NSPoint(
+            x: visibleFrame.minX,
+            y: max(visibleFrame.minY, visibleFrame.maxY - targetSize.height)
+        )
+        window.setFrame(NSRect(origin: origin, size: targetSize), display: true)
     }
 
     private func ensureTitleAccessory(on window: NSWindow) {
@@ -79,7 +108,7 @@ private final class ToolbarConfigurationView: NSView {
         container.addSubview(label)
         label.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 68),
+            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 54),
             label.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             label.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor)
         ])

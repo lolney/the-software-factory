@@ -151,6 +151,7 @@ struct OrchestratorChatView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(.sRGB, white: 0.988, opacity: 1))
     }
 
     private func color(for agentId: String?) -> Color {
@@ -203,7 +204,7 @@ private struct TranscriptTopBar: View {
                 } label: {
                     HStack(spacing: 5) {
                         Text(store.transcriptFilterLabel)
-                            .font(.headline)
+                            .font(.system(size: 16, weight: .semibold))
                         Image(systemName: "chevron.down")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
@@ -212,7 +213,7 @@ private struct TranscriptTopBar: View {
                 .buttonStyle(.plain)
 
                 Color.clear
-                    .frame(width: 48, height: 1)
+                    .frame(width: 60, height: 1)
 
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
@@ -220,13 +221,22 @@ private struct TranscriptTopBar: View {
                         .foregroundStyle(.secondary)
                     TextField("Search transcript", text: $store.transcriptSearchText)
                         .textFieldStyle(.plain)
+                    Image(systemName: "command")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 18, height: 18)
+                        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 4))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(.separator.opacity(0.35))
+                        }
                 }
                 .padding(.horizontal, 11)
                 .frame(width: 354, height: 34)
-                .background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
+                .background(Color(.sRGB, red: 250 / 255, green: 250 / 255, blue: 250 / 255, opacity: 1), in: RoundedRectangle(cornerRadius: 8))
                 .overlay {
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(.separator.opacity(0.5))
+                        .stroke(Color(.sRGB, white: 0.89, opacity: 1))
                 }
 
                 Button {
@@ -235,14 +245,15 @@ private struct TranscriptTopBar: View {
                     HStack(spacing: 6) {
                         Image(systemName: "ellipsis")
                         Text("Follow")
+                            .font(.system(size: 14))
                     }
                     .frame(width: 88, height: 32)
                 }
                 .buttonStyle(.plain)
-                .background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
+                .background(Color(.sRGB, red: 250 / 255, green: 250 / 255, blue: 250 / 255, opacity: 1), in: RoundedRectangle(cornerRadius: 8))
                 .overlay {
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(.separator.opacity(0.5))
+                        .stroke(Color(.sRGB, white: 0.89, opacity: 1))
                 }
                 .disabled(store.isTranscriptFiltered)
                 .help(store.isTranscriptFiltered ? "Clear transcript filters to follow live events" : "Follow new transcript events")
@@ -252,18 +263,18 @@ private struct TranscriptTopBar: View {
                         .fill(store.connectionStatus == "Connected" ? .green : .secondary)
                         .frame(width: 7, height: 7)
                     Text(store.connectionStatus == "Connected" ? "Connected" : store.connectionStatus)
-                        .font(.callout)
+                        .font(.system(size: 14))
                         .foregroundStyle(.secondary)
                 }
 
                 Spacer(minLength: 0)
             }
-            .padding(.top, 12)
-            .padding(.horizontal, 28)
-            .padding(.bottom, 21)
+            .padding(.top, 34)
+            .padding(.horizontal, 44)
+            .padding(.bottom, 24)
 
             SessionStateStrip(store: store, transcriptCountSummary: transcriptCountSummary)
-                .padding(.horizontal, 28)
+                .padding(.horizontal, 44)
                 .padding(.bottom, 14)
         }
     }
@@ -303,7 +314,7 @@ private struct SessionStateStrip: View {
 
     private var lastActionAge: String {
         guard let item = store.transcript.reversed().first(where: { $0.type != "client.ack" }) else { return "No transcript events" }
-        return item.timestamp.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
+        return compactRelativeTimeLabel(from: item.timestamp)
     }
 
     private var runtimeLabel: String {
@@ -322,16 +333,23 @@ private struct SessionStateStrip: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            MetricCell(title: "Agents", value: agentSummary)
-            MetricCell(title: "Queue", value: "\(queuedWorkCount)", sparkline: true)
-            MetricCell(title: "Last action", value: lastActionAge)
-            MetricCell(title: "Failures", value: nil, statusColor: store.sessionErrorCount > 0 ? .orange : .green)
-            MetricCell(title: "Changed files", value: "\(store.touchedWorkspaceFiles.count)", sparkline: !store.touchedWorkspaceFiles.isEmpty)
-            MetricCell(title: "Mode", value: "Auto", showsChevron: true)
-            MetricCell(title: "Runtime", value: runtimeLabel)
-            MetricCell(title: "Connection", value: store.connectionStatus == "Connected" ? "Local" : store.connectionStatus, statusColor: store.connectionStatus == "Connected" ? .green : .secondary)
+            MetricCell(title: "Agents", value: agentSummary, width: 92)
+            MetricCell(title: "Queue", value: "\(queuedWorkCount)", width: 96, sparkline: true)
+            MetricCell(title: "Last action", value: lastActionAge, width: 116)
+            MetricCell(title: "Failures", value: nil, width: 88, statusColor: store.sessionErrorCount > 0 ? .orange : .green)
+            MetricCell(title: "Changed files", value: "\(store.touchedWorkspaceFiles.count)", width: 128, sparkline: !store.touchedWorkspaceFiles.isEmpty)
+            MetricCell(title: "Mode", value: "Auto", width: 92, showsChevron: true)
+            MetricCell(title: "Runtime", value: runtimeLabel, width: 112)
+            MetricCell(
+                title: "Connection",
+                value: store.connectionStatus == "Connected" ? "Local" : store.connectionStatus,
+                width: 116,
+                statusColor: store.connectionStatus == "Connected" ? .green : .secondary,
+                showsDivider: false
+            )
         }
         .frame(height: 56)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .top) {
             Divider()
         }
@@ -344,15 +362,17 @@ private struct SessionStateStrip: View {
 private struct MetricCell: View {
     let title: String
     let value: String?
+    let width: CGFloat
     var statusColor: Color?
     var sparkline = false
     var showsChevron = false
+    var showsDivider = true
 
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(title)
-                    .font(.caption)
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 HStack(spacing: 7) {
@@ -363,7 +383,7 @@ private struct MetricCell: View {
                     }
                     if let value {
                         Text(value)
-                            .font(.callout)
+                            .font(.system(size: 14))
                             .lineLimit(1)
                             .monospacedDigit()
                     }
@@ -381,10 +401,12 @@ private struct MetricCell: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 15)
 
-            Divider()
-                .padding(.vertical, 9)
+            if showsDivider {
+                Divider()
+                    .padding(.vertical, 9)
+            }
         }
-        .frame(maxWidth: .infinity)
+        .frame(width: width)
     }
 }
 

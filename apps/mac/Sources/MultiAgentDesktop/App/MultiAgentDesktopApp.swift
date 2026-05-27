@@ -5,7 +5,7 @@ import AppKit
 struct TheSoftwareFactoryApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
-    @State private var store = SessionStore()
+    @State private var store = SessionStore.bootstrap()
 
     var body: some Scene {
         WindowGroup("The Software Factory", id: "main") {
@@ -23,6 +23,7 @@ struct TheSoftwareFactoryApp: App {
                     }
                 }
         }
+        .defaultSize(width: 1586, height: 992)
         .commands {
             CommandGroup(after: .newItem) {
                 Button("New Session…") {

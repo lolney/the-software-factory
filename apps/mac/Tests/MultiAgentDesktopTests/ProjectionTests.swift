@@ -60,6 +60,43 @@ final class ProjectionTests: XCTestCase {
         XCTAssertEqual(sourceArtifactStem(from: "Sources/AuthModule-test.swift"), "AuthModule")
     }
 
+    func testCompactRelativeTimeLabelMatchesMockupStyle() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertEqual(compactRelativeTimeLabel(from: now.addingTimeInterval(-2), now: now), "2s ago")
+        XCTAssertEqual(compactRelativeTimeLabel(from: now.addingTimeInterval(-14 * 60), now: now), "14 min ago")
+        XCTAssertEqual(compactRelativeTimeLabel(from: now.addingTimeInterval(-2 * 60 * 60), now: now), "2h ago")
+        XCTAssertEqual(compactRelativeTimeLabel(from: now.addingTimeInterval(-25 * 60 * 60), now: now), "Yesterday")
+        XCTAssertEqual(compactRelativeTimeLabel(from: now.addingTimeInterval(-3 * 24 * 60 * 60), now: now), "3d ago")
+    }
+
+    func testSidebarSessionIconNameMatchesMockupRecentRows() {
+        XCTAssertEqual(sidebarSessionIconName(for: "Debug workflow: temperature converter", debugMode: true), "point.3.connected.trianglepath.dotted")
+        XCTAssertEqual(sidebarSessionIconName(for: "Refactor auth module", debugMode: false), "key")
+        XCTAssertEqual(sidebarSessionIconName(for: "Add payment flow", debugMode: false), "creditcard")
+        XCTAssertEqual(sidebarSessionIconName(for: "Spike: data pipeline", debugMode: false), "cylinder.split.1x2")
+        XCTAssertEqual(sidebarSessionIconName(for: "API error investigation", debugMode: false), "exclamationmark.magnifyingglass")
+    }
+
+    func testMockupFixturePreservesSidebarAndStateStripInputs() {
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let store = SessionStore(mockupFixture: true, referenceNow: now)
+
+        XCTAssertTrue(store.usesStaticMockupFixture)
+        XCTAssertEqual(store.connectionStatus, "Connected")
+        XCTAssertEqual(store.visibleSessions.prefix(5).map(\.title), [
+            "Debug workflow: temperature converter",
+            "Refactor auth module",
+            "Add payment flow",
+            "Spike: data pipeline",
+            "API error investigation"
+        ])
+        XCTAssertEqual(store.graph.nodes.count, 5)
+        XCTAssertEqual(store.touchedWorkspaceFiles.count, 2)
+        XCTAssertEqual(store.touchedWorkspaceFiles.map(\.path).compactMap(sourceArtifactStem).first, "temperature converter")
+        XCTAssertEqual(store.transcript.last?.timestamp.timeIntervalSince(store.transcript.first?.timestamp ?? now), 768)
+        XCTAssertEqual(compactRelativeTimeLabel(from: store.transcript.last?.timestamp ?? now, now: now), "2s ago")
+    }
+
     func testTimelinePairsToolCallAndResultBeforeApplyingLimit() {
         let transcript = [
             item(id: "older", agentId: "orchestrator", type: "agent.message", text: "older"),
