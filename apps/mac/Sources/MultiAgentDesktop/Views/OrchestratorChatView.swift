@@ -205,9 +205,10 @@ private struct TranscriptTopBar: View {
                     HStack(spacing: 5) {
                         Text(store.transcriptFilterLabel)
                             .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(.primary.opacity(0.90))
                         Image(systemName: "chevron.down")
                             .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.secondary.opacity(0.25))
                     }
                 }
                 .buttonStyle(.plain)
@@ -236,7 +237,7 @@ private struct TranscriptTopBar: View {
                 .background(Color(.sRGB, red: 250 / 255, green: 250 / 255, blue: 250 / 255, opacity: 1), in: RoundedRectangle(cornerRadius: 8))
                 .overlay {
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color(.sRGB, white: 0.89, opacity: 1))
+                        .stroke(Color(.sRGB, white: 1.0, opacity: 1))
                 }
                 .padding(.trailing, 12)
 
@@ -262,11 +263,11 @@ private struct TranscriptTopBar: View {
 
                 HStack(spacing: 7) {
                     Circle()
-                        .fill(store.connectionStatus == "Connected" ? .green : .secondary)
+                        .fill(store.connectionStatus == "Connected" ? .green.opacity(0.90) : .secondary)
                         .frame(width: 7, height: 7)
                     Text(store.connectionStatus == "Connected" ? "Connected" : store.connectionStatus)
                         .font(.system(size: 13))
-                        .foregroundStyle(.primary.opacity(0.55))
+                        .foregroundStyle(.primary.opacity(0.40))
                 }
 
                 Spacer(minLength: 0)
@@ -353,20 +354,11 @@ private struct SessionStateStrip: View {
                 title: "Connection",
                 value: store.connectionStatus == "Connected" ? "Local" : store.connectionStatus,
                 width: 116,
-                statusColor: store.connectionStatus == "Connected" ? .green : .secondary,
-                showsDivider: false
+                statusColor: store.connectionStatus == "Connected" ? .green : .secondary
             )
         }
         .frame(height: 56)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(alignment: .top) {
-            Divider()
-                .opacity(0.75)
-        }
-        .overlay(alignment: .bottom) {
-            Divider()
-                .opacity(0.75)
-        }
     }
 }
 
@@ -378,14 +370,13 @@ private struct MetricCell: View {
     var sparkline = false
     var sparklineValues: [CGFloat]?
     var showsChevron = false
-    var showsDivider = true
 
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(title)
                     .font(.system(size: 11))
-                    .foregroundStyle(.primary.opacity(0.72))
+                    .foregroundStyle(.primary.opacity(0.69))
                     .lineLimit(1)
                 HStack(spacing: 7) {
                     if let statusColor {
@@ -414,10 +405,6 @@ private struct MetricCell: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 15)
 
-            if showsDivider {
-                Divider()
-                    .padding(.vertical, 9)
-            }
         }
         .frame(width: width)
     }

@@ -377,7 +377,7 @@ private struct SidebarNavRow: View {
                     .font(.system(size: 15))
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(.primary.opacity(0.58))
+            .foregroundStyle(.primary.opacity(0.56))
             .padding(.horizontal, 10)
             .frame(height: 34)
             .background {

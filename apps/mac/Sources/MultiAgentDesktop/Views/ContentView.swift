@@ -42,7 +42,7 @@ private struct WindowToolbarConfigurator: NSViewRepresentable {
 
 private final class ToolbarConfigurationView: NSView {
     var usesReferenceFrame: Bool
-    private var appliedReferenceFrame = false
+    private var referenceFrameApplications = 0
 
     init(usesReferenceFrame: Bool) {
         self.usesReferenceFrame = usesReferenceFrame
@@ -63,6 +63,10 @@ private final class ToolbarConfigurationView: NSView {
         DispatchQueue.main.async { [weak self] in
             self?.configureWindowToolbar()
         }
+        guard usesReferenceFrame else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.configureWindowToolbar()
+        }
     }
 
     private func configureWindowToolbar() {
@@ -79,8 +83,8 @@ private final class ToolbarConfigurationView: NSView {
     }
 
     private func applyReferenceFrameIfNeeded(to window: NSWindow) {
-        guard usesReferenceFrame, !appliedReferenceFrame else { return }
-        appliedReferenceFrame = true
+        guard usesReferenceFrame, referenceFrameApplications < 2 else { return }
+        referenceFrameApplications += 1
         let targetSize = NSSize(width: 1586, height: 992)
         let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame
         let origin = NSPoint(
