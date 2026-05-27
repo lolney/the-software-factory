@@ -197,12 +197,13 @@ struct SidebarView: View {
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 16)
+                    .foregroundStyle(Color(.sRGB, white: 0.50, opacity: 1))
                     .frame(height: 38)
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity)
-                .background(Color(.sRGB, red: 248 / 255, green: 247 / 255, blue: 248 / 255, opacity: 1), in: RoundedRectangle(cornerRadius: 7))
+                .background(Color(.sRGB, red: 242 / 255, green: 242 / 255, blue: 243 / 255, opacity: 1), in: RoundedRectangle(cornerRadius: 7))
                 .overlay {
                     RoundedRectangle(cornerRadius: 7)
                         .stroke(.separator.opacity(0.8))
@@ -406,7 +407,7 @@ private struct SidebarSessionButton<Content: View>: View {
                 .background {
                     if isSelected {
                         RoundedRectangle(cornerRadius: 7)
-                            .fill(.quaternary.opacity(0.48))
+                            .fill(.quaternary.opacity(0.60))
                     }
                 }
         }

@@ -361,9 +361,11 @@ private struct SessionStateStrip: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .top) {
             Divider()
+                .opacity(0.75)
         }
         .overlay(alignment: .bottom) {
             Divider()
+                .opacity(0.75)
         }
     }
 }
