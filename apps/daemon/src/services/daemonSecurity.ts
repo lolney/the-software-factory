@@ -58,7 +58,7 @@ export function daemonOwnershipChallenge(nonce: string) {
   }
   return {
     ok: true,
-    service: "multiagent-daemon",
+    service: "software-factory-daemon",
     nonce: normalizedNonce,
     proof: createHmac("sha256", token).update(normalizedNonce).digest("hex")
   };

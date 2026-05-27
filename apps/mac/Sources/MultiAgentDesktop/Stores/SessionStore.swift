@@ -361,7 +361,7 @@ final class SessionStore {
         let daemonStarted = await localDaemonLauncher.ensureStarted(port: daemonPort)
         guard daemonStarted else {
             connectionStatus = "Disconnected"
-            lastError = "Could not start the local daemon. Check ~/Library/Application Support/MultiAgentDesktop/logs/app-daemon.log for details."
+            lastError = "Could not start the local daemon. Check ~/Library/Application Support/The Software Factory/logs/app-daemon.log for details."
             return
         }
         daemon.connect(port: daemonPort)

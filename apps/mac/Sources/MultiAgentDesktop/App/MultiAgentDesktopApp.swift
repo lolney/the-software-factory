@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 @main
-struct MultiAgentDesktopApp: App {
+struct TheSoftwareFactoryApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @State private var store = SessionStore()

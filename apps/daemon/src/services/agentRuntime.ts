@@ -1,6 +1,6 @@
 import { Agent, OpenAIProvider, RunContext, run, tool } from "@openai/agents";
 import type { MCPServer } from "@openai/agents";
-import type { SessionEvent, SkillCatalogItem } from "@multiagent/shared";
+import type { SessionEvent, SkillCatalogItem } from "@software-factory/shared";
 import OpenAI from "openai";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
@@ -66,7 +66,7 @@ interface RuntimeAdapter {
   runTurn(input: AgentTurnInput, connection: NonNullable<AgentTurnInput["openAI"]>, tools: RuntimeTool[]): Promise<SessionEvent[]>;
 }
 
-const defaultInstructions = "You are a role-specific coding agent in a local multiagent coding workflow. Be concise, operational, and report concrete progress.";
+const defaultInstructions = "You are a role-specific coding agent in a local Software Factory workflow. Be concise, operational, and report concrete progress.";
 
 export class OpenAIAgentRuntime implements AgentRuntime {
   constructor(private readonly options: { fetch?: typeof fetch; timeoutMs?: number } = {}) {}

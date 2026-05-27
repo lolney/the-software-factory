@@ -1,6 +1,6 @@
 digraph MacAppArchitecture {
   graph [
-    label="MultiAgentDesktop SwiftUI App Code Architecture",
+    label="The Software Factory SwiftUI App Code Architecture",
     labelloc="t",
     fontsize=22,
     fontname="Helvetica",
@@ -35,7 +35,7 @@ digraph MacAppArchitecture {
     style="rounded,filled";
     fillcolor="#f7fbff";
 
-    app [label="MultiAgentDesktopApp\nWindowGroup, Commands, Settings"];
+    app [label="TheSoftwareFactoryApp\nWindowGroup, Commands, Settings"];
     appDelegate [label="AppDelegate\nactivation + termination hook"];
     contentView [label="ContentView\nNavigationSplitView root"];
     settingsView [label="SettingsView\nDaemon/Auth/MCP/Skills panes"];
@@ -61,7 +61,7 @@ digraph MacAppArchitecture {
     daemonClient [label="DaemonClient\nURLSessionWebSocketTask JSON-RPC"];
     localDaemonLauncher [label="LocalDaemonLauncher\nstarts/stops packaged daemon"];
     daemonProcess [shape=component, label="Daemon process\nNode/Bun server"];
-    appSupport [shape=folder, label="Application Support/MultiAgentDesktop\nsessions/\nlogs/app-daemon.log\nBuild/"];
+    appSupport [shape=folder, label="Application Support/The Software Factory\nsessions/\nlogs/app-daemon.log\nBuild/"];
   }
 
   subgraph cluster_navigation {

@@ -1,5 +1,5 @@
 {
-  "name": "@multiagent/shared",
+  "name": "@software-factory/shared",
   "version": "0.1.0",
   "private": true,
   "type": "module",

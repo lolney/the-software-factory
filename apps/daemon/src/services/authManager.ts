@@ -15,7 +15,7 @@ export const OPENAI_OAUTH_SCOPES = [
   "offline_access"
 ] as const;
 export const OPENAI_WHAM_BASE_URL = "https://chatgpt.com/backend-api/wham";
-export const OPENAI_OAUTH_CLIENT_NAME = "multiagent-desktop";
+export const OPENAI_OAUTH_CLIENT_NAME = "the-software-factory";
 export const OPENAI_OAUTH_CLIENT_VERSION = "0.1.0";
 
 export interface OAuthTokenSet {
@@ -43,10 +43,12 @@ interface PendingOAuth {
 }
 
 export class AuthManager {
-  private readonly keychainService = "local.multiagent.codex-oauth";
+  private readonly keychainService = "local.softwarefactory.codex-oauth";
+  private readonly legacyKeychainService = "local.multiagent.codex-oauth";
   private readonly keychainAccount = "codex-public-client";
   private readonly chatGPTAccountIdKeychainAccount = "chatgpt-account-id";
-  private readonly apiKeychainService = "local.multiagent.openai-api-key";
+  private readonly apiKeychainService = "local.softwarefactory.openai-api-key";
+  private readonly legacyApiKeychainService = "local.multiagent.openai-api-key";
   private readonly apiKeychainAccount = "openai-api-key";
   private readonly pending = new Map<string, PendingOAuth>();
 
@@ -224,13 +226,23 @@ export class AuthManager {
   }
 
   async loadTokens(): Promise<OAuthTokenSet | null> {
+    const current = await this.loadTokensFromService(this.keychainService);
+    if (current) return current;
+    const legacy = await this.loadTokensFromService(this.legacyKeychainService);
+    if (legacy) {
+      await this.saveTokens(legacy);
+    }
+    return legacy;
+  }
+
+  private async loadTokensFromService(service: string): Promise<OAuthTokenSet | null> {
     try {
       const { stdout } = await execFileAsync("security", [
         "find-generic-password",
         "-a",
         this.keychainAccount,
         "-s",
-        this.keychainService,
+        service,
         "-w"
       ]);
       return JSON.parse(stdout.trim()) as OAuthTokenSet;
@@ -324,13 +336,23 @@ export class AuthManager {
   }
 
   async loadChatGPTAccountId() {
+    const current = await this.loadChatGPTAccountIdFromService(this.keychainService);
+    if (current) return current;
+    const legacy = await this.loadChatGPTAccountIdFromService(this.legacyKeychainService);
+    if (legacy) {
+      await this.saveChatGPTAccountId(legacy);
+    }
+    return legacy;
+  }
+
+  private async loadChatGPTAccountIdFromService(service: string) {
     try {
       const { stdout } = await execFileAsync("security", [
         "find-generic-password",
         "-a",
         this.chatGPTAccountIdKeychainAccount,
         "-s",
-        this.keychainService,
+        service,
         "-w"
       ]);
       return stdout.trim() || undefined;
@@ -354,13 +376,23 @@ export class AuthManager {
   }
 
   async loadApiKey() {
+    const current = await this.loadApiKeyFromService(this.apiKeychainService);
+    if (current) return current;
+    const legacy = await this.loadApiKeyFromService(this.legacyApiKeychainService);
+    if (legacy) {
+      await this.saveApiKey(legacy);
+    }
+    return legacy;
+  }
+
+  private async loadApiKeyFromService(service: string) {
     try {
       const { stdout } = await execFileAsync("security", [
         "find-generic-password",
         "-a",
         this.apiKeychainAccount,
         "-s",
-        this.apiKeychainService,
+        service,
         "-w"
       ]);
       return stdout.trim() || undefined;

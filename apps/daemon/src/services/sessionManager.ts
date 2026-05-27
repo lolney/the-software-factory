@@ -1,4 +1,4 @@
-import { CompletionCriterionSchema, PlanSpecSchema, type CompletionCriterion, type DaemonRequest, type DebugLogEntry, type DebugLogLevel, type GraphState, type PlanSpec, type SessionEvent, type SessionSnapshot, type WorkflowSpec } from "@multiagent/shared";
+import { CompletionCriterionSchema, PlanSpecSchema, type CompletionCriterion, type DaemonRequest, type DebugLogEntry, type DebugLogLevel, type GraphState, type PlanSpec, type SessionEvent, type SessionSnapshot, type WorkflowSpec } from "@software-factory/shared";
 import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
@@ -2839,7 +2839,7 @@ export class SessionManager {
     await mkdir(workspaceRoot, { recursive: true });
     const readme = path.join(workspaceRoot, "README.md");
     if (!existsSync(readme)) {
-      await writeFile(readme, `# ${title}\n\nThis workspace was initialized for a local multiagent coding session.\n`, "utf8");
+      await writeFile(readme, `# ${title}\n\nThis workspace was initialized for a local Software Factory session.\n`, "utf8");
     }
   }
 

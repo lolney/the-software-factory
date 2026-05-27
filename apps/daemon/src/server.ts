@@ -18,7 +18,7 @@ export function createDaemonServer(options: DaemonServerOptions) {
       if (url.pathname === "/oauth/callback" || url.pathname === "/auth/callback") {
         try {
           await manager.completeOAuthCallback(request.url);
-          return new Response("OpenAI OAuth connected. You can close this window and return to Multiagent Coding.", {
+          return new Response("OpenAI OAuth connected. You can close this window and return to The Software Factory.", {
             headers: { "content-type": "text/plain" }
           });
         } catch (error) {
@@ -29,7 +29,7 @@ export function createDaemonServer(options: DaemonServerOptions) {
         }
       }
       if (url.pathname === "/health") {
-        return new Response(JSON.stringify({ ok: true, service: "multiagent-daemon", transport: "bun" }), {
+        return new Response(JSON.stringify({ ok: true, service: "software-factory-daemon", transport: "bun" }), {
           headers: { "content-type": "application/json" }
         });
       }
@@ -47,7 +47,7 @@ export function createDaemonServer(options: DaemonServerOptions) {
       if (server.upgrade(request)) {
         return undefined;
       }
-      return new Response(JSON.stringify({ ok: true, service: "multiagent-daemon" }), {
+      return new Response(JSON.stringify({ ok: true, service: "software-factory-daemon" }), {
         headers: { "content-type": "application/json" }
       });
     },

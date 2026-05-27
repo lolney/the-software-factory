@@ -15,7 +15,7 @@ const server = http.createServer(async (request, response) => {
     try {
       await manager.completeOAuthCallback(url.toString());
       response.writeHead(200, { "content-type": "text/plain" });
-      response.end("OpenAI OAuth connected. You can close this window and return to Multiagent Coding.");
+      response.end("OpenAI OAuth connected. You can close this window and return to The Software Factory.");
     } catch (error) {
       response.writeHead(400, { "content-type": "text/plain" });
       response.end(error instanceof Error ? error.message : String(error));
@@ -24,7 +24,7 @@ const server = http.createServer(async (request, response) => {
   }
   if (url.pathname === "/health") {
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ ok: true, service: "multiagent-daemon", transport: "node" }));
+    response.end(JSON.stringify({ ok: true, service: "software-factory-daemon", transport: "node" }));
     return;
   }
   if (url.pathname === "/ownership-challenge") {
@@ -40,7 +40,7 @@ const server = http.createServer(async (request, response) => {
     return;
   }
   response.writeHead(200, { "content-type": "application/json" });
-  response.end(JSON.stringify({ ok: true, service: "multiagent-daemon-node" }));
+  response.end(JSON.stringify({ ok: true, service: "software-factory-daemon-node" }));
 });
 
 const wss = new WebSocketServer({ noServer: true });
@@ -69,5 +69,5 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 server.listen(port, "127.0.0.1", () => {
-  console.log(`multiagent daemon listening on ws://127.0.0.1:${port}`);
+  console.log(`The Software Factory daemon listening on ws://127.0.0.1:${port}`);
 });

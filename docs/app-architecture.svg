@@ -9,7 +9,7 @@
 <g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(25.2 870.95)">
 <title>MacAppArchitecture</title>
 <polygon fill="white" stroke="none" points="-25.2,25.2 -25.2,-870.95 2848.41,-870.95 2848.41,25.2 -25.2,25.2"/>
-<text xml:space="preserve" text-anchor="middle" x="1411.6" y="-820.85" font-family="Helvetica,sans-Serif" font-size="22.00">MultiAgentDesktop SwiftUI App Code Architecture</text>
+<text xml:space="preserve" text-anchor="middle" x="1411.6" y="-820.85" font-family="Helvetica,sans-Serif" font-size="22.00">The Software Factory SwiftUI App Code Architecture</text>
 <g id="clust1" class="cluster">
 <title>cluster_scene</title>
 <path fill="#f7fbff" stroke="#d6e4ff" d="M20,-306C20,-306 525.56,-306 525.56,-306 531.56,-306 537.56,-312 537.56,-318 537.56,-318 537.56,-529 537.56,-529 537.56,-535 531.56,-541 525.56,-541 525.56,-541 20,-541 20,-541 14,-541 8,-535 8,-529 8,-529 8,-318 8,-318 8,-312 14,-306 20,-306"/>
@@ -39,7 +39,7 @@
 <g id="node1" class="node">
 <title>app</title>
 <path fill="#f7f8fa" stroke="#c8ccd0" d="M196.78,-400C196.78,-400 28,-400 28,-400 22,-400 16,-394 16,-388 16,-388 16,-376 16,-376 16,-370 22,-364 28,-364 28,-364 196.78,-364 196.78,-364 202.78,-364 208.78,-370 208.78,-376 208.78,-376 208.78,-388 208.78,-388 208.78,-394 202.78,-400 196.78,-400"/>
-<text xml:space="preserve" text-anchor="middle" x="112.39" y="-383.55" font-family="Helvetica,sans-Serif" font-size="11.00">MultiAgentDesktopApp</text>
+<text xml:space="preserve" text-anchor="middle" x="112.39" y="-383.55" font-family="Helvetica,sans-Serif" font-size="11.00">TheSoftwareFactoryApp</text>
 <text xml:space="preserve" text-anchor="middle" x="112.39" y="-371.55" font-family="Helvetica,sans-Serif" font-size="11.00">WindowGroup, Commands, Settings</text>
 </g>
 <!-- appDelegate -->
@@ -262,7 +262,7 @@
 <g id="node11" class="node">
 <title>appSupport</title>
 <polygon fill="#f7f8fa" stroke="#c8ccd0" points="2807.21,-298.76 2804.21,-302.76 2783.21,-302.76 2780.21,-298.76 2602.43,-298.76 2602.43,-239.24 2807.21,-239.24 2807.21,-298.76"/>
-<text xml:space="preserve" text-anchor="middle" x="2704.82" y="-282.55" font-family="Helvetica,sans-Serif" font-size="11.00">Application Support/MultiAgentDesktop</text>
+<text xml:space="preserve" text-anchor="middle" x="2704.82" y="-282.55" font-family="Helvetica,sans-Serif" font-size="11.00">Application Support/The Software Factory</text>
 <text xml:space="preserve" text-anchor="middle" x="2704.82" y="-270.55" font-family="Helvetica,sans-Serif" font-size="11.00">sessions/</text>
 <text xml:space="preserve" text-anchor="middle" x="2704.82" y="-258.55" font-family="Helvetica,sans-Serif" font-size="11.00">logs/app&#45;daemon.log</text>
 <text xml:space="preserve" text-anchor="middle" x="2704.82" y="-246.55" font-family="Helvetica,sans-Serif" font-size="11.00">Build/</text>

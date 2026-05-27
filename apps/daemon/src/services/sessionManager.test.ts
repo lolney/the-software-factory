@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { SessionEvent, SessionSnapshot } from "@multiagent/shared";
+import type { SessionEvent, SessionSnapshot } from "@software-factory/shared";
 import { deriveActorStates } from "./concurrency.js";
 import { SessionManager } from "./sessionManager.js";
 import { EventStore, makeEventId } from "./eventStore.js";

@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { SessionEvent } from "@multiagent/shared";
+import type { SessionEvent } from "@software-factory/shared";
 import { makeEventId } from "./eventStore.js";
 
 export interface WorkspacePolicy {

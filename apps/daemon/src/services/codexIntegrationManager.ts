@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { MCPServerStdio, MCPServerStreamableHttp, type MCPServer } from "@openai/agents";
-import type { MCPServerCatalogItem, SkillCatalogItem } from "@multiagent/shared";
+import type { MCPServerCatalogItem, SkillCatalogItem } from "@software-factory/shared";
 
 type RawMCPServer = {
   name: string;

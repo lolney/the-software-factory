@@ -1,4 +1,4 @@
-import { DaemonRequestSchema, type DaemonResponse, type DebugLogEntry, type SessionEvent } from "@multiagent/shared";
+import { DaemonRequestSchema, type DaemonResponse, type DebugLogEntry, type SessionEvent } from "@software-factory/shared";
 import { SessionManager } from "../services/sessionManager.js";
 
 export async function routeDaemonMessage(

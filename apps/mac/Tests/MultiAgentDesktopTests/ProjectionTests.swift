@@ -1,5 +1,5 @@
 import XCTest
-@testable import MultiAgentDesktop
+@testable import TheSoftwareFactory
 
 @MainActor
 final class ProjectionTests: XCTestCase {

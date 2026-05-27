@@ -178,8 +178,10 @@ final class LocalDaemonLauncher: @unchecked Sendable {
         let data = output.fileHandleForReading.readDataToEndOfFile()
         let command = String(data: data, encoding: .utf8) ?? ""
         return command.contains("apps/daemon/src/nodeMain.ts")
+            || command.contains("The Software Factory/Build/Daemon/nodeMain.cjs")
             || command.contains("MultiAgentDesktop/Build/Daemon/nodeMain.cjs")
             || command.contains("apps/daemon/src/main.ts")
+            || command.contains("The Software Factory daemon")
             || command.contains("multiagent daemon")
     }
 
@@ -208,7 +210,7 @@ final class LocalDaemonLauncher: @unchecked Sendable {
               let data = try? Data(contentsOf: url),
               let response = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               response["ok"] as? Bool == true,
-              response["service"] as? String == "multiagent-daemon",
+              ["software-factory-daemon", "multiagent-daemon"].contains(response["service"] as? String),
               response["nonce"] as? String == nonce,
               let proof = response["proof"] as? String else {
             return false
@@ -218,7 +220,7 @@ final class LocalDaemonLauncher: @unchecked Sendable {
 
     private static func daemonToken() -> String? {
         guard let supportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appending(path: "MultiAgentDesktop", directoryHint: .isDirectory)
+            .appending(path: "The Software Factory", directoryHint: .isDirectory)
             .appending(path: "daemon.token") else {
             return nil
         }
@@ -233,6 +235,12 @@ final class LocalDaemonLauncher: @unchecked Sendable {
     }
 
     private func daemonLaunchConfiguration() -> (arguments: [String], workflowsURL: URL?)? {
+        if let entry = Bundle.main.object(forInfoDictionaryKey: "SoftwareFactoryDaemonEntry") as? String,
+           !entry.isEmpty {
+            let workflows = (Bundle.main.object(forInfoDictionaryKey: "SoftwareFactoryBuiltinWorkflowsDir") as? String)
+                .flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+            return ([entry], workflows)
+        }
         if let entry = Bundle.main.object(forInfoDictionaryKey: "MultiAgentDaemonEntry") as? String,
            !entry.isEmpty {
             let workflows = (Bundle.main.object(forInfoDictionaryKey: "MultiAgentBuiltinWorkflowsDir") as? String)
@@ -248,6 +256,10 @@ final class LocalDaemonLauncher: @unchecked Sendable {
     }
 
     private func findRepositoryRoot() -> URL? {
+        if let plistRoot = Bundle.main.object(forInfoDictionaryKey: "SoftwareFactoryRepositoryRoot") as? String,
+           !plistRoot.isEmpty {
+            return URL(fileURLWithPath: plistRoot)
+        }
         if let plistRoot = Bundle.main.object(forInfoDictionaryKey: "MultiAgentRepositoryRoot") as? String,
            !plistRoot.isEmpty {
             return URL(fileURLWithPath: plistRoot)
@@ -270,8 +282,13 @@ final class LocalDaemonLauncher: @unchecked Sendable {
         guard let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             return nil
         }
-        let supportURL = baseURL.appending(path: "MultiAgentDesktop", directoryHint: .isDirectory)
+        let supportURL = baseURL.appending(path: "The Software Factory", directoryHint: .isDirectory)
+        let legacyURL = baseURL.appending(path: "MultiAgentDesktop", directoryHint: .isDirectory)
         do {
+            if !FileManager.default.fileExists(atPath: supportURL.path),
+               FileManager.default.fileExists(atPath: legacyURL.path) {
+                try? FileManager.default.moveItem(at: legacyURL, to: supportURL)
+            }
             try FileManager.default.createDirectory(at: supportURL, withIntermediateDirectories: true)
             return supportURL
         } catch {

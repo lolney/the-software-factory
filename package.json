@@ -1,5 +1,5 @@
 {
-  "name": "multiagent-coding-workflow-engine",
+  "name": "the-software-factory",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,8 +10,8 @@
   "scripts": {
     "build": "npm run build --workspaces",
     "test": "npm run test --workspaces --if-present && npm run mac:test",
-    "typecheck": "npm run typecheck -w @multiagent/shared && npm run typecheck -w @multiagent/daemon",
-    "daemon": "npm run dev -w @multiagent/daemon",
+    "typecheck": "npm run typecheck -w @software-factory/shared && npm run typecheck -w @software-factory/daemon",
+    "daemon": "npm run dev -w @software-factory/daemon",
     "mac:build": "swift build --package-path apps/mac",
     "mac:test": "CLANG_MODULE_CACHE_PATH=apps/mac/.build/clang-module-cache swift test --disable-sandbox --package-path apps/mac --cache-path .build/swiftpm-cache --config-path .build/swiftpm-config --security-path .build/swiftpm-security --manifest-cache local -Xcc -fmodules-cache-path=.build/clang-module-cache",
     "mac:run": "./script/build_and_run.sh"

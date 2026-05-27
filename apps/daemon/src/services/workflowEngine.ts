@@ -2,7 +2,7 @@ import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
-import { GraphStateSchema, RoleSpecSchema, WorkflowSpecSchema, type GraphState, type RoleSpec, type WorkflowSpec } from "@multiagent/shared";
+import { GraphStateSchema, RoleSpecSchema, WorkflowSpecSchema, type GraphState, type RoleSpec, type WorkflowSpec } from "@software-factory/shared";
 
 export class WorkflowEngine {
   private specs = new Map<string, WorkflowSpec>();

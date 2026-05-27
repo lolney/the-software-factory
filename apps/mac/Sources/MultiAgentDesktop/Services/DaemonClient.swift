@@ -87,12 +87,20 @@ final class DaemonClient {
     }
 
     private static func daemonToken() -> String? {
-        guard let supportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appending(path: "MultiAgentDesktop", directoryHint: .isDirectory)
-            .appending(path: "daemon.token") else {
+        guard let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             return nil
         }
-        return try? String(contentsOf: supportURL, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidates = [
+            baseURL.appending(path: "The Software Factory", directoryHint: .isDirectory),
+            baseURL.appending(path: "MultiAgentDesktop", directoryHint: .isDirectory)
+        ]
+        for supportURL in candidates {
+            if let token = try? String(contentsOf: supportURL.appending(path: "daemon.token"), encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !token.isEmpty {
+                return token
+            }
+        }
+        return nil
     }
 }

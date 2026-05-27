@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SessionEvent, SessionSnapshot } from "@multiagent/shared";
+import type { SessionEvent, SessionSnapshot } from "@software-factory/shared";
 import { ActorRegistry, SchedulerProjection, deriveActorStates } from "./concurrency.js";
 
 describe("concurrency projections", () => {

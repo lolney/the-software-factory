@@ -1,4 +1,4 @@
-import type { RoleSpec, SessionEvent } from "@multiagent/shared";
+import type { RoleSpec, SessionEvent } from "@software-factory/shared";
 import { makeEventId } from "./eventStore.js";
 
 export type CapabilityAction =

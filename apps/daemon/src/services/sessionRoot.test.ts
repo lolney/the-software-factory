@@ -27,6 +27,10 @@ describe("defaultSessionsRoot", () => {
   it("uses Application Support on macOS", () => {
     delete process.env.MULTIAGENT_SESSIONS_ROOT;
     if (process.platform !== "darwin") return;
-    expect(defaultSessionsRoot()).toContain(path.join("Library", "Application Support", "MultiAgentDesktop", "sessions"));
+    const root = defaultSessionsRoot();
+    expect([
+      root.includes(path.join("Library", "Application Support", "The Software Factory", "sessions")),
+      root.includes(path.join("Library", "Application Support", "MultiAgentDesktop", "sessions"))
+    ]).toContain(true);
   });
 });

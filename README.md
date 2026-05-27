@@ -1,6 +1,6 @@
-# Multiagent Coding Workflow Engine
+# The Software Factory
 
-A multiagent coding workflow engine, inspired by this post: https://x.com/simonlast/status/2057978156183957995
+The Software Factory is a multiagent coding workflow engine, inspired by this post: https://x.com/simonlast/status/2057978156183957995
 
 Principles:
 - LLMs are lazy: they take shortcuts, leave stuff unimplemented, don't properly QA 
@@ -32,7 +32,7 @@ npm install
 npm run typecheck
 npm test
 npm run daemon
-npm run dev:node -w @multiagent/daemon # fallback when Bun is unavailable
+npm run dev:node -w @software-factory/daemon # fallback when Bun is unavailable
 ./script/build_and_run.sh
 ```
 

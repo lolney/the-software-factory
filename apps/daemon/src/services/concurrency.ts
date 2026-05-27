@@ -1,4 +1,4 @@
-import type { GraphState, SessionEvent, SessionSnapshot } from "@multiagent/shared";
+import type { GraphState, SessionEvent, SessionSnapshot } from "@software-factory/shared";
 
 export type ActorStatus = GraphState["nodes"][number]["status"];
 

@@ -78,7 +78,7 @@ describe("daemon security", () => {
       const challenge = daemonOwnershipChallenge("nonce-1234567890abcdef");
       expect(challenge).toMatchObject({
         ok: true,
-        service: "multiagent-daemon",
+        service: "software-factory-daemon",
         nonce: "nonce-1234567890abcdef"
       });
       expect(challenge?.proof).toMatch(/^[a-f0-9]{64}$/);

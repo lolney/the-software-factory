@@ -2,25 +2,26 @@
 set -euo pipefail
 
 MODE="${1:-run}"
-APP_NAME="MultiAgentDesktop"
-BUNDLE_ID="local.multiagent.MultiAgentDesktop"
+APP_NAME="TheSoftwareFactory"
+BUNDLE_ID="local.softwarefactory.TheSoftwareFactory"
 MIN_SYSTEM_VERSION="14.0"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MAC_DIR="$ROOT_DIR/apps/mac"
-DIST_DIR="${MULTIAGENT_APP_DIST_DIR:-$HOME/Library/Application Support/MultiAgentDesktop/Build}"
+DIST_DIR="${SOFTWARE_FACTORY_APP_DIST_DIR:-${MULTIAGENT_APP_DIST_DIR:-$HOME/Library/Application Support/The Software Factory/Build}}"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
-ENTITLEMENTS="$ROOT_DIR/apps/mac/MultiAgentDesktop.entitlements"
+ENTITLEMENTS="$ROOT_DIR/apps/mac/TheSoftwareFactory.entitlements"
 DAEMON_BUNDLE_DIR="$DIST_DIR/Daemon"
 DAEMON_ENTRY="$DAEMON_BUNDLE_DIR/nodeMain.cjs"
 DAEMON_WORKFLOWS_DIR="$DAEMON_BUNDLE_DIR/workflows"
-LEGACY_APP_BUNDLE="$ROOT_DIR/dist/$APP_NAME.app"
+LEGACY_APP_BUNDLE="$ROOT_DIR/dist/MultiAgentDesktop.app"
 
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+pkill -x "MultiAgentDesktop" >/dev/null 2>&1 || true
 pkill -f "$ROOT_DIR/node_modules/.bin/tsx.*$ROOT_DIR/apps/daemon/src/nodeMain.ts" >/dev/null 2>&1 || true
 pkill -f "node_modules/.bin/tsx.*apps/daemon/src/nodeMain.ts" >/dev/null 2>&1 || true
 pkill -f "tsx/dist/loader.*apps/daemon/src/nodeMain.ts" >/dev/null 2>&1 || true
@@ -55,14 +56,16 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
   <key>CFBundleName</key>
-  <string>$APP_NAME</string>
+  <string>The Software Factory</string>
+  <key>CFBundleDisplayName</key>
+  <string>The Software Factory</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
   <string>$MIN_SYSTEM_VERSION</string>
-  <key>MultiAgentDaemonEntry</key>
+  <key>SoftwareFactoryDaemonEntry</key>
   <string>$DAEMON_ENTRY</string>
-  <key>MultiAgentBuiltinWorkflowsDir</key>
+  <key>SoftwareFactoryBuiltinWorkflowsDir</key>
   <string>$DAEMON_WORKFLOWS_DIR</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>

@@ -11,7 +11,7 @@ import {
   type GraphState,
   type SessionEvent,
   type SessionSnapshot
-} from "@multiagent/shared";
+} from "@software-factory/shared";
 
 export interface CreateSessionInput {
   sessionId: string;

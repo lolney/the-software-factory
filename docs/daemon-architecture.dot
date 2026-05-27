@@ -1,6 +1,6 @@
 digraph DaemonArchitecture {
   graph [
-    label="Multiagent Daemon Code Architecture",
+    label="The Software Factory Daemon Code Architecture",
     labelloc="t",
     fontsize=22,
     fontname="Helvetica",
@@ -83,7 +83,7 @@ digraph DaemonArchitecture {
     style="rounded,filled";
     fillcolor="#fcfcfd";
 
-    sharedSchemas [label="@multiagent/shared\nZod schemas + protocol types"];
+    sharedSchemas [label="@software-factory/shared\nZod schemas + protocol types"];
   }
 
   openaiAgents [shape=component, label="@openai/agents\nAgent, tools, MCP servers"];
