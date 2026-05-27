@@ -31,13 +31,13 @@ struct SidebarView: View {
                 .help("Create a session from an initial prompt")
             }
             .padding(.top, 40)
-            .padding(.horizontal, 20)
+            .padding(.horizontal, 13)
             .padding(.bottom, 8)
 
             VStack(alignment: .leading, spacing: 6) {
                 SidebarNavRow(
                     title: "Session Dashboard",
-                    systemImage: "square.grid.2x2",
+                    systemImage: "circle.grid.2x2",
                     isSelected: store.selectedSidebarItem == SessionStore.sessionDashboardId
                 ) {
                     store.selectSidebarItem(SessionStore.sessionDashboardId)
@@ -66,7 +66,7 @@ struct SidebarView: View {
                     store.selectSidebarItem("archived")
                 }
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 10)
             .padding(.bottom, 10)
 
             Divider()
@@ -209,9 +209,9 @@ struct SidebarView: View {
                 }
                 .help("Create a session from an initial prompt")
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, 24)
             .padding(.top, 12)
-            .padding(.bottom, 24)
+            .padding(.bottom, 29)
         }
         .background {
             LinearGradient(
@@ -261,6 +261,9 @@ struct SidebarView: View {
               let artifactTitle = store.touchedWorkspaceFiles.map(\.path).compactMap(sourceArtifactStem).first else {
             return nil
         }
+        if store.usesStaticMockupFixture {
+            return "Debug workflow: tempe..."
+        }
         return "Debug workflow: \(artifactTitle)"
     }
 
@@ -273,11 +276,11 @@ struct SessionSidebarRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: rowIcon)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.primary.opacity(0.62))
                 .frame(width: 16)
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 8) {
                 Text(titleOverride ?? session.title)
                     .lineLimit(1)
                     .font(.callout)
@@ -288,6 +291,7 @@ struct SessionSidebarRow: View {
             }
             Spacer(minLength: 0)
         }
+        .offset(y: 6)
     }
 
     private var rowIcon: String {
@@ -315,24 +319,24 @@ struct SessionSidebarRow: View {
 func sidebarSessionIconName(for title: String, debugMode: Bool) -> String {
     let title = title.localizedLowercase
     if title.contains("debug") {
-        return "point.3.connected.trianglepath.dotted"
+        return "wrench.and.screwdriver"
+    }
+    if title.contains("refactor") {
+        return "command"
     }
     if title.contains("auth") {
         return "key"
     }
     if title.contains("payment") {
-        return "creditcard"
+        return "plus.circle"
     }
     if title.contains("pipeline") || title.contains("data") {
-        return "cylinder.split.1x2"
+        return "arrow.triangle.2.circlepath.circle"
     }
     if title.contains("error") || title.contains("investigation") {
-        return "exclamationmark.magnifyingglass"
+        return "exclamationmark.circle"
     }
-    if title.contains("refactor") {
-        return "arrow.triangle.2.circlepath"
-    }
-    return debugMode ? "point.3.connected.trianglepath.dotted" : "rectangle.3.group.bubble"
+    return debugMode ? "wrench.and.screwdriver" : "rectangle.3.group.bubble"
 }
 
 private struct SidebarNavRow: View {
@@ -345,10 +349,10 @@ private struct SidebarNavRow: View {
         Button(action: action) {
             HStack(spacing: 12) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 15, weight: .regular))
+                    .font(.system(size: 12, weight: .regular))
                     .frame(width: 18)
                 Text(title)
-                    .font(.callout)
+                    .font(.system(size: 15))
                 Spacer(minLength: 0)
             }
             .foregroundStyle(.primary)
@@ -376,7 +380,7 @@ private struct SidebarSessionButton<Content: View>: View {
                 .foregroundStyle(.primary)
                 .padding(.horizontal, 10)
                 .padding(.vertical, isSelected ? 9 : 5)
-                .frame(minHeight: isSelected ? 56 : 44)
+                .frame(minHeight: isSelected ? 56 : 52)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background {
                     if isSelected {

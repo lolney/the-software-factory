@@ -213,7 +213,7 @@ private struct TranscriptTopBar: View {
                 .buttonStyle(.plain)
 
                 Color.clear
-                    .frame(width: 60, height: 1)
+                    .frame(width: 53, height: 1)
 
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
@@ -238,6 +238,7 @@ private struct TranscriptTopBar: View {
                     RoundedRectangle(cornerRadius: 8)
                         .stroke(Color(.sRGB, white: 0.89, opacity: 1))
                 }
+                .padding(.trailing, 12)
 
                 Button {
                     followLiveTail.toggle()
@@ -247,7 +248,7 @@ private struct TranscriptTopBar: View {
                         Text("Follow")
                             .font(.system(size: 14))
                     }
-                    .frame(width: 88, height: 32)
+                    .frame(width: 80, height: 32)
                 }
                 .buttonStyle(.plain)
                 .background(Color(.sRGB, red: 250 / 255, green: 250 / 255, blue: 250 / 255, opacity: 1), in: RoundedRectangle(cornerRadius: 8))
@@ -255,6 +256,7 @@ private struct TranscriptTopBar: View {
                     RoundedRectangle(cornerRadius: 8)
                         .stroke(Color(.sRGB, white: 0.89, opacity: 1))
                 }
+                .padding(.trailing, 8)
                 .disabled(store.isTranscriptFiltered)
                 .help(store.isTranscriptFiltered ? "Clear transcript filters to follow live events" : "Follow new transcript events")
 
@@ -270,12 +272,13 @@ private struct TranscriptTopBar: View {
                 Spacer(minLength: 0)
             }
             .padding(.top, 34)
-            .padding(.horizontal, 44)
+            .padding(.horizontal, 39)
             .padding(.bottom, 24)
 
             SessionStateStrip(store: store, transcriptCountSummary: transcriptCountSummary)
-                .padding(.horizontal, 44)
+                .padding(.horizontal, 40)
                 .padding(.bottom, 14)
+                .offset(x: -15, y: -4)
         }
     }
 }
@@ -333,13 +336,13 @@ private struct SessionStateStrip: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            MetricCell(title: "Agents", value: agentSummary, width: 92)
-            MetricCell(title: "Queue", value: "\(queuedWorkCount)", width: 96, sparkline: true)
-            MetricCell(title: "Last action", value: lastActionAge, width: 116)
-            MetricCell(title: "Failures", value: nil, width: 88, statusColor: store.sessionErrorCount > 0 ? .orange : .green)
-            MetricCell(title: "Changed files", value: "\(store.touchedWorkspaceFiles.count)", width: 128, sparkline: !store.touchedWorkspaceFiles.isEmpty)
-            MetricCell(title: "Mode", value: "Auto", width: 92, showsChevron: true)
-            MetricCell(title: "Runtime", value: runtimeLabel, width: 112)
+            MetricCell(title: "Agents", value: agentSummary, width: 97)
+            MetricCell(title: "Queue", value: "\(queuedWorkCount)", width: 92, sparkline: true)
+            MetricCell(title: "Last action", value: lastActionAge, width: 106)
+            MetricCell(title: "Failures", value: nil, width: 86, statusColor: store.sessionErrorCount > 0 ? .orange : .green)
+            MetricCell(title: "Changed files", value: "\(store.touchedWorkspaceFiles.count)", width: 112, sparkline: !store.touchedWorkspaceFiles.isEmpty)
+            MetricCell(title: "Mode", value: "Auto", width: 96, showsChevron: true)
+            MetricCell(title: "Runtime", value: runtimeLabel, width: 111)
             MetricCell(
                 title: "Connection",
                 value: store.connectionStatus == "Connected" ? "Local" : store.connectionStatus,
