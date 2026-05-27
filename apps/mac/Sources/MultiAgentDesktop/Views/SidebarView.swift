@@ -13,7 +13,7 @@ struct SidebarView: View {
             HStack {
                 Text("SESSIONS")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary.opacity(0.55))
                 Spacer()
                 Button {
                     store.beginNewSession()
@@ -76,9 +76,9 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("RECENT SESSIONS")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.primary.opacity(0.55))
                         .padding(.top, 18)
-                        .padding(.horizontal, 12)
+                        .padding(.horizontal, 20)
 
                     if store.isComposingNewSession {
                         SidebarSessionButton(
@@ -129,7 +129,7 @@ struct SidebarView: View {
                     if let archived = store.selectedArchivedSession {
                         Text("ARCHIVED")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.primary.opacity(0.55))
                             .padding(.top, 14)
                             .padding(.horizontal, 20)
                         SidebarSessionButton(
@@ -205,7 +205,7 @@ struct SidebarView: View {
                 .background(Color(.sRGB, red: 248 / 255, green: 247 / 255, blue: 248 / 255, opacity: 1), in: RoundedRectangle(cornerRadius: 7))
                 .overlay {
                     RoundedRectangle(cornerRadius: 7)
-                        .stroke(.separator.opacity(0.5))
+                        .stroke(.separator.opacity(0.8))
                 }
                 .help("Create a session from an initial prompt")
             }
@@ -277,17 +277,18 @@ struct SessionSidebarRow: View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: rowIcon)
                 .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.primary.opacity(0.62))
+                .foregroundStyle(.primary.opacity(0.5))
                 .frame(width: 16)
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 7) {
                 Text(titleOverride ?? session.title)
                     .lineLimit(1)
-                    .font(.callout)
+                    .font(.system(size: 14.5))
                 Text(activityLabel)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary.opacity(0.46))
                     .lineLimit(1)
+                    .offset(x: -18)
             }
             Spacer(minLength: 0)
         }

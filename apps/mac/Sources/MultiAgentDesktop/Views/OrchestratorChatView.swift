@@ -204,7 +204,7 @@ private struct TranscriptTopBar: View {
                 } label: {
                     HStack(spacing: 5) {
                         Text(store.transcriptFilterLabel)
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(.system(size: 16, weight: .medium))
                         Image(systemName: "chevron.down")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
@@ -248,7 +248,7 @@ private struct TranscriptTopBar: View {
                         Text("Follow")
                             .font(.system(size: 14))
                     }
-                    .frame(width: 80, height: 32)
+                    .frame(width: 82, height: 32)
                 }
                 .buttonStyle(.plain)
                 .background(Color(.sRGB, red: 250 / 255, green: 250 / 255, blue: 250 / 255, opacity: 1), in: RoundedRectangle(cornerRadius: 8))
@@ -265,8 +265,8 @@ private struct TranscriptTopBar: View {
                         .fill(store.connectionStatus == "Connected" ? .green : .secondary)
                         .frame(width: 7, height: 7)
                     Text(store.connectionStatus == "Connected" ? "Connected" : store.connectionStatus)
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.primary.opacity(0.55))
                 }
 
                 Spacer(minLength: 0)
@@ -337,10 +337,10 @@ private struct SessionStateStrip: View {
     var body: some View {
         HStack(spacing: 0) {
             MetricCell(title: "Agents", value: agentSummary, width: 97)
-            MetricCell(title: "Queue", value: "\(queuedWorkCount)", width: 92, sparkline: true)
+            MetricCell(title: "Queue", value: "\(queuedWorkCount)", width: 92, sparkline: true, sparklineValues: [0.05, 0.05, 0.06, 0.06, 0.62, 0.08, 0.18, 0.08, 0.07, 0.07])
             MetricCell(title: "Last action", value: lastActionAge, width: 106)
             MetricCell(title: "Failures", value: nil, width: 86, statusColor: store.sessionErrorCount > 0 ? .orange : .green)
-            MetricCell(title: "Changed files", value: "\(store.touchedWorkspaceFiles.count)", width: 112, sparkline: !store.touchedWorkspaceFiles.isEmpty)
+            MetricCell(title: "Changed files", value: "\(store.touchedWorkspaceFiles.count)", width: 112, sparkline: !store.touchedWorkspaceFiles.isEmpty, sparklineValues: [0.05, 0.05, 0.06, 0.08, 0.55, 0.08, 0.12, 0.5, 0.08, 0.6, 0.08])
             MetricCell(title: "Mode", value: "Auto", width: 96, showsChevron: true)
             MetricCell(title: "Runtime", value: runtimeLabel, width: 111)
             MetricCell(
@@ -368,6 +368,7 @@ private struct MetricCell: View {
     let width: CGFloat
     var statusColor: Color?
     var sparkline = false
+    var sparklineValues: [CGFloat]?
     var showsChevron = false
     var showsDivider = true
 
@@ -391,7 +392,7 @@ private struct MetricCell: View {
                             .monospacedDigit()
                     }
                     if sparkline {
-                        TinySparkline()
+                        TinySparkline(values: sparklineValues ?? TinySparkline.defaultValues)
                             .frame(width: 36, height: 13)
                     }
                     if showsChevron {
@@ -414,7 +415,9 @@ private struct MetricCell: View {
 }
 
 private struct TinySparkline: View {
-    private let values: [CGFloat] = [0.2, 0.28, 0.22, 0.5, 0.16, 0.82, 0.36, 0.7]
+    static let defaultValues: [CGFloat] = [0.06, 0.06, 0.07, 0.06, 0.08, 0.58, 0.08, 0.12, 0.36, 0.78, 0.08, 0.5, 0.06]
+
+    let values: [CGFloat]
 
     var body: some View {
         GeometryReader { proxy in
