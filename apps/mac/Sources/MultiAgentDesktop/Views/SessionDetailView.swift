@@ -28,15 +28,6 @@ struct SessionDetailView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .toolbar {
             ToolbarItemGroup {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        inspectorVisible.toggle()
-                    }
-                } label: {
-                    Label(inspectorVisible ? "Hide Details" : "Show Details", systemImage: inspectorVisible ? "sidebar.right" : "sidebar.right")
-                }
-                .help(inspectorVisible ? "Hide the detail drawer" : "Show the detail drawer")
-
                 Menu {
                     Button {
                         store.openWorkspace(tool: .vsCode)
@@ -142,14 +133,6 @@ struct SessionDetailView: View {
                 .disabled(store.selectedSessionId == nil || store.isLoadingSelection)
                 .help("Copy, export, or share session artifacts")
 
-                Button {
-                    store.connectAndRefresh()
-                } label: {
-                    Label("Connect", systemImage: "bolt.horizontal.circle")
-                }
-                .disabled(store.daemon.isConnecting)
-                .help("Connect or refresh the local daemon connection")
-
                 Menu {
                     ForEach(store.graph.nodes) { node in
                         Button {
@@ -164,36 +147,67 @@ struct SessionDetailView: View {
                 .disabled(store.graph.nodes.isEmpty || store.isLoadingSelection)
                 .help("Choose which agent the toolbar controls target")
 
+                Menu {
+                    Button {
+                        store.pauseOrchestrator()
+                    } label: {
+                        Label("Pause Scheduling", systemImage: "pause.circle")
+                    }
+                    .disabled(!store.canPauseOrchestrator)
+
+                    Button {
+                        store.resumeOrchestrator()
+                    } label: {
+                        Label("Resume Agent", systemImage: "play.circle")
+                    }
+                    .disabled(!store.canResumeOrchestrator)
+                } label: {
+                    Label(store.orchestratorStatus == .paused ? "Resume Agent" : "Run Controls", systemImage: store.orchestratorStatus == .paused ? "play.circle" : "play.circle")
+                }
+                .disabled(!store.canPauseOrchestrator && !store.canResumeOrchestrator)
+                .help("Pause or resume the selected agent")
+
                 Button {
                     store.pauseOrchestrator()
                 } label: {
-                    Label("Pause Scheduling", systemImage: "pause.circle")
+                    Label("Pause Scheduling", systemImage: "pause")
                 }
                 .disabled(!store.canPauseOrchestrator)
                 .help("Pause scheduling for the selected agent")
 
-                Button {
-                    store.resumeOrchestrator()
-                } label: {
-                    Label("Resume Agent", systemImage: "play.circle")
-                }
-                .disabled(!store.canResumeOrchestrator)
-                .help("Resume the selected agent")
+                Menu {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            inspectorVisible.toggle()
+                        }
+                    } label: {
+                        Label(inspectorVisible ? "Hide Details" : "Show Details", systemImage: "sidebar.right")
+                    }
 
-                Button(role: .destructive) {
-                    confirmCancel = true
+                    Button {
+                        store.connectAndRefresh()
+                    } label: {
+                        Label("Connect", systemImage: "bolt.horizontal.circle")
+                    }
+                    .disabled(store.daemon.isConnecting)
+
+                    Button(role: .destructive) {
+                        confirmCancel = true
+                    } label: {
+                        Label("Stop Agent", systemImage: "xmark.octagon")
+                    }
+                    .disabled(!store.canCancelOrchestrator)
                 } label: {
-                    Label("Stop Agent", systemImage: "xmark.octagon")
+                    Label("More", systemImage: "ellipsis")
                 }
-                .disabled(!store.canCancelOrchestrator)
-                .help("Stop the selected agent")
+                .help("More session actions")
             }
 
-            ToolbarItem(placement: .status) {
-                if let mode = store.currentSessionDebugMode {
-                    Label(mode ? "Debug" : "Live", systemImage: mode ? "ladybug" : "bolt.circle")
-                        .foregroundStyle(.secondary)
-                }
+            ToolbarItem(placement: .principal) {
+                ToolbarSessionPill(
+                    title: selectedSessionTitle,
+                    isConnected: store.connectionStatus == "Connected"
+                )
             }
         }
         .confirmationDialog("Stop \(store.selectedControlAgentLabel)?", isPresented: $confirmCancel) {
@@ -204,7 +218,73 @@ struct SessionDetailView: View {
         }
     }
 
+    private var selectedSessionTitle: String {
+        if store.isComposingNewSession {
+            return "New session"
+        }
+        if store.currentSessionDebugMode == true,
+           let artifactTitle = debugArtifactTitle {
+            return "Debug workflow: \(artifactTitle)"
+        }
+        guard let selectedSessionId = store.selectedSessionId else {
+            return "No session selected"
+        }
+        return (store.sessions + store.archivedSessions)
+            .first { $0.id == selectedSessionId }?
+            .title ?? selectedSessionId
+    }
+
+    private var debugArtifactTitle: String? {
+        store.touchedWorkspaceFiles
+            .map(\.path)
+            .compactMap(sourceArtifactStem)
+            .first
+    }
+
     private func detailDrawerWidth(for totalWidth: CGFloat) -> CGFloat {
         min(430, max(340, totalWidth * 0.34))
+    }
+}
+
+func sourceArtifactStem(from path: String) -> String? {
+    let name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+    let stripped = name
+        .replacingOccurrences(of: #"^test[_-]"#, with: "", options: .regularExpression)
+        .replacingOccurrences(of: #"[_-]test$"#, with: "", options: .regularExpression)
+    let words = stripped
+        .split { $0 == "_" || $0 == "-" }
+        .map(String.init)
+        .filter { !$0.isEmpty }
+    guard !words.isEmpty else { return nil }
+    return words.joined(separator: " ")
+}
+
+private struct ToolbarSessionPill: View {
+    let title: String
+    let isConnected: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.callout)
+                .lineLimit(1)
+            Spacer(minLength: 12)
+            Circle()
+                .fill(isConnected ? Color.green : Color.secondary)
+                .frame(width: 7, height: 7)
+            Image(systemName: "chevron.down")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 14)
+        .frame(minWidth: 354, idealWidth: 354, maxWidth: 354, minHeight: 34, idealHeight: 34, maxHeight: 34)
+        .fixedSize(horizontal: true, vertical: false)
+        .layoutPriority(10)
+        .background(.background.opacity(0.76), in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.separator.opacity(0.5))
+        }
+        .help(title)
     }
 }

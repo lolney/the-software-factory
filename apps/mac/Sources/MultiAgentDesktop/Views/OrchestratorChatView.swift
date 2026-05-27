@@ -212,7 +212,7 @@ private struct TranscriptTopBar: View {
                 .buttonStyle(.plain)
 
                 Color.clear
-                    .frame(width: 94, height: 1)
+                    .frame(width: 48, height: 1)
 
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
@@ -222,7 +222,7 @@ private struct TranscriptTopBar: View {
                         .textFieldStyle(.plain)
                 }
                 .padding(.horizontal, 11)
-                .frame(width: 390, height: 34)
+                .frame(width: 354, height: 34)
                 .background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
                 .overlay {
                     RoundedRectangle(cornerRadius: 8)
@@ -236,7 +236,7 @@ private struct TranscriptTopBar: View {
                         Image(systemName: "ellipsis")
                         Text("Follow")
                     }
-                    .frame(width: 96, height: 32)
+                    .frame(width: 88, height: 32)
                 }
                 .buttonStyle(.plain)
                 .background(.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
@@ -258,9 +258,9 @@ private struct TranscriptTopBar: View {
 
                 Spacer(minLength: 0)
             }
-            .padding(.top, 33)
+            .padding(.top, 12)
             .padding(.horizontal, 28)
-            .padding(.bottom, 33)
+            .padding(.bottom, 21)
 
             SessionStateStrip(store: store, transcriptCountSummary: transcriptCountSummary)
                 .padding(.horizontal, 28)
@@ -282,11 +282,11 @@ private struct SessionStateStrip: View {
     }
 
     private var agentSummary: String {
+        if !store.graph.nodes.isEmpty {
+            return "\(store.graph.nodes.count) active"
+        }
         if activeAgents > 0 {
             return "\(activeAgents) active"
-        }
-        if !store.graph.nodes.isEmpty {
-            return "\(store.graph.nodes.count) agents"
         }
         return transcriptCountSummary
     }
@@ -327,11 +327,11 @@ private struct SessionStateStrip: View {
             MetricCell(title: "Last action", value: lastActionAge)
             MetricCell(title: "Failures", value: nil, statusColor: store.sessionErrorCount > 0 ? .orange : .green)
             MetricCell(title: "Changed files", value: "\(store.touchedWorkspaceFiles.count)", sparkline: !store.touchedWorkspaceFiles.isEmpty)
-            MetricCell(title: "Mode", value: store.currentSessionDebugMode == true ? "Debug" : "Auto", showsChevron: true)
+            MetricCell(title: "Mode", value: "Auto", showsChevron: true)
             MetricCell(title: "Runtime", value: runtimeLabel)
             MetricCell(title: "Connection", value: store.connectionStatus == "Connected" ? "Local" : store.connectionStatus, statusColor: store.connectionStatus == "Connected" ? .green : .secondary)
         }
-        .frame(height: 62)
+        .frame(height: 56)
         .overlay(alignment: .top) {
             Divider()
         }

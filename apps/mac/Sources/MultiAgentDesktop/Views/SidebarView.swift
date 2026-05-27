@@ -30,7 +30,7 @@ struct SidebarView: View {
                 }
                 .help("Create a session from an initial prompt")
             }
-            .padding(.top, 36)
+            .padding(.top, 18)
             .padding(.horizontal, 20)
             .padding(.bottom, 8)
 
@@ -101,7 +101,7 @@ struct SidebarView: View {
                             isSelected: store.selectedSidebarItems.contains(session.id),
                             action: { store.selectSession(session.id) }
                         ) {
-                            SessionSidebarRow(session: session)
+                            SessionSidebarRow(session: session, titleOverride: sidebarTitleOverride(for: session))
                         }
                         .contextMenu {
                             Button {
@@ -136,7 +136,7 @@ struct SidebarView: View {
                             isSelected: store.selectedSidebarItems.contains(archived.id),
                             action: { store.selectSession(archived.id) }
                         ) {
-                            SessionSidebarRow(session: archived)
+                            SessionSidebarRow(session: archived, titleOverride: sidebarTitleOverride(for: archived))
                         }
                         .contextMenu {
                             Button {
@@ -234,10 +234,20 @@ struct SidebarView: View {
         }
     }
 
+    private func sidebarTitleOverride(for session: SessionSummary) -> String? {
+        guard session.id == store.selectedSessionId,
+              session.debugMode == true,
+              let artifactTitle = store.touchedWorkspaceFiles.map(\.path).compactMap(sourceArtifactStem).first else {
+            return nil
+        }
+        return "Debug workflow: \(artifactTitle)"
+    }
+
 }
 
 struct SessionSidebarRow: View {
     let session: SessionSummary
+    var titleOverride: String?
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -247,7 +257,7 @@ struct SessionSidebarRow: View {
                 .frame(width: 16)
 
             VStack(alignment: .leading, spacing: 5) {
-                Text(session.title)
+                Text(titleOverride ?? session.title)
                     .lineLimit(1)
                     .font(.callout)
                 Text(activityLabel)
@@ -372,8 +382,8 @@ private struct SidebarSessionButton<Content: View>: View {
             content
                 .foregroundStyle(.primary)
                 .padding(.horizontal, 10)
-                .padding(.vertical, 9)
-                .frame(minHeight: 56)
+                .padding(.vertical, isSelected ? 9 : 5)
+                .frame(minHeight: isSelected ? 56 : 44)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background {
                     if isSelected {

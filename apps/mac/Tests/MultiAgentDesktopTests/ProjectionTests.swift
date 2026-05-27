@@ -54,6 +54,12 @@ final class ProjectionTests: XCTestCase {
         XCTAssertTrue(workspaceDiffHasContent(changedDiff))
     }
 
+    func testSourceArtifactStemNormalizesImplementationAndTestFileNames() {
+        XCTAssertEqual(sourceArtifactStem(from: "temperature_converter.py"), "temperature converter")
+        XCTAssertEqual(sourceArtifactStem(from: "test_temperature_converter.py"), "temperature converter")
+        XCTAssertEqual(sourceArtifactStem(from: "Sources/AuthModule-test.swift"), "AuthModule")
+    }
+
     func testTimelinePairsToolCallAndResultBeforeApplyingLimit() {
         let transcript = [
             item(id: "older", agentId: "orchestrator", type: "agent.message", text: "older"),
