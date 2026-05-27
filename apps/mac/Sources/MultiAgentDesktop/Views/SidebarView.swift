@@ -309,7 +309,7 @@ struct SessionSidebarRow: View {
                     .font(.caption)
                     .foregroundStyle(.primary.opacity(0.46))
                     .lineLimit(1)
-                    .offset(x: -18)
+                    .offset(x: -18, y: -1)
             }
             Spacer(minLength: 0)
         }

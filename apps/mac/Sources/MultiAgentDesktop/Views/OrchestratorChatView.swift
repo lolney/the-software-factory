@@ -237,7 +237,7 @@ private struct TranscriptTopBar: View {
                 .background(Color(.sRGB, red: 250 / 255, green: 250 / 255, blue: 250 / 255, opacity: 1), in: RoundedRectangle(cornerRadius: 8))
                 .overlay {
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color(.sRGB, white: 1.0, opacity: 1))
+                        .stroke(Color(.sRGB, white: 0.98, opacity: 1))
                 }
                 .padding(.trailing, 12)
 
@@ -255,7 +255,7 @@ private struct TranscriptTopBar: View {
                 .background(Color(.sRGB, red: 250 / 255, green: 250 / 255, blue: 250 / 255, opacity: 1), in: RoundedRectangle(cornerRadius: 8))
                 .overlay {
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color(.sRGB, white: 0.89, opacity: 1))
+                        .stroke(Color(.sRGB, white: 0.96, opacity: 1))
                 }
                 .padding(.trailing, 8)
                 .disabled(store.isTranscriptFiltered)
@@ -267,7 +267,7 @@ private struct TranscriptTopBar: View {
                         .frame(width: 7, height: 7)
                     Text(store.connectionStatus == "Connected" ? "Connected" : store.connectionStatus)
                         .font(.system(size: 13))
-                        .foregroundStyle(.primary.opacity(0.40))
+                        .foregroundStyle(.primary.opacity(0.42))
                 }
 
                 Spacer(minLength: 0)
@@ -347,18 +347,31 @@ private struct SessionStateStrip: View {
             MetricCell(title: "Queue", value: "\(queuedWorkCount)", width: 92, sparkline: true, sparklineValues: [0.05, 0.05, 0.06, 0.06, 0.62, 0.08, 0.18, 0.08, 0.07, 0.07])
             MetricCell(title: "Last action", value: lastActionAge, width: 106)
             MetricCell(title: "Failures", value: nil, width: 86, statusColor: store.sessionErrorCount > 0 ? .orange : .green)
-            MetricCell(title: "Changed files", value: "\(store.touchedWorkspaceFiles.count)", width: 112, sparkline: !store.touchedWorkspaceFiles.isEmpty, sparklineValues: [0.05, 0.05, 0.06, 0.08, 0.55, 0.08, 0.12, 0.5, 0.08, 0.6, 0.08])
+            MetricCell(title: "Changed files", value: "\(store.touchedWorkspaceFiles.count)", width: 112, sparkline: !store.touchedWorkspaceFiles.isEmpty, sparklineValues: [0.05, 0.05, 0.06, 0.08, 0.55, 0.08, 0.12, 0.5, 0.08, 0.6, 0.08], valueOffsetX: 0)
             MetricCell(title: "Mode", value: "Auto", width: 96, showsChevron: true)
-            MetricCell(title: "Runtime", value: runtimeLabel, width: 111)
+            MetricCell(title: "Runtime", value: runtimeLabel, width: 111, valueOffsetX: 0)
             MetricCell(
                 title: "Connection",
                 value: store.connectionStatus == "Connected" ? "Local" : store.connectionStatus,
                 width: 116,
-                statusColor: store.connectionStatus == "Connected" ? .green : .secondary
+                statusColor: store.connectionStatus == "Connected" ? .green : .secondary,
+                valueOffsetX: 0
             )
         }
         .frame(height: 56)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .leading) {
+            ForEach(metricDividerOffsets, id: \.self) { offset in
+                Rectangle()
+                    .fill(.separator.opacity(0.16))
+                    .frame(width: 1, height: 30)
+                    .offset(x: offset)
+            }
+        }
+    }
+
+    private var metricDividerOffsets: [CGFloat] {
+        [104, 219, 340, 441, 568, 675, 785]
     }
 }
 
@@ -370,6 +383,7 @@ private struct MetricCell: View {
     var sparkline = false
     var sparklineValues: [CGFloat]?
     var showsChevron = false
+    var valueOffsetX: CGFloat = -1
 
     var body: some View {
         HStack(spacing: 0) {
@@ -401,6 +415,7 @@ private struct MetricCell: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .offset(x: valueOffsetX)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 15)
