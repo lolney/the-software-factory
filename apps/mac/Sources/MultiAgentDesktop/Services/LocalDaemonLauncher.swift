@@ -285,15 +285,49 @@ final class LocalDaemonLauncher: @unchecked Sendable {
         let supportURL = baseURL.appending(path: "The Software Factory", directoryHint: .isDirectory)
         let legacyURL = baseURL.appending(path: "MultiAgentDesktop", directoryHint: .isDirectory)
         do {
-            if !FileManager.default.fileExists(atPath: supportURL.path),
-               FileManager.default.fileExists(atPath: legacyURL.path) {
-                try? FileManager.default.moveItem(at: legacyURL, to: supportURL)
-            }
             try FileManager.default.createDirectory(at: supportURL, withIntermediateDirectories: true)
+            migrateLegacySupportData(from: legacyURL, to: supportURL)
             return supportURL
         } catch {
             return nil
         }
+    }
+
+    private func migrateLegacySupportData(from legacyURL: URL, to supportURL: URL) {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: legacyURL.path) else { return }
+        mergeDirectoryContents(from: legacyURL.appending(path: "sessions", directoryHint: .isDirectory), to: supportURL.appending(path: "sessions", directoryHint: .isDirectory))
+        copyIfMissing(from: legacyURL.appending(path: "daemon.token"), to: supportURL.appending(path: "daemon.token"))
+    }
+
+    private func mergeDirectoryContents(from sourceURL: URL, to destinationURL: URL) {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: sourceURL.path) else { return }
+        try? fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+        guard let entries = try? fileManager.contentsOfDirectory(at: sourceURL, includingPropertiesForKeys: [.isDirectoryKey]) else { return }
+        for source in entries {
+            let destination = destinationURL.appending(path: source.lastPathComponent)
+            var isDirectory: ObjCBool = false
+            if fileManager.fileExists(atPath: destination.path, isDirectory: &isDirectory) {
+                var sourceIsDirectory: ObjCBool = false
+                if fileManager.fileExists(atPath: source.path, isDirectory: &sourceIsDirectory),
+                   sourceIsDirectory.boolValue,
+                   isDirectory.boolValue {
+                    mergeDirectoryContents(from: source, to: destination)
+                }
+                continue
+            }
+            try? fileManager.copyItem(at: source, to: destination)
+        }
+    }
+
+    private func copyIfMissing(from sourceURL: URL, to destinationURL: URL) {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: sourceURL.path),
+              !fileManager.fileExists(atPath: destinationURL.path) else {
+            return
+        }
+        try? fileManager.copyItem(at: sourceURL, to: destinationURL)
     }
 
     private func walkUp(from startURL: URL) -> URL? {
