@@ -235,12 +235,23 @@ struct SidebarView: View {
                 )
                 LinearGradient(
                     colors: [
-                        .black.opacity(0.005),
+                        .black.opacity(0.0135),
                         .black.opacity(0)
                     ],
                     startPoint: .leading,
                     endPoint: .trailing
                 )
+                .mask {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .white, location: 0),
+                            .init(color: .white, location: 0.50),
+                            .init(color: .clear, location: 0.78)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
             }
         }
         .confirmationDialog("Archive selected sessions?", isPresented: $showingArchiveConfirmation) {

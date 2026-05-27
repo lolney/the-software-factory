@@ -281,6 +281,7 @@ private struct TranscriptTopBar: View {
                 .padding(.bottom, 14)
                 .offset(x: -15, y: -4)
         }
+        .background(Color.black.opacity(0.005))
         .overlay(alignment: .top) {
             Rectangle()
                 .fill(Color(.sRGB, white: 225 / 255, opacity: 1))
