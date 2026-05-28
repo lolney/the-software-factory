@@ -6,6 +6,7 @@ struct GraphPanelView: View {
     @State private var zoomStart: CGFloat?
     @State private var pan: CGSize = .zero
     @State private var panStart: CGSize?
+    @State private var graphViewportSize: CGSize = .zero
 
     private let nodeSize = CGSize(width: 152, height: 72)
     private let nodeGap = CGSize(width: 72, height: 70)
@@ -56,20 +57,19 @@ struct GraphPanelView: View {
                 }
                 .help("Choose an agent to inspect")
                 Button {
-                    zoom = max(0.55, zoom - 0.15)
+                    setZoom(zoom - 0.15)
                 } label: {
                     Image(systemName: "minus.magnifyingglass")
                 }
                 .help("Zoom out")
                 Button {
-                    zoom = min(2.2, zoom + 0.15)
+                    setZoom(zoom + 0.15)
                 } label: {
                     Image(systemName: "plus.magnifyingglass")
                 }
                 .help("Zoom in")
                 Button {
-                    zoom = 1
-                    pan = .zero
+                    resetGraphView()
                 } label: {
                     Image(systemName: "arrow.up.left.and.down.right.magnifyingglass")
                 }
@@ -119,6 +119,14 @@ struct GraphPanelView: View {
                 }
             }
             .clipShape(Rectangle())
+            .onAppear {
+                graphViewportSize = proxy.size
+                pan = focusedPan(pan, viewport: proxy.size, contentSize: layout.contentSize)
+            }
+            .onChange(of: proxy.size) { _, newSize in
+                graphViewportSize = newSize
+                pan = focusedPan(pan, viewport: newSize, contentSize: self.layout(size: newSize).contentSize)
+            }
         }
     }
 
@@ -127,10 +135,17 @@ struct GraphPanelView: View {
             .onChanged { value in
                 let start = panStart ?? pan
                 panStart = start
-                pan = CGSize(width: start.width + value.translation.width, height: start.height + value.translation.height)
+                let proposedPan = CGSize(width: start.width + value.translation.width, height: start.height + value.translation.height)
+                guard graphViewportSize != .zero else {
+                    pan = proposedPan
+                    return
+                }
+                pan = boundedPan(proposedPan, viewport: graphViewportSize, contentSize: layout(size: graphViewportSize).contentSize)
             }
             .onEnded { _ in
                 panStart = nil
+                guard graphViewportSize != .zero else { return }
+                pan = boundedPan(pan, viewport: graphViewportSize, contentSize: layout(size: graphViewportSize).contentSize)
             }
     }
 
@@ -139,10 +154,12 @@ struct GraphPanelView: View {
             .onChanged { value in
                 let start = zoomStart ?? zoom
                 zoomStart = start
-                zoom = min(2.2, max(0.55, start * value))
+                setZoom(start * value)
             }
             .onEnded { _ in
                 zoomStart = nil
+                guard graphViewportSize != .zero else { return }
+                pan = focusedPan(pan, viewport: graphViewportSize, contentSize: layout(size: graphViewportSize).contentSize)
             }
     }
 
@@ -234,7 +251,7 @@ struct GraphPanelView: View {
         guard !graph.nodes.isEmpty else { return GraphLayout(contentSize: size, positions: [:], workflowGroups: []) }
         let groups = groupedNodes()
         let cell = CGSize(width: nodeSize.width + nodeGap.width, height: nodeSize.height + nodeGap.height)
-        let availableColumns = max(1, Int(floor(max(cell.width, size.width / max(zoom, 0.1) - contentPadding * 2) / cell.width)))
+        let availableColumns = max(1, Int(floor(max(cell.width, size.width - contentPadding * 2) / cell.width)))
         let groupColumns = groups.map { min(max(1, $0.nodes.count), availableColumns) }
         let maxColumns = max(1, groupColumns.max() ?? 1)
         let groupRows = zip(groups, groupColumns).map { group, columns in
@@ -242,8 +259,8 @@ struct GraphPanelView: View {
         }
         let totalRows = groupRows.reduce(0, +)
         let contentSize = CGSize(
-            width: max(size.width / max(zoom, 0.1), CGFloat(maxColumns) * cell.width + contentPadding * 2),
-            height: max(size.height / max(zoom, 0.1), CGFloat(totalRows) * cell.height + contentPadding * 2)
+            width: max(size.width, CGFloat(maxColumns) * cell.width + contentPadding * 2),
+            height: max(size.height, CGFloat(totalRows) * cell.height + contentPadding * 2)
         )
         var positions: [String: CGPoint] = [:]
         var rowOffset = 0
@@ -388,9 +405,61 @@ struct GraphPanelView: View {
     }
 
     private func transform(_ point: CGPoint, contentSize: CGSize, in viewport: CGSize) -> CGPoint {
-        CGPoint(
-            x: (point.x - contentSize.width / 2) * zoom + viewport.width / 2 + pan.width,
-            y: (point.y - contentSize.height / 2) * zoom + viewport.height / 2 + pan.height
+        let visiblePan = boundedPan(pan, viewport: viewport, contentSize: contentSize)
+        return CGPoint(
+            x: (point.x - contentSize.width / 2) * zoom + viewport.width / 2 + visiblePan.width,
+            y: (point.y - contentSize.height / 2) * zoom + viewport.height / 2 + visiblePan.height
+        )
+    }
+
+    private func setZoom(_ proposedZoom: CGFloat) {
+        zoom = min(2.2, max(0.55, proposedZoom))
+        guard graphViewportSize != .zero else { return }
+        pan = focusedPan(pan, viewport: graphViewportSize, contentSize: layout(size: graphViewportSize).contentSize)
+    }
+
+    private func resetGraphView() {
+        zoom = 1
+        pan = .zero
+    }
+
+    private func focusedPan(_ proposedPan: CGSize, viewport: CGSize, contentSize: CGSize) -> CGSize {
+        guard viewport != .zero else { return proposedPan }
+        guard let selectedAgentId = store.selectedAgentId,
+              let point = layout(size: viewport).positions[selectedAgentId] else {
+            return boundedPan(proposedPan, viewport: viewport, contentSize: contentSize)
+        }
+
+        var adjusted = proposedPan
+        let center = CGPoint(
+            x: (point.x - contentSize.width / 2) * zoom + viewport.width / 2 + adjusted.width,
+            y: (point.y - contentSize.height / 2) * zoom + viewport.height / 2 + adjusted.height
+        )
+        let rect = nodeRect(center: center, size: scaledNodeSize)
+        let margin: CGFloat = 22
+        if rect.minX < margin {
+            adjusted.width += margin - rect.minX
+        } else if rect.maxX > viewport.width - margin {
+            adjusted.width -= rect.maxX - (viewport.width - margin)
+        }
+        if rect.minY < margin {
+            adjusted.height += margin - rect.minY
+        } else if rect.maxY > viewport.height - margin {
+            adjusted.height -= rect.maxY - (viewport.height - margin)
+        }
+        return boundedPan(adjusted, viewport: viewport, contentSize: contentSize)
+    }
+
+    private func boundedPan(_ proposedPan: CGSize, viewport: CGSize, contentSize: CGSize) -> CGSize {
+        guard viewport != .zero else { return proposedPan }
+        let scaledContent = CGSize(width: contentSize.width * zoom, height: contentSize.height * zoom)
+        let horizontalOverflow = max(0, scaledContent.width - viewport.width)
+        let verticalOverflow = max(0, scaledContent.height - viewport.height)
+        let horizontalLimit = horizontalOverflow / 2 + 24
+        let verticalLimit = verticalOverflow / 2 + 24
+        return CGSize(
+            width: min(horizontalLimit, max(-horizontalLimit, proposedPan.width)),
+            height: min(verticalLimit, max(-verticalLimit, proposedPan.height))
         )
     }
 

@@ -28,7 +28,6 @@ Audited with Computer Use across transcript expansion, inspector tabs, toolbar m
 
 Clear fixes to work down:
 
-- Smooth graph zoom behavior so zooming keeps important nodes in frame. One zoom-in can crop node labels abruptly, although Reset recovers the view.
 - Add app-specific View menu commands for the visible UI: toggle inspector/details, reset/zoom graph, focus search, show dashboard, and switch common panels.
 
 ### 2026-05-27 Adversarial Code Review
@@ -74,6 +73,7 @@ Judgement-heavy follow-ups:
 - **2026-05-27: Rename the workspace toolbar control.** Changed the code-icon Open menu to an explicit Open Workspace control with workspace-oriented help and accessibility copy.
 - **2026-05-27: Tone down disabled Auth save buttons.** Made Auth save actions use the prominent style only when there is input to save, with disabled bordered states and explanatory help copy.
 - **2026-05-27: Clarify Settings Skills empty state.** Labeled the count as app-discoverable skills, added refresh affordances, and distinguished daemon catalog availability from runtime skills available to Codex.
+- **2026-05-27: Smooth graph zoom behavior.** Stabilized graph layout across zoom levels, clamped live panning, and kept the selected node in frame after zoom and resize changes.
 - **2026-05-25: Add archived sessions.** Added durable `session.archived`/`session.restored` events, an Archived Sessions destination, restore actions, read-only archived sessions, and daemon tests proving logs are preserved.
 - **2026-05-25: Add multi-session dashboard and actions.** Added sidebar multi-selection, confirmed batch archive, "View Selected Sessions", and a session dashboard/table with status, last activity, mode, workspace path, active/paused agents, failure count, and quick actions.
 - **2026-05-25: Add real new-session setup.** Added quick blank-workspace setup, parent-folder workspace selection, live auth preflight, and model/reasoning controls on the composer.
