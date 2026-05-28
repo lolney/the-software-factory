@@ -19,7 +19,7 @@ struct SessionDetailView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-                if inspectorVisible {
+                if inspectorVisible && !store.isComposingNewSession {
                     Divider()
                     InspectorPanelView(store: store)
                         .frame(width: detailDrawerWidth(for: proxy.size.width))
@@ -171,8 +171,10 @@ struct SessionDetailView: View {
                             inspectorVisible.toggle()
                         }
                     } label: {
-                        Label(inspectorVisible ? "Hide Details" : "Show Details", systemImage: "sidebar.right")
+                        Label(effectiveInspectorVisible ? "Hide Details" : "Show Details", systemImage: "sidebar.right")
                     }
+                    .disabled(store.isComposingNewSession)
+                    .help(store.isComposingNewSession ? "Details are hidden while composing a new session" : "Show or hide session details")
 
                     Button {
                         store.connectAndRefresh()
@@ -233,6 +235,10 @@ struct SessionDetailView: View {
 
     private func detailDrawerWidth(for totalWidth: CGFloat) -> CGFloat {
         min(430, max(340, totalWidth * 0.34))
+    }
+
+    private var effectiveInspectorVisible: Bool {
+        inspectorVisible && !store.isComposingNewSession
     }
 }
 
