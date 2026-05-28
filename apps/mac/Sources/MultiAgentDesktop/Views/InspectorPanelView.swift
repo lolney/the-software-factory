@@ -1449,18 +1449,25 @@ struct DebugLogPanelView: View {
     }
 
     private var debugCount: some View {
-        Text("\(store.schedulerRuns.count) runs / \(store.debugLogs.count) logs")
+        Text(debugCountText)
             .foregroundStyle(.secondary)
             .font(.caption)
             .lineLimit(1)
             .minimumScaleFactor(0.82)
     }
 
+    private var debugCountText: String {
+        if store.usesStaticMockupFixture && store.schedulerRuns.isEmpty && store.debugLogs.isEmpty {
+            return "Fixture telemetry unavailable"
+        }
+        return "\(store.schedulerRuns.count) runs / \(store.debugLogs.count) logs"
+    }
+
     private var emptyDebugState: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("No debug logs yet", systemImage: "text.badge.magnifyingglass")
+            Label(emptyDebugTitle, systemImage: store.usesStaticMockupFixture ? "info.circle" : "text.badge.magnifyingglass")
                 .font(.callout.weight(.semibold))
-            Text("Scheduler runs and debug logs will appear here after the session starts work or emits an error.")
+            Text(emptyDebugDetail)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1472,6 +1479,17 @@ struct DebugLogPanelView: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(.quaternary)
         }
+    }
+
+    private var emptyDebugTitle: String {
+        store.usesStaticMockupFixture ? "Debug telemetry unavailable in fixture" : "No debug logs yet"
+    }
+
+    private var emptyDebugDetail: String {
+        if store.usesStaticMockupFixture {
+            return "The built-in mock session includes representative transcript, graph, plan, and workspace data, but it does not replay scheduler runs or daemon debug logs."
+        }
+        return "Scheduler runs and debug logs will appear here after the session starts work or emits an error."
     }
 
     private var emptyLogState: some View {
