@@ -24,6 +24,7 @@ struct RolesView: View {
                 HSplitView {
                     roleListPane(compact: false)
                         .frame(minWidth: 220, idealWidth: 280)
+                        .frame(maxHeight: .infinity, alignment: .topLeading)
                     roleDetailPane
                         .frame(minWidth: 340)
                 }
@@ -63,12 +64,19 @@ struct RolesView: View {
             }
             .padding()
 
-            List(selection: $selectedRoleId) {
-                ForEach(store.roles) { role in
-                    Label(role.name.isEmpty ? role.id : role.name, systemImage: "person.crop.circle")
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .tag(role.id)
+            if store.roles.isEmpty {
+                roleCatalogEmptyHint
+                    .padding(.horizontal)
+                    .padding(.top, 24)
+                Spacer()
+            } else {
+                List(selection: $selectedRoleId) {
+                    ForEach(store.roles) { role in
+                        Label(role.name.isEmpty ? role.id : role.name, systemImage: "person.crop.circle")
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .tag(role.id)
+                    }
                 }
             }
         }
@@ -83,6 +91,7 @@ struct RolesView: View {
                     .adaptiveRolesLabelStyle(labelStyle)
             }
             .help(store.personalRolesPath ?? "Personal roles directory")
+            .disabled(store.personalRolesPath == nil)
             .accessibilityLabel("Copy personal roles path")
 
             if let index = selectedIndex, store.roles.indices.contains(index) {
@@ -105,9 +114,22 @@ struct RolesView: View {
                 Label("Add Role", systemImage: "plus")
                     .adaptiveRolesLabelStyle(labelStyle)
             }
+            .disabled(!store.daemon.isConnected)
             .help("Add a blank role JSON file")
             .accessibilityLabel("Add role")
         }
+    }
+
+    private var roleCatalogEmptyHint: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(emptyCatalogTitle, systemImage: emptyCatalogIcon)
+                .font(.headline)
+            Text(emptyCatalogDescription)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -117,9 +139,44 @@ struct RolesView: View {
                 store.saveRole(store.roles[index])
             }
         } else {
-            ContentUnavailableView("No Role Selected", systemImage: "person.2", description: Text("Select a role or add a new one."))
+            ContentUnavailableView {
+                Label(emptyCatalogTitle, systemImage: emptyCatalogIcon)
+            } description: {
+                Text(emptyCatalogDescription)
+            } actions: {
+                Button {
+                    store.addRole()
+                } label: {
+                    Label("Add Personal Role", systemImage: "plus")
+                }
+                .disabled(!store.daemon.isConnected)
+            }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private var emptyCatalogTitle: String {
+        if !store.daemon.isConnected {
+            return "Role Library Unavailable"
+        }
+        if store.roles.isEmpty {
+            return "No Role Catalog Entries"
+        }
+        return "Select a Role"
+    }
+
+    private var emptyCatalogDescription: String {
+        if !store.daemon.isConnected {
+            return "Connect to the local daemon to load built-in roles and personal role JSON files."
+        }
+        if store.roles.isEmpty {
+            return "The daemon did not report any built-in or personal roles. Add a personal role JSON file, or check the daemon role library."
+        }
+        return "Built-in and personal roles appear together in this catalog. Choose one to inspect or edit its local definition."
+    }
+
+    private var emptyCatalogIcon: String {
+        store.daemon.isConnected ? "person.2" : "antenna.radiowaves.left.and.right.slash"
     }
 }
 

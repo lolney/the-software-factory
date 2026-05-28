@@ -27,7 +27,7 @@ struct WorkflowsView: View {
                     } label: {
                         Label("Add Workflow", systemImage: "plus")
                     }
-                    .disabled(!store.isConnectionHealthy)
+                    .disabled(!store.daemon.isConnected)
                     .help("Add a blank workflow JSON file")
                 }
                 .padding()
@@ -54,17 +54,21 @@ struct WorkflowsView: View {
                 }
             }
             .frame(minWidth: 280, idealWidth: 340)
+            .frame(maxHeight: .infinity, alignment: .topLeading)
 
             if let workflow = selectedWorkflow {
                 WorkflowDetail(workflow: workflow, targetSessionTitle: (store.sessions + store.archivedSessions).first(where: { $0.id == store.selectedSessionId })?.title, canInstantiate: store.hasActiveSession && !store.selectedSessionArchived && workflow.isInstantiable) {
                     store.instantiateWorkflow(workflow.id)
                 }
                 .frame(minWidth: 560)
+                .frame(maxHeight: .infinity, alignment: .topLeading)
             } else {
                 workflowEmptyState
                     .frame(minWidth: 560)
+                    .frame(maxHeight: .infinity)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task {
             store.refreshCatalogs()
             selectedWorkflowId = selectedWorkflowId ?? store.workflows.first?.id
@@ -108,13 +112,13 @@ struct WorkflowsView: View {
                 } label: {
                     Label("Add Personal Workflow", systemImage: "plus")
                 }
-                .disabled(!store.isConnectionHealthy)
+                .disabled(!store.daemon.isConnected)
             }
         }
     }
 
     private var emptyCatalogTitle: String {
-        if !store.isConnectionHealthy {
+        if !store.daemon.isConnected {
             return "Workflow Library Unavailable"
         }
         if store.workflows.isEmpty {
@@ -124,7 +128,7 @@ struct WorkflowsView: View {
     }
 
     private var emptyCatalogDescription: String {
-        if !store.isConnectionHealthy {
+        if !store.daemon.isConnected {
             return "Connect to the local daemon to load built-in workflows and personal workflow JSON files."
         }
         if store.workflows.isEmpty {
@@ -134,7 +138,7 @@ struct WorkflowsView: View {
     }
 
     private var emptyCatalogIcon: String {
-        store.isConnectionHealthy ? "point.3.connected.trianglepath.dotted" : "antenna.radiowaves.left.and.right.slash"
+        store.daemon.isConnected ? "point.3.connected.trianglepath.dotted" : "antenna.radiowaves.left.and.right.slash"
     }
 }
 

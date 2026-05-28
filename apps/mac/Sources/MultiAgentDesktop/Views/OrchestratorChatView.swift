@@ -2,7 +2,6 @@ import SwiftUI
 
 struct OrchestratorChatView: View {
     @Bindable var store: SessionStore
-    var focusTranscriptSearchSignal = 0
     var openInspector: () -> Void = {}
     @State private var timelineItems: [TimelineItem] = []
     @State private var timelineIsTruncated = false
@@ -68,12 +67,16 @@ struct OrchestratorChatView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            TranscriptTopBar(
-                store: store,
-                followLiveTail: $followLiveTail,
-                transcriptCountSummary: transcriptCountSummary,
-                focusSearchSignal: focusTranscriptSearchSignal
-            )
+            if store.isComposingNewSession {
+                NewSessionDraftHeader()
+            } else {
+                TranscriptTopBar(
+                    store: store,
+                    followLiveTail: $followLiveTail,
+                    transcriptCountSummary: transcriptCountSummary,
+                    focusSearchSignal: store.focusTranscriptSearchSignal
+                )
+            }
 
             if let status = store.statusBannerText {
                 HStack(spacing: 8) {
@@ -171,8 +174,10 @@ struct OrchestratorChatView: View {
                 }
                 .onAppear {
                     updateTimelineItems()
-                    if followLiveTail, !store.isTranscriptFiltered, let last = timelineItems.last {
-                        scheduleScroll(to: last.id, proxy: proxy)
+                    if shouldShowBranchingTimeline {
+                        scheduleScroll(to: "branching-agent-timeline", anchor: .top, proxy: proxy)
+                    } else if followLiveTail, !store.isTranscriptFiltered, let last = timelineItems.last {
+                        scheduleScroll(to: last.id, anchor: .bottom, proxy: proxy)
                     }
                 }
                 .onDisappear {
@@ -180,11 +185,16 @@ struct OrchestratorChatView: View {
                 }
                 .onChange(of: timelineDisplayVersion) { _, _ in
                     updateTimelineItems()
+                    if shouldShowBranchingTimeline {
+                        scheduleScroll(to: "branching-agent-timeline", anchor: .top, proxy: proxy)
+                    }
                 }
                 .onChange(of: liveTranscriptVersion) { _, _ in
                     updateTimelineItems()
-                    if followLiveTail, tailIsVisible, !store.isTranscriptFiltered {
-                        scheduleScroll(to: timelineTailId, proxy: proxy)
+                    if shouldShowBranchingTimeline {
+                        scheduleScroll(to: "branching-agent-timeline", anchor: .top, proxy: proxy)
+                    } else if followLiveTail, tailIsVisible, !store.isTranscriptFiltered {
+                        scheduleScroll(to: timelineTailId, anchor: .bottom, proxy: proxy)
                     }
                 }
                 .onChange(of: transcriptFilterVersion) { _, _ in
@@ -194,8 +204,8 @@ struct OrchestratorChatView: View {
                     updateTimelineItems()
                 }
                 .onChange(of: followLiveTail) { _, isFollowing in
-                    if isFollowing, !store.isTranscriptFiltered {
-                        scheduleScroll(to: timelineTailId, proxy: proxy)
+                    if isFollowing, !store.isTranscriptFiltered, !shouldShowBranchingTimeline {
+                        scheduleScroll(to: timelineTailId, anchor: .bottom, proxy: proxy)
                     }
                 }
             }
@@ -229,15 +239,38 @@ struct OrchestratorChatView: View {
         timelineIsTruncated = window.isTruncated
     }
 
-    private func scheduleScroll(to id: String, proxy: ScrollViewProxy) {
+    private func scheduleScroll(to id: String, anchor: UnitPoint, proxy: ScrollViewProxy) {
         scrollWorkItem?.cancel()
         let workItem = DispatchWorkItem {
             withAnimation(.easeOut(duration: 0.15)) {
-                proxy.scrollTo(id, anchor: .bottom)
+                proxy.scrollTo(id, anchor: anchor)
             }
         }
         scrollWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
+    }
+}
+
+private struct NewSessionDraftHeader: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("New Session")
+                .font(.system(size: 18, weight: .semibold))
+            Text("Describe the goal below.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 34)
+        .padding(.horizontal, 40)
+        .padding(.bottom, 18)
+        .background(Color.black.opacity(0.005))
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color(.sRGB, white: 225 / 255, opacity: 1))
+                .frame(height: 1)
+                .offset(y: 20)
+        }
     }
 }
 

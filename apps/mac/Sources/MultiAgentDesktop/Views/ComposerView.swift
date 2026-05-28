@@ -50,14 +50,7 @@ struct ComposerView: View {
                 }
                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
 
-                Button {
-                    store.sendComposerMessage()
-                } label: {
-                    Label(store.isComposingNewSession ? "Create" : "Send", systemImage: "paperplane.fill")
-                }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.return, modifiers: [.command])
-                .disabled(!store.canSendComposerMessage)
+                sendButton
             }
             .padding()
         }
@@ -72,64 +65,49 @@ struct ComposerView: View {
             }
         }
     }
+
+    @ViewBuilder
+    private var sendButton: some View {
+        if store.canSendComposerMessage {
+            Button {
+                store.sendComposerMessage()
+            } label: {
+                Label(store.isComposingNewSession ? "Create" : "Send", systemImage: "paperplane.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.return, modifiers: [.command])
+        } else {
+            Button {
+                store.sendComposerMessage()
+            } label: {
+                Label(store.isComposingNewSession ? "Create" : "Send", systemImage: "paperplane.fill")
+            }
+            .buttonStyle(.bordered)
+            .keyboardShortcut(.return, modifiers: [.command])
+            .disabled(true)
+        }
+    }
 }
 
 private struct NewSessionSetupView: View {
     @Bindable var store: SessionStore
 
-    private let modelOptions = ["", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark"]
-    private let effortOptions = ["none", "minimal", "low", "medium", "high", "xhigh"]
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            runtimeRow
-            Divider()
-            workspaceRow
-            authRow
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                modePicker
+                authStatus
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                modePicker
+                authStatus
+            }
         }
-        .padding(12)
+        .padding(10)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(.quaternary)
-        }
-    }
-
-    private var workspaceLabel: String {
-        store.newSessionWorkspaceRoot.isEmpty
-            ? "Quick setup: create a blank workspace in Application Support"
-            : "Parent folder: \(store.newSessionWorkspaceRoot)"
-    }
-
-    private var runtimeRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Runtime")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .firstTextBaseline, spacing: 14) {
-                    modePicker
-                    modelPicker
-                    modelOverrideField
-                    effortPicker
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 12) {
-                        modePicker
-                        effortPicker
-                    }
-                    HStack(spacing: 12) {
-                        modelPicker
-                        modelOverrideField
-                    }
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    modePicker
-                    modelPicker
-                    modelOverrideField
-                    effortPicker
-                }
-            }
         }
     }
 
@@ -139,166 +117,24 @@ private struct NewSessionSetupView: View {
             Text("Debug").tag(true)
         }
         .pickerStyle(.segmented)
-        .frame(width: 180)
+        .frame(width: 168)
         .disabled(store.isCreatingSession)
     }
 
-    private var modelPicker: some View {
-        Picker("Model", selection: $store.newSessionModel) {
-            ForEach(modelOptions, id: \.self) { model in
-                Text(model.isEmpty ? "Role default" : model).tag(model)
-            }
-        }
-        .frame(width: 190)
-        .disabled(store.isCreatingSession || store.debugMode)
-    }
-
-    private var modelOverrideField: some View {
-        TextField("Override model", text: $store.newSessionModel)
-            .textFieldStyle(.roundedBorder)
-            .frame(width: 170)
-            .disabled(store.isCreatingSession || store.debugMode)
-    }
-
-    private var effortPicker: some View {
-        Picker("Effort", selection: $store.newSessionReasoningEffort) {
-            ForEach(effortOptions, id: \.self) { effort in
-                Text(effort == "none" ? "Model default" : effort.capitalized).tag(effort)
-            }
-        }
-        .frame(width: 170)
-        .disabled(store.isCreatingSession || store.debugMode)
-    }
-
-    private var workspaceRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Workspace")
-                .font(.caption.weight(.semibold))
+    @ViewBuilder
+    private var authStatus: some View {
+        if store.debugMode {
+            Label("Debug session", systemImage: "wrench.and.screwdriver")
+                .font(.caption)
                 .foregroundStyle(.secondary)
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) {
-                    workspaceStatus
-                        .frame(minWidth: 260, alignment: .leading)
-                    workspaceActions(labelStyle: .titleAndIcon)
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    workspaceStatus
-                    workspaceActions(labelStyle: .iconOnly)
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    workspaceStatus
-                    workspaceActions(labelStyle: .titleAndIcon)
-                }
-            }
-        }
-    }
-
-    private var workspaceStatus: some View {
-        Label(workspaceLabel, systemImage: store.newSessionWorkspaceRoot.isEmpty ? "folder.badge.plus" : "folder")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(2)
-            .truncationMode(.middle)
-    }
-
-    private func workspaceActions(labelStyle: NewSessionSetupActionLabelStyle) -> some View {
-        HStack(spacing: 8) {
-            Button {
-                store.useBlankWorkspace()
-            } label: {
-                Label("Blank Workspace", systemImage: "sparkles")
-                    .newSessionSetupLabelStyle(labelStyle)
-            }
-            .disabled(store.isCreatingSession)
-            .help("Create a blank workspace")
-            .accessibilityLabel("Create a blank workspace")
-            Button {
-                store.chooseNewSessionWorkspace()
-            } label: {
-                Label("Choose Folder…", systemImage: "folder")
-                    .newSessionSetupLabelStyle(labelStyle)
-            }
-            .disabled(store.isCreatingSession)
-            .help("Choose parent folder")
-            .accessibilityLabel("Choose parent folder")
-        }
-    }
-
-    @ViewBuilder
-    private var authRow: some View {
-        if !store.debugMode && store.authStatus == nil {
-            authStatusRow(
-                title: "Checking OpenAI credential status…",
-                color: .secondary
-            )
-        } else if !store.debugMode && store.authStatus?.liveCredentialConfigured != true {
-            authStatusRow(
-                title: "Live mode needs OpenAI OAuth or an API key before the session can start.",
-                color: .orange
-            )
-        }
-    }
-
-    private func authStatusRow(title: String, color: Color) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
-                authStatusLabel(title: title, color: color)
-                    .frame(minWidth: 260, alignment: .leading)
-                authActions(labelStyle: .titleAndIcon)
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                authStatusLabel(title: title, color: color)
-                authActions(labelStyle: .iconOnly)
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                authStatusLabel(title: title, color: color)
-                authActions(labelStyle: .titleAndIcon)
-            }
-        }
-    }
-
-    private func authStatusLabel(title: String, color: Color) -> some View {
-        Label(title, systemImage: "person.badge.key")
-            .font(.caption)
-            .foregroundStyle(color)
-            .lineLimit(2)
-    }
-
-    private func authActions(labelStyle: NewSessionSetupActionLabelStyle) -> some View {
-        HStack(spacing: 8) {
-            Button {
-                store.beginOpenAIOAuth()
-            } label: {
-                Label("Set Up OpenAI…", systemImage: "person.badge.key")
-                    .newSessionSetupLabelStyle(labelStyle)
-            }
-            .help("Set up OpenAI credentials")
-            .accessibilityLabel("Set up OpenAI credentials")
-            Button {
-                store.refreshAuthStatus()
-            } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
-                    .newSessionSetupLabelStyle(labelStyle)
-            }
-            .help("Refresh credential status")
-            .accessibilityLabel("Refresh credential status")
-        }
-    }
-}
-
-private enum NewSessionSetupActionLabelStyle {
-    case titleAndIcon
-    case iconOnly
-}
-
-private extension View {
-    @ViewBuilder
-    func newSessionSetupLabelStyle(_ style: NewSessionSetupActionLabelStyle) -> some View {
-        switch style {
-        case .titleAndIcon:
-            self.labelStyle(.titleAndIcon)
-        case .iconOnly:
-            self.labelStyle(.iconOnly)
+        } else if store.authStatus?.liveCredentialConfigured == true {
+            Label("Live credentials ready", systemImage: "checkmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Label("Live credentials needed in Settings", systemImage: "person.badge.key")
+                .font(.caption)
+                .foregroundStyle(.orange)
         }
     }
 }

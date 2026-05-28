@@ -6,7 +6,7 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
-            DaemonSettingsPane(daemonPort: $daemonPort)
+            DaemonSettingsPane(store: store, daemonPort: $daemonPort)
                 .tabItem {
                     Label("Daemon", systemImage: "server.rack")
                 }
@@ -37,16 +37,40 @@ struct SettingsView: View {
 }
 
 private struct DaemonSettingsPane: View {
+    @Bindable var store: SessionStore
     @Binding var daemonPort: Int
 
     var body: some View {
         Form {
             Section("Daemon") {
+                LabeledContent("Status") {
+                    Text(daemonStatusLabel)
+                        .foregroundStyle(daemonStatusColor)
+                }
                 TextField("Daemon Port", value: $daemonPort, formatter: Self.portFormatter)
                     .frame(width: 220)
+                    .disabled(store.usesStaticMockupFixture)
+                if store.usesStaticMockupFixture {
+                    Text("The app is running from the built-in fixture. Connect with the normal app launch to load live sessions, roles, workflows, MCP servers, and skills.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var daemonStatusLabel: String {
+        if store.usesStaticMockupFixture { return "Fixture Mode" }
+        if store.daemon.isConnected { return "Connected" }
+        if store.daemon.isConnecting { return "Connecting" }
+        return "Disconnected"
+    }
+
+    private var daemonStatusColor: Color {
+        if store.daemon.isConnected { return .green }
+        if store.daemon.isConnecting { return .orange }
+        return .secondary
     }
 
     private static let portFormatter: NumberFormatter = {

@@ -42,7 +42,6 @@ struct TheSoftwareFactoryApp: App {
 
 private struct SoftwareFactoryViewMenuCommands: Commands {
     let store: SessionStore
-    @FocusedValue(\.softwareFactoryViewCommands) private var viewCommands
 
     var body: some Commands {
         CommandGroup(after: .toolbar) {
@@ -54,46 +53,46 @@ private struct SoftwareFactoryViewMenuCommands: Commands {
             Divider()
 
             Button("Focus Transcript Search") {
-                viewCommands?.focusTranscriptSearch()
+                store.focusTranscriptSearch()
             }
             .keyboardShortcut("f", modifiers: [.command])
-            .disabled(viewCommands == nil)
+            .disabled(!store.canUseSessionViewCommands)
 
             Button("Toggle Details") {
-                viewCommands?.toggleDetails()
+                store.toggleInspectorVisibility()
             }
             .keyboardShortcut("i", modifiers: [.command, .option])
-            .disabled(viewCommands?.canShowDetails != true)
+            .disabled(!store.canUseSessionViewCommands)
 
             Divider()
 
             ForEach(InspectorPanel.allCases) { panel in
                 Button(showPanelTitle(panel)) {
-                    viewCommands?.showPanel(panel)
+                    store.showInspectorPanel(panel)
                 }
                 .keyboardShortcut(panelShortcut(panel), modifiers: [.command, .option])
-                .disabled(viewCommands?.canShowDetails != true)
+                .disabled(!store.canUseSessionViewCommands)
             }
 
             Divider()
 
             Button("Zoom Graph In") {
-                viewCommands?.applyGraphCommand(.zoomIn)
+                store.applyGraphCommand(.zoomIn)
             }
             .keyboardShortcut("+", modifiers: [.command])
-            .disabled(viewCommands?.canShowDetails != true)
+            .disabled(!store.canUseSessionViewCommands)
 
             Button("Zoom Graph Out") {
-                viewCommands?.applyGraphCommand(.zoomOut)
+                store.applyGraphCommand(.zoomOut)
             }
             .keyboardShortcut("-", modifiers: [.command])
-            .disabled(viewCommands?.canShowDetails != true)
+            .disabled(!store.canUseSessionViewCommands)
 
             Button("Reset Graph View") {
-                viewCommands?.applyGraphCommand(.reset)
+                store.applyGraphCommand(.reset)
             }
             .keyboardShortcut("0", modifiers: [.command, .option])
-            .disabled(viewCommands?.canShowDetails != true)
+            .disabled(!store.canUseSessionViewCommands)
         }
     }
 

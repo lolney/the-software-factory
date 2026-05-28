@@ -3,27 +3,22 @@ import SwiftUI
 struct SessionDetailView: View {
     @Bindable var store: SessionStore
     @State private var confirmCancel = false
-    @State private var inspectorVisible = true
-    @State private var focusTranscriptSearchSignal = 0
-    @State private var graphCommandRequest: GraphViewCommandRequest?
 
     var body: some View {
         GeometryReader { proxy in
             HStack(alignment: .top, spacing: 0) {
                 VStack(spacing: 0) {
-                    OrchestratorChatView(store: store, focusTranscriptSearchSignal: focusTranscriptSearchSignal) {
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            inspectorVisible = true
-                        }
+                    OrchestratorChatView(store: store) {
+                        store.isInspectorVisible = true
                     }
                         .frame(minWidth: 480, maxHeight: .infinity, alignment: .top)
                     ComposerView(store: store)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-                if inspectorVisible && !store.isComposingNewSession {
+                if store.isInspectorVisible && !store.isComposingNewSession {
                     Divider()
-                    InspectorPanelView(store: store, graphCommandRequest: graphCommandRequest)
+                    InspectorPanelView(store: store, graphCommandRequest: store.graphCommandRequest)
                         .frame(width: detailDrawerWidth(for: proxy.size.width))
                         .frame(maxHeight: .infinity)
                         .background(.regularMaterial)
@@ -151,7 +146,7 @@ struct SessionDetailView: View {
                 Menu {
                     Button {
                         withAnimation(.easeInOut(duration: 0.18)) {
-                            inspectorVisible.toggle()
+                            store.isInspectorVisible.toggle()
                         }
                     } label: {
                         Label(effectiveInspectorVisible ? "Hide Details" : "Show Details", systemImage: "sidebar.right")
@@ -191,7 +186,6 @@ struct SessionDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
-        .focusedValue(\.softwareFactoryViewCommands, viewCommands)
     }
 
     private var selectedSessionTitle: String {
@@ -222,38 +216,7 @@ struct SessionDetailView: View {
     }
 
     private var effectiveInspectorVisible: Bool {
-        inspectorVisible && !store.isComposingNewSession
-    }
-
-    private var viewCommands: SoftwareFactoryViewCommands {
-        SoftwareFactoryViewCommands(
-            canShowDetails: !store.isComposingNewSession,
-            focusTranscriptSearch: {
-                focusTranscriptSearchSignal += 1
-            },
-            toggleDetails: {
-                guard !store.isComposingNewSession else { return }
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    inspectorVisible.toggle()
-                }
-            },
-            showPanel: { panel in
-                showInspectorPanel(panel)
-            },
-            applyGraphCommand: { command in
-                showInspectorPanel(.graph)
-                graphCommandRequest = GraphViewCommandRequest(command: command)
-            }
-        )
-    }
-
-    private func showInspectorPanel(_ panel: InspectorPanel) {
-        guard !store.isComposingNewSession else { return }
-        store.clearSelectedTimelineEvent()
-        store.inspectorPanel = panel
-        withAnimation(.easeInOut(duration: 0.18)) {
-            inspectorVisible = true
-        }
+        store.isInspectorVisible && !store.isComposingNewSession
     }
 }
 

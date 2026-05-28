@@ -19,8 +19,17 @@ struct GraphPanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            graphCanvas
-                .frame(minHeight: 320)
+            if graph.nodes.isEmpty {
+                ContentUnavailableView(
+                    "No Workflow Graph",
+                    systemImage: "point.3.connected.trianglepath.dotted",
+                    description: Text("No workflow graph data is available for this session.")
+                )
+                .frame(maxWidth: .infinity, minHeight: 320, maxHeight: .infinity)
+            } else {
+                graphCanvas
+                    .frame(minHeight: 320)
+            }
         }
         .onAppear {
             handleGraphCommandRequest(commandRequest)

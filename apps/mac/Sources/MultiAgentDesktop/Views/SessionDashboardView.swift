@@ -66,98 +66,102 @@ struct SessionDashboardView: View {
                 ContentUnavailableView(emptyStateTitle, systemImage: "tablecells", description: Text(emptyStateDescription))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                Table(rows, selection: $tableSelection) {
-                    TableColumn("Session") { session in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(session.title)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            Text(session.id)
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                    }
-                    TableColumn("Status") { session in
-                        HStack(spacing: 6) {
-                            Image(systemName: statusIcon(for: session))
-                                .foregroundStyle(statusColor(for: session))
-                                .font(.caption2)
-                            Text(statusLabel(for: session))
-                        }
-                    }
-                    TableColumn("Mode") { session in
-                        Text(session.debugMode == true ? "Debug" : "Live")
-                            .foregroundStyle(.secondary)
-                    }
-                    TableColumn("Active/Paused") { session in
-                        Text(agentActivityLabel(for: session))
-                            .monospacedDigit()
-                            .lineLimit(1)
-                    }
-                    TableColumn("Failures") { session in
-                        Text("\(session.failureCount ?? 0)")
-                            .foregroundStyle((session.failureCount ?? 0) > 0 ? .red : .secondary)
-                            .monospacedDigit()
-                    }
-                    TableColumn("Workflow") { session in
-                        Text(session.detail.isEmpty ? "None" : session.detail)
-                            .foregroundStyle(session.detail.isEmpty ? .tertiary : .secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    TableColumn("Last Activity") { session in
-                        Text(dateLabel(session.updatedAt ?? session.createdAt))
-                            .foregroundStyle(.secondary)
-                    }
-                    TableColumn("Workspace") { session in
-                        if let workspaceRoot = session.workspaceRoot, !workspaceRoot.isEmpty {
-                            Text(abbreviatedPath(workspaceRoot))
-                                .font(.caption.monospaced())
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .help(workspaceRoot)
-                        } else {
-                            Text("No workspace")
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    TableColumn("Actions") { session in
-                        HStack(spacing: 8) {
-                            Button {
-                                store.selectSession(session.id)
-                            } label: {
-                                Label("View", systemImage: "eye")
+                VStack(spacing: 0) {
+                    Table(rows, selection: $tableSelection) {
+                        TableColumn("Session") { session in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(session.title)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                Text(session.id)
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
                             }
-                            .buttonStyle(.bordered)
-                            .help("View session")
-                            .accessibilityLabel("View session")
-
-                            Menu {
-                                if session.archived == true {
-                                    Button {
-                                        store.restoreSessions([session.id])
-                                    } label: {
-                                        Label("Restore", systemImage: "arrow.uturn.backward")
-                                    }
-                                } else {
-                                    Button {
-                                        requestArchive([session.id])
-                                    } label: {
-                                        Label("Archive", systemImage: "archivebox")
-                                    }
+                        }
+                        TableColumn("Status") { session in
+                            HStack(spacing: 6) {
+                                Image(systemName: statusIcon(for: session))
+                                    .foregroundStyle(statusColor(for: session))
+                                    .font(.caption2)
+                                Text(statusLabel(for: session))
+                            }
+                        }
+                        TableColumn("Mode") { session in
+                            Text(session.debugMode == true ? "Debug" : "Live")
+                                .foregroundStyle(.secondary)
+                        }
+                        TableColumn("Active/Paused") { session in
+                            Text(agentActivityLabel(for: session))
+                                .monospacedDigit()
+                                .lineLimit(1)
+                        }
+                        TableColumn("Failures") { session in
+                            Text("\(session.failureCount ?? 0)")
+                                .foregroundStyle((session.failureCount ?? 0) > 0 ? .red : .secondary)
+                                .monospacedDigit()
+                        }
+                        TableColumn("Workflow") { session in
+                            Text(session.detail.isEmpty ? "None" : session.detail)
+                                .foregroundStyle(session.detail.isEmpty ? .tertiary : .secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        TableColumn("Last Activity") { session in
+                            Text(dateLabel(session.updatedAt ?? session.createdAt))
+                                .foregroundStyle(.secondary)
+                        }
+                        TableColumn("Workspace") { session in
+                            if let workspaceRoot = session.workspaceRoot, !workspaceRoot.isEmpty {
+                                Text(abbreviatedPath(workspaceRoot))
+                                    .font(.caption.monospaced())
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help(workspaceRoot)
+                            } else {
+                                Text("No workspace")
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        TableColumn("Actions") { session in
+                            HStack(spacing: 8) {
+                                Button {
+                                    store.selectSession(session.id)
+                                } label: {
+                                    Label("View", systemImage: "eye")
                                 }
-                            } label: {
-                                Label("More", systemImage: "ellipsis.circle")
+                                .buttonStyle(.bordered)
+                                .help("View session")
+                                .accessibilityLabel("View session")
+
+                                Menu {
+                                    if session.archived == true {
+                                        Button {
+                                            store.restoreSessions([session.id])
+                                        } label: {
+                                            Label("Restore", systemImage: "arrow.uturn.backward")
+                                        }
+                                    } else {
+                                        Button {
+                                            requestArchive([session.id])
+                                        } label: {
+                                            Label("Archive", systemImage: "archivebox")
+                                        }
+                                    }
+                                } label: {
+                                    Label("More", systemImage: "ellipsis.circle")
+                                }
+                                .menuStyle(.borderlessButton)
+                                .help(session.archived == true ? "Restore session" : "Archive session")
+                                .accessibilityLabel(session.archived == true ? "Restore session" : "Archive session")
                             }
-                            .menuStyle(.borderlessButton)
-                            .help(session.archived == true ? "Restore session" : "Archive session")
-                            .accessibilityLabel(session.archived == true ? "Restore session" : "Archive session")
+                            .labelStyle(.iconOnly)
+                            .controlSize(.small)
                         }
-                        .labelStyle(.iconOnly)
-                        .controlSize(.small)
                     }
+                    .frame(height: tableHeight)
+                    Spacer(minLength: 0)
                 }
             }
         }
@@ -185,6 +189,10 @@ struct SessionDashboardView: View {
             return "\(rows.count) \(statusFilterLabel(selectedStatusFilter).lowercased()) of \(scoped)"
         }
         return scoped
+    }
+
+    private var tableHeight: CGFloat {
+        min(560, max(112, CGFloat(rows.count) * 40 + 40))
     }
 
     private var statusFilters: some View {

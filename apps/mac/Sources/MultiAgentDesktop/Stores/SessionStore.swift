@@ -7,6 +7,7 @@ import Observation
 final class SessionStore {
     static let newSessionDraftId = "new-session-draft"
     static let sessionDashboardId = "session-dashboard"
+    static let richMockupSessionId = "mockup-debug-temperature"
 
     var sessions: [SessionSummary] = []
     var archivedSessions: [SessionSummary] = []
@@ -47,6 +48,9 @@ final class SessionStore {
     var selectedAgentId: String?
     var controlAgentId: String?
     var selectedTimelineEventId: String?
+    var isInspectorVisible = true
+    var focusTranscriptSearchSignal = 0
+    var graphCommandRequest: GraphViewCommandRequest?
     var transcriptSearchText = "" {
         didSet {
             if transcriptSearchText != oldValue {
@@ -99,6 +103,16 @@ final class SessionStore {
             return Array(selected)
         }
         return selectedSessionId.map { [$0] } ?? []
+    }
+
+    var isSessionDetailSurfaceSelected: Bool {
+        let libraryRoutes: Set<String> = ["roles", "workflows", "archived", Self.sessionDashboardId]
+        guard let selectedSidebarItem else { return selectedSessionId != nil }
+        return !libraryRoutes.contains(selectedSidebarItem)
+    }
+
+    var canUseSessionViewCommands: Bool {
+        isSessionDetailSurfaceSelected && !isComposingNewSession
     }
 
     var canSendComposerMessage: Bool {
@@ -622,6 +636,7 @@ final class SessionStore {
         selectedSessionId = sessionId
         selectedSidebarItem = sessionId
         selectedSidebarItems = [sessionId]
+        isInspectorVisible = true
         selectedTimelineEventId = nil
         isLoadingSelection = true
         currentWorkspaceRoot = (sessions + archivedSessions).first { $0.id == sessionId }?.workspaceRoot
@@ -653,6 +668,28 @@ final class SessionStore {
 
     func clearSelectedTimelineEvent() {
         selectedTimelineEventId = nil
+    }
+
+    func focusTranscriptSearch() {
+        guard canUseSessionViewCommands else { return }
+        focusTranscriptSearchSignal += 1
+    }
+
+    func toggleInspectorVisibility() {
+        guard canUseSessionViewCommands else { return }
+        isInspectorVisible.toggle()
+    }
+
+    func showInspectorPanel(_ panel: InspectorPanel) {
+        guard canUseSessionViewCommands else { return }
+        clearSelectedTimelineEvent()
+        inspectorPanel = panel
+        isInspectorVisible = true
+    }
+
+    func applyGraphCommand(_ command: GraphViewCommand) {
+        showInspectorPanel(.graph)
+        graphCommandRequest = GraphViewCommandRequest(command: command)
     }
 
     func setControlAgent(_ agentId: String?) {
@@ -1193,6 +1230,7 @@ final class SessionStore {
         selectedSessionId = snapshot.sessionId
         selectedSidebarItem = snapshot.sessionId
         selectedSidebarItems = [snapshot.sessionId]
+        isInspectorVisible = true
         selectedTimelineEventId = nil
         subscribe(to: snapshot.sessionId)
         graph = snapshot.graph
@@ -1227,6 +1265,7 @@ final class SessionStore {
                     selectedSessionId = event.sessionId
                     selectedSidebarItem = event.sessionId
                     selectedSidebarItems = [event.sessionId]
+                    isInspectorVisible = true
                     currentWorkspaceRoot = workspaceRoot
                     currentSessionDebugMode = event.payload["debugMode"]?.boolValue
                     transcript = []
@@ -1268,6 +1307,7 @@ final class SessionStore {
             selectedSessionId = event.sessionId
             selectedSidebarItem = event.sessionId
             selectedSidebarItems = [event.sessionId]
+            isInspectorVisible = true
             selectedTimelineEventId = nil
             subscribe(to: event.sessionId)
             subscribeDebugLogs(to: event.sessionId)
@@ -1459,7 +1499,7 @@ final class SessionStore {
     }
 
     private func applyMockupFixture(referenceNow now: Date) {
-        let selectedId = "mockup-debug-temperature"
+        let selectedId = Self.richMockupSessionId
         func iso(_ offset: TimeInterval) -> String {
             ISO8601DateFormatter().string(from: now.addingTimeInterval(offset))
         }
@@ -1501,6 +1541,7 @@ final class SessionStore {
         selectedSessionId = selectedId
         selectedSidebarItem = selectedId
         selectedSidebarItems = [selectedId]
+        isInspectorVisible = true
         currentWorkspaceRoot = "/tmp/software-factory/mockup"
         currentSessionDebugMode = true
         connectionStatus = "Connected"
@@ -1599,9 +1640,14 @@ final class SessionStore {
     }
 
     private func selectStaticMockupSession(_ sessionId: String) {
+        if sessionId == Self.richMockupSessionId {
+            applyMockupFixture(referenceNow: Date())
+            return
+        }
         selectedSessionId = sessionId
         selectedSidebarItem = sessionId
         selectedSidebarItems = [sessionId]
+        isInspectorVisible = true
         selectedTimelineEventId = nil
         isComposingNewSession = false
         isCreatingSession = false
