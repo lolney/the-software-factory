@@ -14,7 +14,6 @@ Computer Use could inspect this app, but direct Computer Use access to `com.open
 
 Clear fixes to work down:
 
-- Make the New Session setup controls read as one coherent form; the current mode/model/workspace strip is cramped and easy to miss.
 
 Big product/design judgment calls:
 
@@ -67,7 +66,6 @@ Judgement-heavy follow-ups:
 
 ## Not Completed
 
-- New Session setup needs a clearer form hierarchy.
 - Big product/design judgment calls from the 2026-05-26 audit remain intentionally unimplemented.
 
 ## Completed Non-Controversial Items
@@ -75,6 +73,7 @@ Judgement-heavy follow-ups:
 - **2026-05-27: Make inspector chrome responsive.** Added a narrow-width inspector panel menu and adaptive Plan, Workspace, and Debug headers so tabs and actions remain available without clipping.
 - **2026-05-27: Improve Workspace diff previews.** Hid metadata-only workspace touches by default, sorted recorded diffs newest-first, made latest/history labels explicit, aligned Copy Diff with the visible diff set, and added horizontal scrolling for long diff lines.
 - **2026-05-27: Improve Roles editor responsiveness.** Switched Roles to a stacked list/detail layout at narrow widths, collapsed role actions to icon-only buttons, and reduced the editor minimum width so fields remain reachable at common desktop sizes.
+- **2026-05-27: Clarify New Session setup.** Replaced the cramped setup strip with a grouped form for runtime, workspace, and credential state, including responsive fallbacks and compact action buttons.
 - **2026-05-25: Add archived sessions.** Added durable `session.archived`/`session.restored` events, an Archived Sessions destination, restore actions, read-only archived sessions, and daemon tests proving logs are preserved.
 - **2026-05-25: Add multi-session dashboard and actions.** Added sidebar multi-selection, confirmed batch archive, "View Selected Sessions", and a session dashboard/table with status, last activity, mode, workspace path, active/paused agents, failure count, and quick actions.
 - **2026-05-25: Add real new-session setup.** Added quick blank-workspace setup, parent-folder workspace selection, live auth preflight, and model/reasoning controls on the composer.
