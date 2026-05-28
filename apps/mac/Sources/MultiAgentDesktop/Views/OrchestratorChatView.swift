@@ -388,23 +388,88 @@ private struct SessionStateStrip: View {
         return "\(remaining)s"
     }
 
+    private var draftWorkspaceLabel: String {
+        store.newSessionWorkspaceRoot.isEmpty ? "Blank" : "Chosen"
+    }
+
+    private var draftCredentialLabel: String {
+        if store.debugMode { return "Not needed" }
+        guard let authStatus = store.authStatus else { return "Checking" }
+        return authStatus.liveCredentialConfigured == true ? "Ready" : "Needed"
+    }
+
+    private var draftCredentialColor: Color {
+        if store.debugMode { return .secondary }
+        guard let authStatus = store.authStatus else { return .orange }
+        return authStatus.liveCredentialConfigured == true ? mockupStatusGreen : .orange
+    }
+
+    private var draftModelLabel: String {
+        let model = store.newSessionModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return model.isEmpty || store.debugMode ? "Default" : model
+    }
+
+    private var draftEffortLabel: String {
+        store.newSessionReasoningEffort == "none" || store.debugMode ? "Default" : store.newSessionReasoningEffort.capitalized
+    }
+
+    private var draftConnectionLabel: String {
+        if store.isCreatingSession { return "Creating" }
+        if store.usesStaticMockupFixture { return "Fixture" }
+        return store.daemon.isConnected ? "Ready" : "Starts on create"
+    }
+
+    private var draftConnectionColor: Color {
+        if store.isCreatingSession { return mockupStatusGreen }
+        if store.usesStaticMockupFixture { return .secondary }
+        return store.daemon.isConnected ? mockupStatusGreen : .orange
+    }
+
     var body: some View {
         GeometryReader { proxy in
-            let metricWidth = max(86, (proxy.size.width - 6) / 7)
-            HStack(spacing: 0) {
-                MetricCell(title: "Agents", value: agentSummary, width: metricWidth)
-                metricDivider
-                MetricCell(title: "Queue", value: "\(queuedWorkCount)", width: metricWidth, sparkline: true, sparklineValues: [0.05, 0.05, 0.06, 0.06, 0.62, 0.08, 0.18, 0.08, 0.07, 0.07])
-                metricDivider
-                MetricCell(title: "Last action", value: lastActionAge, width: metricWidth)
-                metricDivider
-                MetricCell(title: "Failures", value: nil, width: metricWidth, statusColor: store.sessionErrorCount > 0 ? .orange : mockupStatusGreen)
-                metricDivider
-                MetricCell(title: "Changed files", value: "\(store.touchedWorkspaceFiles.count)", width: metricWidth, sparkline: !store.touchedWorkspaceFiles.isEmpty, sparklineValues: [0.05, 0.05, 0.06, 0.08, 0.55, 0.08, 0.12, 0.5, 0.08, 0.6, 0.08], valueOffsetX: 0)
-                metricDivider
-                MetricCell(title: "Mode", value: "Auto", width: metricWidth, showsChevron: true)
-                metricDivider
-                MetricCell(title: "Runtime", value: runtimeLabel, width: metricWidth, valueOffsetX: 0)
+            if store.isComposingNewSession {
+                if proxy.size.width < 560 {
+                    let metricWidth = max(110, (proxy.size.width - 2) / 3)
+                    HStack(spacing: 0) {
+                        MetricCell(title: "Draft", value: store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Needs goal" : "Goal ready", width: metricWidth)
+                        metricDivider
+                        MetricCell(title: "Credentials", value: draftCredentialLabel, width: metricWidth, statusColor: draftCredentialColor)
+                        metricDivider
+                        MetricCell(title: "Daemon", value: draftConnectionLabel, width: metricWidth, statusColor: draftConnectionColor)
+                    }
+                } else {
+                    let metricWidth = max(92, (proxy.size.width - 5) / 6)
+                    HStack(spacing: 0) {
+                        MetricCell(title: "Draft", value: store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Needs goal" : "Goal ready", width: metricWidth)
+                        metricDivider
+                        MetricCell(title: "Workspace", value: draftWorkspaceLabel, width: metricWidth)
+                        metricDivider
+                        MetricCell(title: "Credentials", value: draftCredentialLabel, width: metricWidth, statusColor: draftCredentialColor)
+                        metricDivider
+                        MetricCell(title: "Model", value: draftModelLabel, width: metricWidth)
+                        metricDivider
+                        MetricCell(title: "Effort", value: draftEffortLabel, width: metricWidth)
+                        metricDivider
+                        MetricCell(title: "Daemon", value: draftConnectionLabel, width: metricWidth, statusColor: draftConnectionColor)
+                    }
+                }
+            } else {
+                let metricWidth = max(86, (proxy.size.width - 6) / 7)
+                HStack(spacing: 0) {
+                    MetricCell(title: "Agents", value: agentSummary, width: metricWidth)
+                    metricDivider
+                    MetricCell(title: "Queue", value: "\(queuedWorkCount)", width: metricWidth, sparkline: true, sparklineValues: [0.05, 0.05, 0.06, 0.06, 0.62, 0.08, 0.18, 0.08, 0.07, 0.07])
+                    metricDivider
+                    MetricCell(title: "Last action", value: lastActionAge, width: metricWidth)
+                    metricDivider
+                    MetricCell(title: "Failures", value: nil, width: metricWidth, statusColor: store.sessionErrorCount > 0 ? .orange : mockupStatusGreen)
+                    metricDivider
+                    MetricCell(title: "Changed files", value: "\(store.touchedWorkspaceFiles.count)", width: metricWidth, sparkline: !store.touchedWorkspaceFiles.isEmpty, sparklineValues: [0.05, 0.05, 0.06, 0.08, 0.55, 0.08, 0.12, 0.5, 0.08, 0.6, 0.08], valueOffsetX: 0)
+                    metricDivider
+                    MetricCell(title: "Mode", value: "Auto", width: metricWidth, showsChevron: true)
+                    metricDivider
+                    MetricCell(title: "Runtime", value: runtimeLabel, width: metricWidth, valueOffsetX: 0)
+                }
             }
         }
         .frame(height: 56)
