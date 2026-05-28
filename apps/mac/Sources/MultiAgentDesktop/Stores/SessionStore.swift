@@ -185,7 +185,7 @@ final class SessionStore {
     var touchedWorkspaceFiles: [WorkspaceFileSummary] {
         var summaries: [String: WorkspaceFileSummary] = [:]
         for item in transcript where item.type == "workspace.file_touched" || item.type == "workspace.conflict_detected" {
-            guard let path = item.payload["path"]?.stringValue ?? item.text.nilIfEmpty else { continue }
+            guard let path = workspaceEventPath(item) else { continue }
             var summary = summaries[path] ?? WorkspaceFileSummary(
                 path: path,
                 lastAgentId: item.agentId,
@@ -793,8 +793,12 @@ final class SessionStore {
 
     func copyWorkspaceDiff(for relativePath: String) {
         let diffs = transcript
-            .filter { $0.type == "workspace.file_touched" && $0.payload["path"]?.stringValue == relativePath }
+            .filter {
+                ($0.type == "workspace.file_touched" || $0.type == "workspace.conflict_detected")
+                    && workspaceEventPath($0) == relativePath
+            }
             .filter(workspaceDiffHasContent)
+            .sorted { $0.timestamp > $1.timestamp }
             .compactMap { $0.payload["diff"]?.stringValue }
         guard !diffs.isEmpty else {
             lastError = "No recorded diff for \(relativePath)."
@@ -1822,6 +1826,10 @@ func workspaceDiffHasContent(_ item: TranscriptItem) -> Bool {
         (line.hasPrefix("+") && !line.hasPrefix("+++"))
             || (line.hasPrefix("-") && !line.hasPrefix("---"))
     }
+}
+
+func workspaceEventPath(_ item: TranscriptItem) -> String? {
+    item.payload["path"]?.stringValue ?? item.text.nilIfEmpty
 }
 
 @discardableResult

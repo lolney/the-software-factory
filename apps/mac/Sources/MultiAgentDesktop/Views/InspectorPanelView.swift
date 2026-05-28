@@ -940,12 +940,11 @@ private struct PlanWorkflowPromptView: View {
 struct WorkspacePanelView: View {
     @Bindable var store: SessionStore
 
-    private var diffEventsByPath: [String: [TranscriptItem]] {
+    private var workspaceEventsByPath: [String: [TranscriptItem]] {
         Dictionary(grouping: store.transcript.filter { item in
-            item.type == "workspace.file_touched"
-                && workspaceDiffHasContent(item)
-                && item.payload["path"]?.stringValue != nil
-        }, by: { $0.payload["path"]?.stringValue ?? "" })
+            (item.type == "workspace.file_touched" || item.type == "workspace.conflict_detected")
+                && workspaceEventPath(item) != nil
+        }, by: { workspaceEventPath($0) ?? "" })
     }
 
     var body: some View {
@@ -993,7 +992,7 @@ struct WorkspacePanelView: View {
                             WorkspaceFileReviewRow(
                                 file: file,
                                 workspaceRoot: root,
-                                events: diffEventsByPath[file.path] ?? [],
+                                events: workspaceEventsByPath[file.path] ?? [],
                                 copyPath: { store.copyWorkspaceFilePath(file.path) },
                                 copyDiff: { store.copyWorkspaceDiff(for: file.path) }
                             )
@@ -1107,6 +1106,18 @@ private struct WorkspaceFileReviewRow: View {
     let copyDiff: () -> Void
     @State private var expanded = false
 
+    private var diffEvents: [TranscriptItem] {
+        events
+            .filter(workspaceDiffHasContent)
+            .sorted { first, second in
+                first.timestamp > second.timestamp
+            }
+    }
+
+    private var hiddenMetadataEventCount: Int {
+        max(0, events.count - diffEvents.count)
+    }
+
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
             if expanded {
@@ -1134,17 +1145,29 @@ private struct WorkspaceFileReviewRow: View {
                         } label: {
                             Label("Copy Diff", systemImage: "square.on.square")
                         }
-                        .disabled(events.isEmpty)
+                        .disabled(diffEvents.isEmpty)
                     }
                     .font(.caption)
 
-                    if events.isEmpty {
+                    if diffEvents.isEmpty {
                         Text(file.lastEventType == "workspace.conflict_detected" ? "No diff recorded for this conflict event." : "No diff recorded for this file.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(events) { event in
-                            WorkspaceDiffEventView(event: event)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Showing latest recorded diff first.")
+                            if hiddenMetadataEventCount > 0 {
+                                Text("\(hiddenMetadataEventCount) metadata-only touch\(hiddenMetadataEventCount == 1 ? "" : "es") hidden.")
+                            }
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+
+                        ForEach(Array(diffEvents.enumerated()), id: \.element.id) { index, event in
+                            WorkspaceDiffEventView(
+                                event: event,
+                                label: diffLabel(for: index)
+                            )
                         }
                     }
                 }
@@ -1228,12 +1251,21 @@ private struct WorkspaceFileReviewRow: View {
 
     private var changeSummary: String {
         let conflictText = file.conflictCount == 0 ? "" : ", \(file.conflictCount) conflict\(file.conflictCount == 1 ? "" : "s")"
-        return "Latest: \(file.lastEventType.replacingOccurrences(of: "workspace.", with: "")) by \(file.lastAgentId ?? "system"); +\(file.additions) -\(file.deletions)\(conflictText)."
+        let diffText = diffEvents.isEmpty ? "no recorded diffs" : "\(diffEvents.count) recorded diff\(diffEvents.count == 1 ? "" : "s")"
+        let hiddenText = hiddenMetadataEventCount == 0 ? "" : "; \(hiddenMetadataEventCount) metadata-only touch\(hiddenMetadataEventCount == 1 ? "" : "es") hidden"
+        return "Latest event: \(file.lastEventType.replacingOccurrences(of: "workspace.", with: "")) by \(file.lastAgentId ?? "system"); \(diffText); +\(file.additions) -\(file.deletions)\(conflictText)\(hiddenText)."
+    }
+
+    private func diffLabel(for index: Int) -> String {
+        if index == 0 { return "Latest recorded diff" }
+        if index == 1 { return "Previous diff" }
+        return "Older diff \(index)"
     }
 }
 
 private struct WorkspaceDiffEventView: View {
     let event: TranscriptItem
+    let label: String
     @State private var expanded = false
 
     var body: some View {
@@ -1246,8 +1278,11 @@ private struct WorkspaceDiffEventView: View {
             } label: {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
-                        Text(event.agentId ?? "system")
+                        Text(label)
                             .font(.caption.weight(.semibold))
+                        Text(event.agentId ?? "system")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         if let stats = event.payload["diffStats"]?.objectValue {
                             Text("+\(Int(stats["additions"]?.numberValue ?? 0)) -\(Int(stats["deletions"]?.numberValue ?? 0))")
                                 .foregroundStyle(diffColor(stats: stats))
@@ -1304,13 +1339,13 @@ private struct WorkspaceDiffBlock: View {
     }
 
     var body: some View {
-        ScrollView(.vertical) {
+        ScrollView([.horizontal, .vertical]) {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(previewLines.enumerated()), id: \.offset) { _, line in
                     Text(String(line))
                         .font(.caption.monospaced())
                         .foregroundStyle(color(for: String(line)))
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
                 if omittedLineCount > 0 {
                     Text("Diff preview truncated. Copy Diff includes \(omittedLineCount) more line\(omittedLineCount == 1 ? "" : "s").")
