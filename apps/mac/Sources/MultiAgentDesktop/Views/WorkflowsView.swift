@@ -27,21 +27,29 @@ struct WorkflowsView: View {
                     } label: {
                         Label("Add Workflow", systemImage: "plus")
                     }
+                    .disabled(!store.isConnectionHealthy)
                     .help("Add a blank workflow JSON file")
                 }
                 .padding()
 
-                List(selection: $selectedWorkflowId) {
-                    ForEach(store.workflows) { workflow in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(workflow.name.isEmpty ? workflow.id : workflow.name)
-                                .lineLimit(1)
-                            Text(workflow.description.isEmpty ? "Draft workflow JSON" : workflow.description)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
+                if store.workflows.isEmpty {
+                    workflowCatalogEmptyHint
+                        .padding(.horizontal)
+                        .padding(.top, 24)
+                    Spacer()
+                } else {
+                    List(selection: $selectedWorkflowId) {
+                        ForEach(store.workflows) { workflow in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(workflow.name.isEmpty ? workflow.id : workflow.name)
+                                    .lineLimit(1)
+                                Text(workflow.description.isEmpty ? "Workflow catalog entry" : workflow.description)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                            .tag(workflow.id)
                         }
-                        .tag(workflow.id)
                     }
                 }
             }
@@ -53,7 +61,7 @@ struct WorkflowsView: View {
                 }
                 .frame(minWidth: 560)
             } else {
-                ContentUnavailableView("No Workflows", systemImage: "point.3.connected.trianglepath.dotted")
+                workflowEmptyState
                     .frame(minWidth: 560)
             }
         }
@@ -61,6 +69,72 @@ struct WorkflowsView: View {
             store.refreshCatalogs()
             selectedWorkflowId = selectedWorkflowId ?? store.workflows.first?.id
         }
+        .onChange(of: store.workflows.map(\.id)) { _, ids in
+            if let selectedWorkflowId, ids.contains(selectedWorkflowId) {
+                return
+            }
+            selectedWorkflowId = ids.first
+        }
+    }
+
+    private var workflowCatalogEmptyHint: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(emptyCatalogTitle, systemImage: emptyCatalogIcon)
+                .font(.headline)
+            Text(emptyCatalogDescription)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var workflowEmptyState: some View {
+        ContentUnavailableView {
+            Label(emptyCatalogTitle, systemImage: emptyCatalogIcon)
+        } description: {
+            Text(emptyCatalogDescription)
+        } actions: {
+            HStack {
+                Button {
+                    store.copyPersonalWorkflowsPath()
+                } label: {
+                    Label("Copy Personal Path", systemImage: "doc.on.doc")
+                }
+                .disabled(store.personalWorkflowsPath == nil)
+
+                Button {
+                    store.addWorkflowFile()
+                } label: {
+                    Label("Add Personal Workflow", systemImage: "plus")
+                }
+                .disabled(!store.isConnectionHealthy)
+            }
+        }
+    }
+
+    private var emptyCatalogTitle: String {
+        if !store.isConnectionHealthy {
+            return "Workflow Library Unavailable"
+        }
+        if store.workflows.isEmpty {
+            return "No Workflow Catalog Entries"
+        }
+        return "Select a Workflow"
+    }
+
+    private var emptyCatalogDescription: String {
+        if !store.isConnectionHealthy {
+            return "Connect to the local daemon to load built-in workflows and personal workflow JSON files."
+        }
+        if store.workflows.isEmpty {
+            return "The daemon did not report any built-in or personal workflows. Add a personal workflow JSON file, or check the daemon workflow library."
+        }
+        return "Built-in and personal workflows appear together in this catalog. Choose one to inspect its roles, graph, and instantiation requirements."
+    }
+
+    private var emptyCatalogIcon: String {
+        store.isConnectionHealthy ? "point.3.connected.trianglepath.dotted" : "antenna.radiowaves.left.and.right.slash"
     }
 }
 
