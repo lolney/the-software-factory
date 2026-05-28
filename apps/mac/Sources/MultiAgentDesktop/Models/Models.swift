@@ -175,6 +175,15 @@ struct AgentNode: Identifiable, Hashable, Codable {
     }
 }
 
+struct AgentFilterOption: Identifiable, Hashable {
+    let id: String
+    var label: String
+    var colorHex: String?
+    var status: AgentStatus?
+    var unreadCount: Int
+    var errorCount: Int
+}
+
 struct AgentEdge: Identifiable, Hashable, Codable {
     let id: String
     var from: String

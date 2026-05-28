@@ -16,7 +16,7 @@ Prior art is either overly complex (Gas Town) or not structured enough (existing
 - Workflows are hard-coded into the app, but planner agents decide how and when to instantiate them
 - Everything runs autonomously, but you retain control: with the ability to nudge or stop agents at any point
 
-<img width="1829" height="1123" alt="image" src="https://github.com/user-attachments/assets/55ce3e63-82de-47f6-8406-b519681a1504" />
+<img width="1586" alt="The Software Factory macOS app showing a concurrent multi-agent timeline and workflow graph" src="docs/image.png" />
 
 ## Project Structure
 

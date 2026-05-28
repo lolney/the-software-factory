@@ -15,18 +15,349 @@ struct InspectorPanelView: View {
 
             Divider()
 
-            switch store.inspectorPanel {
-            case .graph:
-                GraphPanelView(store: store)
-            case .plan:
-                PlanInspectorPanelView(store: store)
-            case .workspace:
-                WorkspacePanelView(store: store)
-            case .debug:
-                DebugLogPanelView(store: store)
+            if let event = store.selectedTimelineEvent {
+                TimelineEventDetailPanelView(store: store, event: event)
+            } else {
+                switch store.inspectorPanel {
+                case .graph:
+                    GraphPanelView(store: store)
+                case .plan:
+                    PlanInspectorPanelView(store: store)
+                case .workspace:
+                    WorkspacePanelView(store: store)
+                case .debug:
+                    DebugLogPanelView(store: store)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct TimelineEventDetailPanelView: View {
+    @Bindable var store: SessionStore
+    let event: TranscriptItem
+
+    private var relatedLogs: [DebugLogItem] {
+        store.debugLogs.filter { log in
+            let callId = event.payload["callId"]?.stringValue
+            return log.causationId == event.id
+                || (event.correlationId != nil && log.correlationId == event.correlationId)
+                || log.payload["eventId"]?.stringValue == event.id
+                || log.payload["causationId"]?.stringValue == event.id
+                || (callId != nil && (
+                    log.payload["callId"]?.stringValue == callId
+                        || log.payload["toolCallId"]?.stringValue == callId
+                ))
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .foregroundStyle(color)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Text(event.type)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    store.clearSelectedTimelineEvent()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .help("Close event detail")
+                .accessibilityLabel("Close event detail")
+            }
+            .padding()
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    summarySection
+                    tailoredSection
+                    identifiersSection
+                    payloadSection
+                    logsSection
+                }
+                .padding()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var title: String {
+        switch event.type {
+        case "handoff.created":
+            "Handoff to \(event.payload["to"]?.stringValue ?? event.recipient ?? "agent")"
+        case "message.sent", "agent.message", "message":
+            "Message"
+        case "workspace.file_touched":
+            "File edit"
+        case "agent.tool_call":
+            "Tool call"
+        case "agent.tool_result":
+            "Tool result"
+        case "plan.created":
+            "Plan created"
+        case "workflow.completed":
+            "Workflow completed"
+        default:
+            event.text.isEmpty ? event.type : event.text
+        }
+    }
+
+    private var icon: String {
+        switch event.type {
+        case "handoff.created": "arrow.right"
+        case "message.sent", "agent.message", "message": "envelope"
+        case "workspace.file_touched": "pencil"
+        case "agent.tool_call", "agent.tool_result": actionIcon
+        case "plan.created": "checklist"
+        case "workflow.completed": "checkmark.circle"
+        case "error": "exclamationmark.triangle"
+        default: "circle"
+        }
+    }
+
+    private var actionIcon: String {
+        let haystack = [
+            event.payload["toolName"]?.stringValue,
+            event.payload["path"]?.stringValue,
+            event.text
+        ]
+        .compactMap { $0 }
+        .joined(separator: " ")
+        .lowercased()
+        if haystack.contains("test") { return "checklist.checked" }
+        if haystack.contains("command") || haystack.contains("terminal") || haystack.contains("shell") || haystack.contains("python") {
+            return "terminal"
+        }
+        if haystack.contains("review") || haystack.contains("comment") {
+            return "text.bubble"
+        }
+        if haystack.contains("mail") || haystack.contains("message") {
+            return "envelope"
+        }
+        if haystack.contains("file") || haystack.contains("edit") || haystack.contains(".swift") || haystack.contains(".py") {
+            return "pencil"
+        }
+        return "wrench.and.screwdriver"
+    }
+
+    private var color: Color {
+        switch event.type {
+        case "error": .red
+        case "workflow.completed": .green
+        case "workspace.file_touched": .blue
+        default: .accentColor
+        }
+    }
+
+    private var summarySection: some View {
+        EventDetailCard("Summary") {
+            detailRow("Agent", event.agentId ?? (event.sender.isEmpty ? nil : event.sender) ?? "unknown")
+            if let recipient = event.recipient {
+                detailRow("Recipient", recipient)
+            }
+            detailRow("Time", event.timestamp.formatted(date: .abbreviated, time: .standard))
+            if !event.text.isEmpty {
+                Text(event.text)
+                    .font(.callout)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var tailoredSection: some View {
+        switch event.type {
+        case "handoff.created":
+            EventDetailCard("Handoff") {
+                detailRow("From", event.payload["from"]?.stringValue ?? event.sender)
+                detailRow("To", event.payload["to"]?.stringValue ?? event.recipient ?? "agent")
+                if let edgeId = event.payload["edgeId"]?.stringValue {
+                    detailRow("Edge", edgeId)
+                }
+                if let prompt = event.payload["prompt"]?.stringValue {
+                    detailText("Prompt", prompt)
+                }
+            }
+        case "message.sent", "agent.message", "message":
+            EventDetailCard("Message") {
+                detailRow("From", event.payload["from"]?.stringValue ?? event.sender)
+                if let target = event.payload["to"]?.stringValue ?? event.recipient {
+                    detailRow("To", target)
+                }
+                detailText("Body", event.payload["text"]?.stringValue ?? event.text)
+            }
+        case "workspace.file_touched":
+            EventDetailCard("Workspace Change") {
+                detailRow("Path", event.payload["path"]?.stringValue ?? event.text)
+                if let stats = event.payload["diffStats"]?.objectValue {
+                    let additions = Int(stats["additions"]?.numberValue ?? 0)
+                    let deletions = Int(stats["deletions"]?.numberValue ?? 0)
+                    detailRow("Diff", "+\(additions) / -\(deletions)")
+                }
+                if let diff = event.payload["diff"]?.stringValue, !diff.isEmpty {
+                    detailText("Diff", diff, monospaced: true)
+                }
+            }
+        case "agent.tool_call", "agent.tool_result":
+            EventDetailCard("Tool") {
+                detailRow("Tool", event.payload["toolName"]?.stringValue ?? "tool")
+                if let callId = event.payload["callId"]?.stringValue {
+                    detailRow("Call ID", callId)
+                }
+                if let status = event.payload["status"]?.stringValue {
+                    detailRow("Status", status)
+                }
+                if let input = event.payload["input"] {
+                    detailText("Input", renderJSON(input), monospaced: true)
+                }
+                if let output = event.payload["output"] {
+                    detailText("Output", renderJSON(output), monospaced: true)
+                }
+            }
+        case "plan.created":
+            EventDetailCard("Plan") {
+                if let plan = event.payload["plan"] {
+                    detailText("Plan", renderJSON(plan), monospaced: true)
+                } else {
+                    detailText("Plan", event.text)
+                }
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    private var identifiersSection: some View {
+        EventDetailCard("Identifiers") {
+            detailRow("Event", event.id)
+            if let causationId = event.causationId {
+                detailRow("Causation", causationId)
+            }
+            if let correlationId = event.correlationId {
+                detailRow("Correlation", correlationId)
+            }
+        }
+    }
+
+    private var payloadSection: some View {
+        EventDetailCard("Raw Payload") {
+            if event.payload.isEmpty {
+                Text("No payload fields.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                detailText("Payload", renderJSON(.object(event.payload)), monospaced: true)
+            }
+        }
+    }
+
+    private var logsSection: some View {
+        EventDetailCard("Related Logs") {
+            if relatedLogs.isEmpty {
+                Text("No debug log entries are linked to this event.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(relatedLogs) { log in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(log.level.rawValue.uppercased())
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(log.level == .error ? .red : log.level == .warn ? .orange : .secondary)
+                            Text(log.source)
+                                .font(.caption.weight(.semibold))
+                            Spacer()
+                            Text(log.timestamp)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.tertiary)
+                        }
+                        Text(log.message)
+                            .font(.caption)
+                            .textSelection(.enabled)
+                    }
+                    .padding(7)
+                    .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 6))
+                }
+            }
+        }
+    }
+
+    private func detailRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 72, alignment: .leading)
+            Text(value)
+                .font(.caption)
+                .textSelection(.enabled)
+                .lineLimit(2)
+                .truncationMode(.middle)
+        }
+    }
+
+    private func detailText(_ label: String, _ value: String, monospaced: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value.isEmpty ? "-" : value)
+                .font(monospaced ? .caption.monospaced() : .caption)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(monospaced ? 16 : 8)
+        }
+    }
+
+    private func renderJSON(_ value: JSONValue) -> String {
+        guard let data = try? JSONEncoder().encode(value),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let pretty = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+              let string = String(data: pretty, encoding: .utf8) else {
+            return value.searchText
+        }
+        return string
+    }
+}
+
+private struct EventDetailCard<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            content
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.quaternary)
+        }
     }
 }
 

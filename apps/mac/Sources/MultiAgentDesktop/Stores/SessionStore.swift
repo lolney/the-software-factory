@@ -17,7 +17,13 @@ final class SessionStore {
     var graph = GraphState(sessionId: "", workflowId: "", nodes: [], edges: [])
     var transcript: [TranscriptItem] = []
     var debugLogs: [DebugLogItem] = []
-    var inspectorPanel: InspectorPanel = .graph
+    var inspectorPanel: InspectorPanel = .graph {
+        didSet {
+            if inspectorPanel != oldValue {
+                selectedTimelineEventId = nil
+            }
+        }
+    }
     var roles: [RoleSpec] = []
     var workflows: [WorkflowSpec] = []
     var personalRolesPath: String?
@@ -40,7 +46,14 @@ final class SessionStore {
     var usesStaticMockupFixture = false
     var selectedAgentId: String?
     var controlAgentId: String?
-    var transcriptSearchText = ""
+    var selectedTimelineEventId: String?
+    var transcriptSearchText = "" {
+        didSet {
+            if transcriptSearchText != oldValue {
+                selectedTimelineEventId = nil
+            }
+        }
+    }
     var isLoadingSelection = false
     private var subscribedSessionIds = Set<String>()
     private var subscribedDebugLogSessionIds = Set<String>()
@@ -97,7 +110,14 @@ final class SessionStore {
     }
 
     var orchestratorStatus: AgentStatus {
-        graph.nodes.first { $0.id == selectedControlAgentId }?.status ?? .idle
+        graph.nodes.first { $0.id == orchestratorAgentId }?.status ?? .idle
+    }
+
+    var orchestratorAgentId: String {
+        if graph.nodes.contains(where: { $0.id == "orchestrator" }) {
+            return "orchestrator"
+        }
+        return graph.nodes.first?.id ?? "orchestrator"
     }
 
     var selectedControlAgentId: String {
@@ -140,6 +160,11 @@ final class SessionStore {
                 || (["agent.tool_call", "agent.tool_result"].contains(item.type)
                     && item.payload["callId"]?.stringValue.map { matchedToolCallIds.contains($0) } == true)
         }
+    }
+
+    var selectedTimelineEvent: TranscriptItem? {
+        guard let selectedTimelineEventId else { return nil }
+        return filteredTranscript.first { $0.id == selectedTimelineEventId }
     }
 
     var sessionErrorCount: Int {
@@ -285,7 +310,54 @@ final class SessionStore {
 
     var transcriptFilterLabel: String {
         guard let selectedAgentId else { return "All Agents" }
-        return graph.nodes.first { $0.id == selectedAgentId }?.label ?? selectedAgentId
+        return transcriptAgentOptions.first { $0.id == selectedAgentId }?.label ?? selectedAgentId
+    }
+
+    var transcriptAgentOptions: [AgentFilterOption] {
+        var seen = Set<String>()
+        var options: [AgentFilterOption] = []
+
+        for node in graph.nodes where seen.insert(node.id).inserted {
+            options.append(AgentFilterOption(
+                id: node.id,
+                label: node.label,
+                colorHex: node.colorHex,
+                status: node.status,
+                unreadCount: node.unreadCount,
+                errorCount: node.errorCount
+            ))
+        }
+
+        let fallbackIds = transcript.flatMap { item in
+            [
+                item.agentId,
+                item.sender,
+                item.recipient,
+                item.payload["from"]?.stringValue,
+                item.payload["to"]?.stringValue
+            ]
+        }
+        .compactMap(Self.normalizedAgentId)
+        .filter { $0 != "user" && $0 != "system" }
+
+        for id in fallbackIds where seen.insert(id).inserted {
+            options.append(AgentFilterOption(
+                id: id,
+                label: id,
+                colorHex: nil,
+                status: nil,
+                unreadCount: 0,
+                errorCount: 0
+            ))
+        }
+        return options
+    }
+
+    private static func normalizedAgentId(_ id: String?) -> String? {
+        guard let value = id?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        return value
     }
 
     var canPauseOrchestrator: Bool {
@@ -537,6 +609,7 @@ final class SessionStore {
         selectedSessionId = sessionId
         selectedSidebarItem = sessionId
         selectedSidebarItems = [sessionId]
+        selectedTimelineEventId = nil
         isLoadingSelection = true
         currentWorkspaceRoot = (sessions + archivedSessions).first { $0.id == sessionId }?.workspaceRoot
         currentSessionDebugMode = nil
@@ -550,6 +623,7 @@ final class SessionStore {
 
     func selectAgent(_ agentId: String?) {
         selectedAgentId = agentId
+        selectedTimelineEventId = nil
         guard let agentId,
               let index = graph.nodes.firstIndex(where: { $0.id == agentId }) else { return }
         graph.nodes[index].unreadCount = 0
@@ -558,6 +632,14 @@ final class SessionStore {
         }) {
             daemon.sendRequest(method: "ackClientEvent", params: ["sessionId": graph.sessionId, "eventId": last.id])
         }
+    }
+
+    func selectTimelineEvent(_ eventId: String?) {
+        selectedTimelineEventId = eventId
+    }
+
+    func clearSelectedTimelineEvent() {
+        selectedTimelineEventId = nil
     }
 
     func setControlAgent(_ agentId: String?) {
@@ -585,12 +667,12 @@ final class SessionStore {
 
     func pauseOrchestrator() {
         guard let selectedSessionId else { return }
-        daemon.sendRequest(method: "pauseAgent", params: ["sessionId": selectedSessionId, "agentId": selectedControlAgentId])
+        daemon.sendRequest(method: "pauseAgent", params: ["sessionId": selectedSessionId, "agentId": orchestratorAgentId])
     }
 
     func resumeOrchestrator() {
         guard let selectedSessionId else { return }
-        daemon.sendRequest(method: "resumeAgent", params: ["sessionId": selectedSessionId, "agentId": selectedControlAgentId])
+        daemon.sendRequest(method: "resumeAgent", params: ["sessionId": selectedSessionId, "agentId": orchestratorAgentId])
     }
 
     func retryRecoveredJob(_ job: RecoveredSchedulerJob) {
@@ -600,7 +682,7 @@ final class SessionStore {
 
     func cancelOrchestrator() {
         guard let selectedSessionId else { return }
-        daemon.sendRequest(method: "cancelAgent", params: ["sessionId": selectedSessionId, "agentId": selectedControlAgentId])
+        daemon.sendRequest(method: "cancelAgent", params: ["sessionId": selectedSessionId, "agentId": orchestratorAgentId])
     }
 
     func archiveSessions(_ sessionIds: [String], archived: Bool = true) {
@@ -899,6 +981,7 @@ final class SessionStore {
         selectedSidebarItems = [Self.newSessionDraftId]
         selectedAgentId = nil
         controlAgentId = nil
+        selectedTimelineEventId = nil
         currentWorkspaceRoot = nil
         currentSessionDebugMode = nil
         isLoadingSelection = false
@@ -1086,6 +1169,7 @@ final class SessionStore {
         selectedSessionId = snapshot.sessionId
         selectedSidebarItem = snapshot.sessionId
         selectedSidebarItems = [snapshot.sessionId]
+        selectedTimelineEventId = nil
         subscribe(to: snapshot.sessionId)
         graph = snapshot.graph
         transcript = snapshot.transcript.map(transcriptItem)
@@ -1124,6 +1208,7 @@ final class SessionStore {
                     debugLogs = []
                     selectedAgentId = nil
                     controlAgentId = nil
+                    selectedTimelineEventId = nil
                     if let graphValue = event.payload["graph"],
                        let data = try? JSONEncoder().encode(graphValue),
                        let decoded = try? JSONDecoder().decode(GraphState.self, from: data) {
@@ -1158,6 +1243,7 @@ final class SessionStore {
             selectedSessionId = event.sessionId
             selectedSidebarItem = event.sessionId
             selectedSidebarItems = [event.sessionId]
+            selectedTimelineEventId = nil
             subscribe(to: event.sessionId)
             subscribeDebugLogs(to: event.sessionId)
             selectedAgentId = nil
@@ -1192,8 +1278,13 @@ final class SessionStore {
         case "handoff.created", "message.sent":
             guard let from = event.payload["from"]?.stringValue,
                   let to = event.payload["to"]?.stringValue else { return }
-            for index in graph.edges.indices where graph.edges[index].from == from && graph.edges[index].to == to {
+            let kind: EdgeKind = event.type == "message.sent" ? .message : .handoff
+            if let index = graph.edges.firstIndex(where: { $0.from == from && $0.to == to && $0.kind == kind }) {
                 graph.edges[index].active = true
+            } else if graph.nodes.contains(where: { $0.id == from }) && graph.nodes.contains(where: { $0.id == to }) {
+                let preferredId = event.payload["edgeId"]?.stringValue ?? "\(kind.rawValue)-\(from)-\(to)"
+                let edgeId = graph.edges.contains(where: { $0.id == preferredId }) ? "\(preferredId)-\(event.eventId)" : preferredId
+                graph.edges.append(AgentEdge(id: edgeId, from: from, to: to, kind: kind, active: true))
             }
         case "agent.message":
             if let agentId = event.agentId,
@@ -1404,19 +1495,24 @@ final class SessionStore {
                 AgentNode(id: "planner", roleId: "planner", label: "Planner", status: .idle, colorHex: "#5b8fdc", unreadCount: 1, errorCount: 0),
                 AgentNode(id: "implementor", roleId: "implementor", label: "Implementor", status: .completed, colorHex: "#60bf71", unreadCount: 0, errorCount: 0),
                 AgentNode(id: "reviewer", roleId: "reviewer", label: "Reviewer", status: .completed, colorHex: "#f19a3e", unreadCount: 1, errorCount: 0),
-                AgentNode(id: "qa", roleId: "qa", label: "QA", status: .completed, colorHex: "#f45d4f", unreadCount: 2, errorCount: 0)
+                AgentNode(id: "qa", roleId: "qa", label: "QA", status: .completed, colorHex: "#4aa6a6", unreadCount: 2, errorCount: 0)
             ],
             edges: [
                 AgentEdge(id: "orchestrator-planner", from: "orchestrator", to: "planner", kind: .handoff, active: false),
                 AgentEdge(id: "planner-implementor", from: "planner", to: "implementor", kind: .handoff, active: false),
-                AgentEdge(id: "implementor-reviewer", from: "implementor", to: "reviewer", kind: .message, active: false),
-                AgentEdge(id: "implementor-qa", from: "implementor", to: "qa", kind: .message, active: false)
+                AgentEdge(id: "implementor-reviewer", from: "implementor", to: "reviewer", kind: .handoff, active: false),
+                AgentEdge(id: "implementor-qa", from: "implementor", to: "qa", kind: .handoff, active: false),
+                AgentEdge(id: "message-reviewer-orchestrator", from: "reviewer", to: "orchestrator", kind: .message, active: true),
+                AgentEdge(id: "message-qa-orchestrator", from: "qa", to: "orchestrator", kind: .message, active: true)
             ]
         )
 
         transcript = [
             transcriptItem("mockup-user-prompt", agentId: "user", sender: "user", recipient: "orchestrator", type: "agent.message", text: "Audit a small debug workflow and produce visible transcript events.", offset: -770),
+            transcriptItem("mockup-orchestrator-working", agentId: "orchestrator", type: "agent.status", text: "Status: working", offset: -735, payload: ["status": .string("working")]),
             transcriptItem("mockup-orchestrator-goal", agentId: "orchestrator", type: "agent.message", text: "Debug orchestrator: Goal received. Planning and delegating to Implementor.", offset: -720),
+            transcriptItem("mockup-handoff-orchestrator-planner", agentId: "orchestrator", sender: "orchestrator", recipient: "planner", type: "handoff.created", text: "Handoff to Planner", offset: -705, payload: ["from": .string("orchestrator"), "to": .string("planner"), "edgeId": .string("orchestrator-planner")]),
+            transcriptItem("mockup-planner-working", agentId: "planner", type: "agent.status", text: "Status: working", offset: -700, payload: ["status": .string("working")]),
             transcriptItem("mockup-planner-plan", agentId: "planner", type: "agent.message", text: "Debug planner: Selected the workflow graph, confirmed responsibilities, and handed the plan back to Orchestrator.", offset: -690),
             transcriptItem(
                 "mockup-plan-created",
@@ -1426,6 +1522,9 @@ final class SessionStore {
                 offset: -650,
                 payload: ["planId": .string("temperature-converter-plan")]
             ),
+            transcriptItem("mockup-handoff-planner-implementor", agentId: "planner", sender: "planner", recipient: "implementor", type: "handoff.created", text: "Handoff to Implementor", offset: -620, payload: ["from": .string("planner"), "to": .string("implementor"), "edgeId": .string("planner-implementor")]),
+            transcriptItem("mockup-planner-idle", agentId: "planner", type: "agent.status", text: "Status: idle", offset: -615, payload: ["status": .string("idle")]),
+            transcriptItem("mockup-implementor-working", agentId: "implementor", type: "agent.status", text: "Status: working", offset: -610, payload: ["status": .string("working")]),
             transcriptItem(
                 "mockup-implementation-file",
                 agentId: "implementor",
@@ -1449,6 +1548,11 @@ final class SessionStore {
                 ]
             ),
             transcriptItem("mockup-implementor-message", agentId: "implementor", type: "agent.message", text: "Implemented temperature_converter.py with celsius/fahrenheit conversion helpers, a CLI, and unittest coverage.", offset: -500),
+            transcriptItem("mockup-handoff-implementor-reviewer", agentId: "implementor", sender: "implementor", recipient: "reviewer", type: "handoff.created", text: "Handoff to Reviewer", offset: -480, payload: ["from": .string("implementor"), "to": .string("reviewer"), "edgeId": .string("implementor-reviewer")]),
+            transcriptItem("mockup-handoff-implementor-qa", agentId: "implementor", sender: "implementor", recipient: "qa", type: "handoff.created", text: "Handoff to QA", offset: -470, payload: ["from": .string("implementor"), "to": .string("qa"), "edgeId": .string("implementor-qa")]),
+            transcriptItem("mockup-implementor-completed", agentId: "implementor", type: "agent.status", text: "Status: completed", offset: -465, payload: ["status": .string("completed")]),
+            transcriptItem("mockup-reviewer-working", agentId: "reviewer", type: "agent.status", text: "Status: working", offset: -455, payload: ["status": .string("working")]),
+            transcriptItem("mockup-qa-working", agentId: "qa", type: "agent.status", text: "Status: working", offset: -450, payload: ["status": .string("working")]),
             transcriptItem(
                 "mockup-test-run",
                 agentId: "qa",
@@ -1458,7 +1562,12 @@ final class SessionStore {
                 payload: ["callId": .string("test-run"), "toolName": .string("test run"), "status": .string("done")]
             ),
             transcriptItem("mockup-qa-message", agentId: "qa", type: "agent.message", text: "QA acceptance passed: python3 -m unittest test_temperature_converter.py completed successfully.", offset: -310),
+            transcriptItem("mockup-qa-completed", agentId: "qa", type: "agent.status", text: "Status: completed", offset: -300, payload: ["status": .string("completed")]),
             transcriptItem("mockup-reviewer-message", agentId: "reviewer", type: "agent.message", text: "Debug reviewer: Reviewed implementation and sent one follow-up to Implementor.", offset: -260),
+            transcriptItem("mockup-reviewer-completed", agentId: "reviewer", type: "agent.status", text: "Status: completed", offset: -250, payload: ["status": .string("completed")]),
+            transcriptItem("mockup-message-reviewer-orchestrator", agentId: "reviewer", sender: "reviewer", recipient: "orchestrator", type: "message.sent", text: "Review accepted.", offset: -230, payload: ["from": .string("reviewer"), "to": .string("orchestrator"), "text": .string("Review accepted.")]),
+            transcriptItem("mockup-message-qa-orchestrator", agentId: "qa", sender: "qa", recipient: "orchestrator", type: "message.sent", text: "QA passed.", offset: -220, payload: ["from": .string("qa"), "to": .string("orchestrator"), "text": .string("QA passed.")]),
+            transcriptItem("mockup-orchestrator-idle", agentId: "orchestrator", type: "agent.status", text: "Status: idle", offset: -200, payload: ["status": .string("idle")]),
             transcriptItem("mockup-complete", agentId: "orchestrator", type: "workflow.completed", text: "All acceptance checks passed. Workflow complete.", offset: -2)
         ]
         debugLogs = []
@@ -1468,6 +1577,7 @@ final class SessionStore {
         selectedSessionId = sessionId
         selectedSidebarItem = sessionId
         selectedSidebarItems = [sessionId]
+        selectedTimelineEventId = nil
         isComposingNewSession = false
         isCreatingSession = false
         isLoadingSelection = false

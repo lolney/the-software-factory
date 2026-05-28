@@ -10,15 +10,14 @@ struct GraphPanelView: View {
     private let nodeSize = CGSize(width: 152, height: 72)
     private let nodeGap = CGSize(width: 72, height: 70)
     private let contentPadding: CGFloat = 88
+    private let workflowGroupPadding = CGSize(width: 42, height: 42)
     private var graph: GraphState { store.graph }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            legend
             graphCanvas
                 .frame(minHeight: 320)
-            nodeList
         }
     }
 
@@ -28,6 +27,34 @@ struct GraphPanelView: View {
                 Text("Workflow Graph")
                     .font(.headline)
                 Spacer()
+                Menu {
+                    Button {
+                        store.selectAgent(nil)
+                    } label: {
+                        Label("All Agents", systemImage: store.selectedAgentId == nil ? "checkmark.circle.fill" : "circle")
+                    }
+                    if !store.transcriptAgentOptions.isEmpty {
+                        Divider()
+                    }
+                    ForEach(store.transcriptAgentOptions) { agent in
+                        Button {
+                            store.selectAgent(agent.id)
+                        } label: {
+                            HStack {
+                                Label(agent.label, systemImage: agent.id == store.selectedAgentId ? "checkmark.circle.fill" : statusIcon(agent.status ?? .idle))
+                                if agent.unreadCount > 0 {
+                                    Text("\(agent.unreadCount) unread")
+                                }
+                                if agent.errorCount > 0 {
+                                    Text("\(agent.errorCount) errors")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "person.2")
+                }
+                .help("Choose an agent to inspect")
                 Button {
                     zoom = max(0.55, zoom - 0.15)
                 } label: {
@@ -50,27 +77,11 @@ struct GraphPanelView: View {
             }
             HStack(spacing: 8) {
                 Label("Viewing: \(store.transcriptFilterLabel)", systemImage: "line.3.horizontal.decrease.circle")
-                Spacer()
-                Label("Controlling: \(store.selectedControlAgentLabel)", systemImage: "scope")
             }
             .font(.caption)
             .foregroundStyle(.secondary)
         }
         .padding([.top, .horizontal])
-    }
-
-    private var legend: some View {
-        HStack(spacing: 12) {
-            Label("Handoff", systemImage: "arrow.right")
-            Label("Message", systemImage: "ellipsis.message")
-            ForEach([AgentStatus.working, .waiting, .completed, .failed], id: \.self) { status in
-                Label(status.rawValue.capitalized, systemImage: statusIcon(status))
-                    .foregroundStyle(statusColor(status))
-            }
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal)
     }
 
     private var graphCanvas: some View {
@@ -79,7 +90,7 @@ struct GraphPanelView: View {
             let transformedPositions = layout.positions.mapValues { transform($0, contentSize: layout.contentSize, in: proxy.size) }
             ZStack {
                 Canvas { context, size in
-                    drawLanes(context: &context, size: size, layout: layout)
+                    drawWorkflowGroups(context: &context, size: size, layout: layout)
                     drawEdges(context: &context, size: size, layout: layout)
                     drawNodes(context: &context, size: size, layout: layout)
                 }
@@ -111,47 +122,6 @@ struct GraphPanelView: View {
         }
     }
 
-    private var nodeList: some View {
-        List {
-            ForEach(Array(graph.nodes.enumerated()), id: \.element.id) { _, node in
-                Button {
-                    store.selectAgent(node.id)
-                } label: {
-                    HStack {
-                        Circle()
-                            .fill(Color(hex: node.colorHex))
-                            .frame(width: 9, height: 9)
-                        Image(systemName: statusIcon(node.status))
-                            .foregroundStyle(statusColor(node.status))
-                            .frame(width: 14)
-                        Text(node.label)
-                        Spacer()
-                        if node.unreadCount > 0 {
-                            Text("\(node.unreadCount)")
-                                .font(.caption2.weight(.bold))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(.blue.opacity(0.18), in: Capsule())
-                        }
-                        if node.errorCount > 0 {
-                            Text("!\(node.errorCount)")
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(.red)
-                        }
-                        if node.id == store.selectedControlAgentId {
-                            Text("control")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(Color.accentColor)
-                        }
-                        Text(node.status.rawValue)
-                            .foregroundStyle(statusColor(node.status))
-                    }
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
     private var panGesture: some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { value in
@@ -180,6 +150,8 @@ struct GraphPanelView: View {
         let bucketCounts = Dictionary(grouping: graph.edges, by: edgeBucketKey).mapValues(\.count)
         var endpointCounts: [String: Int] = [:]
         var edgeIndexes: [String: Int] = [:]
+        var upwardMessageRouteIndex = 0
+        var downwardFanoutRouteIndexes: [String: Int] = [:]
         let visibleNodeSize = scaledNodeSize
         for edge in graph.edges {
             guard let startCenter = layout.positions[edge.from],
@@ -192,7 +164,17 @@ struct GraphPanelView: View {
             let bucket = edgeBucketKey(edge)
             let bucketIndex = edgeIndexes[bucket, default: 0]
             edgeIndexes[bucket] = bucketIndex + 1
-            let route = edgeRoute(from: start, to: end, offset: CGFloat(bucketIndex) - CGFloat((bucketCounts[bucket] ?? 1) - 1) / 2)
+            var routeOffset = CGFloat(bucketIndex) - CGFloat((bucketCounts[bucket] ?? 1) - 1) / 2
+            if edge.kind == .message, abs(start.x - end.x) <= 24, start.y > end.y {
+                routeOffset += CGFloat(upwardMessageRouteIndex)
+                upwardMessageRouteIndex += 1
+            }
+            if abs(start.x - end.x) <= 24, end.y > start.y, abs(start.y - end.y) > nodeGap.height * zoom * 1.5 {
+                let routeIndex = downwardFanoutRouteIndexes[edge.from, default: 0]
+                routeOffset += CGFloat(routeIndex + 1)
+                downwardFanoutRouteIndexes[edge.from] = routeIndex + 1
+            }
+            let route = edgeRoute(from: start, to: end, offset: routeOffset)
             let style = StrokeStyle(lineWidth: edge.active ? 2.5 : 1.5, dash: edge.kind == .message ? [5, 5] : [])
             context.stroke(route.path, with: .color(edge.active ? .accentColor : .secondary), style: style)
             drawArrowhead(context: context, from: route.arrowFrom, to: end, active: edge.active)
@@ -202,21 +184,24 @@ struct GraphPanelView: View {
         }
     }
 
-    private func drawLanes(context: inout GraphicsContext, size: CGSize, layout: GraphLayout) {
-        for lane in layout.lanes {
-            let minPoint = transform(CGPoint(x: lane.rect.minX, y: lane.rect.minY), contentSize: layout.contentSize, in: size)
-            let maxPoint = transform(CGPoint(x: lane.rect.maxX, y: lane.rect.maxY), contentSize: layout.contentSize, in: size)
+    private func drawWorkflowGroups(context: inout GraphicsContext, size: CGSize, layout: GraphLayout) {
+        for group in layout.workflowGroups {
+            let minPoint = transform(CGPoint(x: group.rect.minX, y: group.rect.minY), contentSize: layout.contentSize, in: size)
+            let maxPoint = transform(CGPoint(x: group.rect.maxX, y: group.rect.maxY), contentSize: layout.contentSize, in: size)
             let rect = CGRect(
                 x: min(minPoint.x, maxPoint.x),
                 y: min(minPoint.y, maxPoint.y),
                 width: abs(maxPoint.x - minPoint.x),
                 height: abs(maxPoint.y - minPoint.y)
             )
-            context.fill(Path(roundedRect: rect, cornerRadius: 10), with: .color(.secondary.opacity(0.045)))
-            context.stroke(Path(roundedRect: rect, cornerRadius: 10), with: .color(.secondary.opacity(0.12)), lineWidth: 1)
+            let fillOpacity = group.level == 0 ? 0.04 : 0.05
+            let strokeOpacity = group.level == 0 ? 0.12 : 0.13
+            let cornerRadius: CGFloat = group.level == 0 ? 14 : 11
+            context.fill(Path(roundedRect: rect, cornerRadius: cornerRadius), with: .color(.secondary.opacity(fillOpacity)))
+            context.stroke(Path(roundedRect: rect, cornerRadius: cornerRadius), with: .color(.secondary.opacity(strokeOpacity)), lineWidth: group.level == 0 ? 1 : 0.8)
             context.draw(
-                Text(lane.label).font(.caption2.weight(.semibold)).foregroundStyle(.secondary),
-                at: CGPoint(x: rect.minX + 12, y: rect.minY + 12),
+                Text(group.label).font(.caption.weight(.semibold)).foregroundStyle(.secondary.opacity(group.level == 0 ? 0.82 : 0.74)),
+                at: CGPoint(x: rect.minX + 14, y: rect.minY + 14),
                 anchor: .leading
             )
         }
@@ -230,8 +215,8 @@ struct GraphPanelView: View {
             let rect = nodeRect(center: center, size: visibleNodeSize)
             let roleColor = Color(hex: node.colorHex)
             let stateColor = statusColor(node.status)
-            context.fill(Path(roundedRect: rect, cornerRadius: 8), with: .color(roleColor.opacity(0.14)))
-            context.stroke(Path(roundedRect: rect, cornerRadius: 8), with: .color(stateColor), lineWidth: node.status == .idle ? 1.5 : 2.5)
+            context.fill(Path(roundedRect: rect, cornerRadius: 8), with: .color(roleColor.opacity(0.09)))
+            context.stroke(Path(roundedRect: rect, cornerRadius: 8), with: .color(stateColor.opacity(0.78)), lineWidth: node.status == .idle ? 1.2 : 2)
             if node.id == store.selectedAgentId {
                 context.stroke(Path(roundedRect: rect.insetBy(dx: -4, dy: -4), cornerRadius: 10), with: .color(.accentColor), lineWidth: 2.5)
             }
@@ -246,7 +231,7 @@ struct GraphPanelView: View {
     }
 
     private func layout(size: CGSize) -> GraphLayout {
-        guard !graph.nodes.isEmpty else { return GraphLayout(contentSize: size, positions: [:], lanes: []) }
+        guard !graph.nodes.isEmpty else { return GraphLayout(contentSize: size, positions: [:], workflowGroups: []) }
         let groups = groupedNodes()
         let cell = CGSize(width: nodeSize.width + nodeGap.width, height: nodeSize.height + nodeGap.height)
         let availableColumns = max(1, Int(floor(max(cell.width, size.width / max(zoom, 0.1) - contentPadding * 2) / cell.width)))
@@ -261,7 +246,6 @@ struct GraphPanelView: View {
             height: max(size.height / max(zoom, 0.1), CGFloat(totalRows) * cell.height + contentPadding * 2)
         )
         var positions: [String: CGPoint] = [:]
-        var lanes: [GraphLane] = []
         var rowOffset = 0
         for (groupIndex, group) in groups.enumerated() {
             let columns = groupColumns[groupIndex]
@@ -269,15 +253,6 @@ struct GraphPanelView: View {
             let groupWidth = CGFloat(columns) * cell.width
             let xOffset = max(contentPadding, (contentSize.width - groupWidth) / 2)
             let y = contentPadding + cell.height * CGFloat(rowOffset) + nodeSize.height / 2
-            lanes.append(GraphLane(
-                label: group.label,
-                rect: CGRect(
-                    x: contentPadding / 2,
-                    y: y - cell.height / 2 + 10,
-                    width: contentSize.width - contentPadding,
-                    height: CGFloat(rows) * cell.height - 20
-                )
-            ))
             for (index, node) in group.nodes.enumerated() {
                 let row = index / columns
                 let column = index % columns
@@ -288,7 +263,11 @@ struct GraphPanelView: View {
             }
             rowOffset += rows
         }
-        return GraphLayout(contentSize: contentSize, positions: positions, lanes: lanes)
+        return GraphLayout(
+            contentSize: contentSize,
+            positions: positions,
+            workflowGroups: workflowGroups(contentSize: contentSize, positions: positions)
+        )
     }
 
     private func groupedNodes() -> [GraphNodeGroup] {
@@ -316,6 +295,71 @@ struct GraphPanelView: View {
         }
     }
 
+    private func workflowGroups(contentSize: CGSize, positions: [String: CGPoint]) -> [GraphWorkflowGroup] {
+        guard !positions.isEmpty else { return [] }
+        var groups: [GraphWorkflowGroup] = [
+            GraphWorkflowGroup(
+                label: "Session",
+                rect: boundingRect(for: Array(positions.keys), positions: positions, padding: CGSize(width: 76, height: 72))
+                    .union(CGRect(x: contentPadding / 2, y: contentPadding / 2, width: contentSize.width - contentPadding, height: contentSize.height - contentPadding)),
+                level: 0
+            )
+        ]
+
+        let memberships = workflowMemberships()
+        var explicitlyGroupedNodeIds = Set<String>()
+        if !memberships.isEmpty {
+            let grouped = Dictionary(grouping: memberships) { entry in entry.value.key }
+            for (key, entries) in grouped.sorted(by: { $0.key < $1.key }) {
+                let ids = entries.map(\.key).filter { positions[$0] != nil }
+                guard !ids.isEmpty else { continue }
+                explicitlyGroupedNodeIds.formUnion(ids)
+                groups.append(GraphWorkflowGroup(
+                    label: entries.first?.value.label ?? key,
+                    rect: boundingRect(for: ids, positions: positions, padding: workflowGroupPadding),
+                    level: 1
+                ))
+            }
+        }
+        for group in defaultWorkflowGroups() {
+            let ids = group.nodeIds
+                .filter { positions[$0] != nil }
+                .filter { !explicitlyGroupedNodeIds.contains($0) }
+            guard !ids.isEmpty else { continue }
+            groups.append(GraphWorkflowGroup(
+                label: group.label,
+                rect: boundingRect(for: ids, positions: positions, padding: workflowGroupPadding),
+                level: 1
+            ))
+        }
+
+        return groups
+    }
+
+    private func defaultWorkflowGroups() -> [(label: String, nodeIds: [String])] {
+        [
+            ("Planning", graph.nodes.filter { matches($0, terms: ["orchestrator", "planner", "plan"]) }.map(\.id)),
+            ("Implementation", graph.nodes.filter { matches($0, terms: ["implement", "build", "engineer"]) }.map(\.id)),
+            ("Review / QA", graph.nodes.filter { matches($0, terms: ["review", "qa", "test", "quality"]) }.map(\.id))
+        ]
+    }
+
+    private func matches(_ node: AgentNode, terms: [String]) -> Bool {
+        let haystack = "\(node.id) \(node.roleId) \(node.label)".lowercased()
+        return terms.contains { haystack.contains($0) }
+    }
+
+    private func boundingRect(for nodeIds: [String], positions: [String: CGPoint], padding: CGSize) -> CGRect {
+        let rects = nodeIds.compactMap { nodeId -> CGRect? in
+            guard let position = positions[nodeId] else { return nil }
+            return nodeRect(center: position, size: nodeSize)
+        }
+        guard let first = rects.first else { return .zero }
+        return rects.dropFirst()
+            .reduce(first) { $0.union($1) }
+            .insetBy(dx: -padding.width, dy: -padding.height)
+    }
+
     private func workflowMemberships() -> [String: WorkflowMembership] {
         var memberships: [String: WorkflowMembership] = [:]
         var workflowCounts: [String: Int] = [:]
@@ -325,13 +369,12 @@ struct GraphPanelView: View {
                   let nodeMap = event.payload["nodeMap"]?.objectValue else { continue }
             workflowCounts[workflowId, default: 0] += 1
             let ordinal = workflowCounts[workflowId, default: 1]
-            let callerAgentId = event.payload["callerAgentId"]?.stringValue
             let membership = WorkflowMembership(
                 key: workflowInstanceId,
                 label: workflowLaneLabel(workflowId: workflowId, ordinal: ordinal, instanceId: workflowInstanceId)
             )
             for value in nodeMap.values {
-                guard let agentId = value.stringValue, agentId != callerAgentId else { continue }
+                guard let agentId = value.stringValue else { continue }
                 memberships[agentId] = membership
             }
         }
@@ -388,6 +431,31 @@ struct GraphPanelView: View {
     private func edgeRoute(from start: CGPoint, to end: CGPoint, offset: CGFloat) -> (path: Path, arrowFrom: CGPoint) {
         var path = Path()
         path.move(to: start)
+        if abs(start.x - end.x) <= 24, abs(start.y - end.y) > 24, start.y > end.y {
+            let sideX = start.x + scaledNodeSize.width / 2 + 24 + abs(offset) * 10
+            let beforeEnd = CGPoint(x: sideX, y: end.y)
+            path.addLine(to: CGPoint(x: sideX, y: start.y))
+            path.addLine(to: beforeEnd)
+            path.addLine(to: end)
+            return (path, beforeEnd)
+        }
+        if abs(start.x - end.x) <= 24, end.y > start.y, abs(start.y - end.y) > nodeGap.height * zoom * 1.5 {
+            let sideX = start.x - scaledNodeSize.width / 2 - 24 - abs(offset) * 10
+            let beforeEnd = CGPoint(x: sideX, y: end.y)
+            path.addLine(to: CGPoint(x: sideX, y: start.y))
+            path.addLine(to: beforeEnd)
+            path.addLine(to: end)
+            return (path, beforeEnd)
+        }
+        if abs(start.y - end.y) <= 24, abs(start.x - end.x) > 24, abs(offset) > 0.1 {
+            let direction: CGFloat = offset >= 0 ? 1 : -1
+            let midY = start.y + direction * (20 + abs(offset) * 12)
+            let beforeEnd = CGPoint(x: end.x, y: midY)
+            path.addLine(to: CGPoint(x: start.x, y: midY))
+            path.addLine(to: beforeEnd)
+            path.addLine(to: end)
+            return (path, beforeEnd)
+        }
         guard abs(start.x - end.x) > 24, abs(start.y - end.y) > 24 else {
             path.addLine(to: end)
             return (path, start)
@@ -441,7 +509,7 @@ struct GraphPanelView: View {
     }
 
     private func edgeBucketKey(_ edge: AgentEdge) -> String {
-        [edge.from, edge.to].sorted().joined(separator: "<->") + ":\(edge.kind.rawValue)"
+        [edge.from, edge.to].sorted().joined(separator: "<->")
     }
 
     private func shortLabel(_ label: String, maxLength: Int = 18) -> String {
@@ -456,9 +524,6 @@ struct GraphPanelView: View {
         if node.errorCount > 0 {
             parts.append("\(node.errorCount) errors")
         }
-        if node.id == store.selectedControlAgentId {
-            parts.append("control agent")
-        }
         return parts.joined(separator: ", ")
     }
 }
@@ -466,12 +531,13 @@ struct GraphPanelView: View {
 private struct GraphLayout {
     let contentSize: CGSize
     let positions: [String: CGPoint]
-    let lanes: [GraphLane]
+    let workflowGroups: [GraphWorkflowGroup]
 }
 
-private struct GraphLane {
+private struct GraphWorkflowGroup {
     let label: String
     let rect: CGRect
+    let level: Int
 }
 
 private struct GraphNodeGroup {

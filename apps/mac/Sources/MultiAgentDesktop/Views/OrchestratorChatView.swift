@@ -2,6 +2,7 @@ import SwiftUI
 
 struct OrchestratorChatView: View {
     @Bindable var store: SessionStore
+    var openInspector: () -> Void = {}
     @State private var timelineItems: [TimelineItem] = []
     @State private var timelineIsTruncated = false
     @State private var scrollWorkItem: DispatchWorkItem?
@@ -29,6 +30,39 @@ struct OrchestratorChatView: View {
 
     private var transcriptFilterVersion: String {
         "\(store.transcriptSearchText)|\(store.selectedAgentId ?? "")"
+    }
+
+    private var shouldShowBranchingTimeline: Bool {
+        store.selectedAgentId == nil
+            && store.transcriptSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && branchingAgentCount > 1
+    }
+
+    private var branchingTranscript: [TranscriptItem] {
+        Array(filteredTranscript.suffix(timelineRenderLimit))
+    }
+
+    private var branchingAgentCount: Int {
+        if store.graph.nodes.count > 1 { return store.graph.nodes.count }
+        let ids = filteredTranscript.flatMap { item in
+            [
+                item.agentId,
+                item.sender,
+                item.recipient,
+                item.payload["from"]?.stringValue,
+                item.payload["to"]?.stringValue
+            ]
+        }
+        .compactMap(normalizedAgentId)
+        .filter { $0 != "user" && $0 != "system" }
+        return Set(ids).count
+    }
+
+    private func normalizedAgentId(_ id: String?) -> String? {
+        guard let value = id?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        return value
     }
 
     var body: some View {
@@ -99,9 +133,23 @@ struct OrchestratorChatView: View {
                                     .foregroundStyle(.secondary)
                                     .padding(.horizontal, 4)
                             }
-                            ForEach(timelineItems) { item in
-                                TimelineRow(item: item, color: color(for: item.primaryAgentId))
-                                    .id(item.id)
+                            if shouldShowBranchingTimeline {
+                                AgentBranchingTimelineView(
+                                    graph: store.graph,
+                                    metadataTranscript: filteredTranscript,
+                                    visibleTranscript: branchingTranscript,
+                                    colorForAgent: color(for:),
+                                    selectEvent: { eventId in
+                                        store.selectTimelineEvent(eventId)
+                                        openInspector()
+                                    }
+                                )
+                                .id("branching-agent-timeline")
+                            } else {
+                                ForEach(timelineItems) { item in
+                                    TimelineRow(item: item, color: color(for: item.primaryAgentId))
+                                        .id(item.id)
+                                }
                             }
                         }
                         Color.clear
@@ -199,8 +247,22 @@ private struct TranscriptTopBar: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 24) {
-                Button {
-                    store.selectAgent(nil)
+                Menu {
+                    Button {
+                        store.selectAgent(nil)
+                    } label: {
+                        Label("All Agents", systemImage: store.selectedAgentId == nil ? "checkmark.circle.fill" : "circle")
+                    }
+                    if !store.transcriptAgentOptions.isEmpty {
+                        Divider()
+                    }
+                    ForEach(store.transcriptAgentOptions) { agent in
+                        Button {
+                            store.selectAgent(agent.id)
+                        } label: {
+                            Label(agent.label, systemImage: agent.id == store.selectedAgentId ? "checkmark.circle.fill" : "circle")
+                        }
+                    }
                 } label: {
                     HStack(spacing: 5) {
                         Text(store.transcriptFilterLabel)
@@ -240,35 +302,6 @@ private struct TranscriptTopBar: View {
                         .stroke(Color(.sRGB, white: 0.98, opacity: 1))
                 }
                 .padding(.trailing, 12)
-
-                Button {
-                    followLiveTail.toggle()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "ellipsis")
-                        Text("Follow")
-                            .font(.system(size: 14))
-                    }
-                    .frame(width: 82, height: 32)
-                }
-                .buttonStyle(.plain)
-                .background(Color(.sRGB, red: 250 / 255, green: 250 / 255, blue: 250 / 255, opacity: 1), in: RoundedRectangle(cornerRadius: 8))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color(.sRGB, white: 0.96, opacity: 1))
-                }
-                .padding(.trailing, 8)
-                .disabled(store.isTranscriptFiltered)
-                .help(store.isTranscriptFiltered ? "Clear transcript filters to follow live events" : "Follow new transcript events")
-
-                HStack(spacing: 7) {
-                    Circle()
-                        .fill(store.connectionStatus == "Connected" ? .green.opacity(0.90) : .secondary)
-                        .frame(width: 7, height: 7)
-                    Text(store.connectionStatus == "Connected" ? "Connected" : store.connectionStatus)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.primary.opacity(0.42))
-                }
 
                 Spacer(minLength: 0)
             }
@@ -356,36 +389,32 @@ private struct SessionStateStrip: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            MetricCell(title: "Agents", value: agentSummary, width: 97)
-            MetricCell(title: "Queue", value: "\(queuedWorkCount)", width: 92, sparkline: true, sparklineValues: [0.05, 0.05, 0.06, 0.06, 0.62, 0.08, 0.18, 0.08, 0.07, 0.07])
-            MetricCell(title: "Last action", value: lastActionAge, width: 106)
-            MetricCell(title: "Failures", value: nil, width: 86, statusColor: store.sessionErrorCount > 0 ? .orange : mockupStatusGreen)
-            MetricCell(title: "Changed files", value: "\(store.touchedWorkspaceFiles.count)", width: 112, sparkline: !store.touchedWorkspaceFiles.isEmpty, sparklineValues: [0.05, 0.05, 0.06, 0.08, 0.55, 0.08, 0.12, 0.5, 0.08, 0.6, 0.08], valueOffsetX: 0)
-            MetricCell(title: "Mode", value: "Auto", width: 96, showsChevron: true)
-            MetricCell(title: "Runtime", value: runtimeLabel, width: 111, valueOffsetX: 0)
-            MetricCell(
-                title: "Connection",
-                value: store.connectionStatus == "Connected" ? "Local" : store.connectionStatus,
-                width: 116,
-                statusColor: store.connectionStatus == "Connected" ? mockupStatusGreen : .secondary,
-                valueOffsetX: 0
-            )
+        GeometryReader { proxy in
+            let metricWidth = max(86, (proxy.size.width - 6) / 7)
+            HStack(spacing: 0) {
+                MetricCell(title: "Agents", value: agentSummary, width: metricWidth)
+                metricDivider
+                MetricCell(title: "Queue", value: "\(queuedWorkCount)", width: metricWidth, sparkline: true, sparklineValues: [0.05, 0.05, 0.06, 0.06, 0.62, 0.08, 0.18, 0.08, 0.07, 0.07])
+                metricDivider
+                MetricCell(title: "Last action", value: lastActionAge, width: metricWidth)
+                metricDivider
+                MetricCell(title: "Failures", value: nil, width: metricWidth, statusColor: store.sessionErrorCount > 0 ? .orange : mockupStatusGreen)
+                metricDivider
+                MetricCell(title: "Changed files", value: "\(store.touchedWorkspaceFiles.count)", width: metricWidth, sparkline: !store.touchedWorkspaceFiles.isEmpty, sparklineValues: [0.05, 0.05, 0.06, 0.08, 0.55, 0.08, 0.12, 0.5, 0.08, 0.6, 0.08], valueOffsetX: 0)
+                metricDivider
+                MetricCell(title: "Mode", value: "Auto", width: metricWidth, showsChevron: true)
+                metricDivider
+                MetricCell(title: "Runtime", value: runtimeLabel, width: metricWidth, valueOffsetX: 0)
+            }
         }
         .frame(height: 56)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(alignment: .leading) {
-            ForEach(metricDividerOffsets, id: \.self) { offset in
-                Rectangle()
-                    .fill(.separator.opacity(0.16))
-                    .frame(width: 1, height: 30)
-                    .offset(x: offset)
-            }
-        }
     }
 
-    private var metricDividerOffsets: [CGFloat] {
-        [104, 219, 340, 441, 568, 675, 785]
+    private var metricDivider: some View {
+        Rectangle()
+            .fill(.separator.opacity(0.16))
+            .frame(width: 1, height: 30)
     }
 }
 
@@ -436,6 +465,282 @@ private struct MetricCell: View {
 
         }
         .frame(width: width)
+    }
+}
+
+private struct AgentBranchingTimelineView: View {
+    let graph: GraphState
+    let metadataTranscript: [TranscriptItem]
+    let visibleTranscript: [TranscriptItem]
+    let colorForAgent: (String?) -> Color
+    let selectEvent: (String) -> Void
+    @State private var hoveredEventId: String?
+
+    private func canvasHeight(for projection: BranchingTimelineProjection) -> CGFloat {
+        max(540, CGFloat(max(projection.events.count, 10)) * 38)
+    }
+
+    var body: some View {
+        let projection = BranchingTimelineProjection(
+            graph: graph,
+            metadataTranscript: metadataTranscript,
+            visibleTranscript: visibleTranscript
+        )
+        let lanes = projection.lanes
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Today")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 4)
+            GeometryReader { proxy in
+                ZStack(alignment: .topLeading) {
+                    Canvas { context, size in
+                        drawTimeline(context: &context, size: size, projection: projection)
+                    }
+                    ForEach(lanes) { lane in
+                        Text(lane.label)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary.opacity(0.78))
+                            .lineLimit(1)
+                            .frame(width: laneWidth(in: proxy.size.width, laneCount: lanes.count), alignment: .leading)
+                            .position(
+                                x: xPosition(for: lane.index, width: proxy.size.width, laneCount: lanes.count) + 74,
+                                y: max(16, yPosition(for: lane.createdAt, in: projection, height: proxy.size.height) - 18)
+                            )
+                    }
+                    ForEach(projection.events) { event in
+                        TimelineIconNode(event: event, color: colorForAgent(event.agentId)) {
+                            selectEvent(event.id)
+                        } setHovering: { isHovering in
+                            hoveredEventId = isHovering ? event.id : (hoveredEventId == event.id ? nil : hoveredEventId)
+                        }
+                            .position(
+                                x: xPosition(for: event.laneIndex, width: proxy.size.width, laneCount: lanes.count),
+                                y: yPosition(for: event.timestamp, in: projection, height: proxy.size.height) + event.visualOffset
+                            )
+                    }
+                    if let hoveredEvent = projection.events.first(where: { $0.id == hoveredEventId }) {
+                        TimelineEventTooltip(event: hoveredEvent)
+                            .position(
+                                x: tooltipX(
+                                    for: xPosition(for: hoveredEvent.laneIndex, width: proxy.size.width, laneCount: lanes.count),
+                                    width: proxy.size.width
+                                ),
+                                y: max(54, yPosition(for: hoveredEvent.timestamp, in: projection, height: proxy.size.height) + hoveredEvent.visualOffset - 48)
+                            )
+                            .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)))
+                            .allowsHitTesting(false)
+                            .zIndex(30)
+                    }
+                }
+            }
+            .frame(height: canvasHeight(for: projection))
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Concurrent agent timeline")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func drawTimeline(context: inout GraphicsContext, size: CGSize, projection: BranchingTimelineProjection) {
+        let lanes = projection.lanes
+        guard !lanes.isEmpty else { return }
+        let startY = yPosition(for: projection.startDate, in: projection, height: size.height)
+        let endY = yPosition(for: projection.endDate, in: projection, height: size.height)
+
+        for lane in lanes {
+            let x = xPosition(for: lane.index, width: size.width, laneCount: lanes.count)
+            let createdY = yPosition(for: lane.createdAt, in: projection, height: size.height)
+            var idlePath = Path()
+            idlePath.move(to: CGPoint(x: x, y: max(startY, createdY)))
+            idlePath.addLine(to: CGPoint(x: x, y: endY))
+            context.stroke(idlePath, with: .color(colorForAgent(lane.id).opacity(0.18)), lineWidth: 1.6)
+
+            for range in lane.activeRanges {
+                guard range.end >= projection.startDate, range.start <= projection.endDate else { continue }
+                let activeStartY = max(createdY, yPosition(for: range.start, in: projection, height: size.height))
+                let activeEndY = max(activeStartY + 1, yPosition(for: range.end, in: projection, height: size.height))
+                var activePath = Path()
+                activePath.move(to: CGPoint(x: x, y: activeStartY))
+                activePath.addLine(to: CGPoint(x: x, y: activeEndY))
+                context.stroke(activePath, with: .color(colorForAgent(lane.id).opacity(0.82)), style: StrokeStyle(lineWidth: 5, lineCap: .round))
+            }
+        }
+
+        for link in projection.links {
+            let fromX = xPosition(for: link.fromLaneIndex, width: size.width, laneCount: lanes.count)
+            let toX = xPosition(for: link.toLaneIndex, width: size.width, laneCount: lanes.count)
+            let y = yPosition(for: link.timestamp, in: projection, height: size.height) + link.visualOffset
+            var path = Path()
+            if link.kind == .message {
+                let midX = (fromX + toX) / 2
+                let lift = min(18, max(8, abs(toX - fromX) * 0.035))
+                path.move(to: CGPoint(x: fromX, y: y))
+                path.addCurve(
+                    to: CGPoint(x: toX, y: y),
+                    control1: CGPoint(x: midX, y: y + lift),
+                    control2: CGPoint(x: midX, y: y + lift)
+                )
+                context.stroke(
+                    path,
+                    with: .color(Color.secondary.opacity(0.46)),
+                    style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round, dash: [4, 4])
+                )
+            } else {
+                path.move(to: CGPoint(x: fromX, y: y))
+                let midX = (fromX + toX) / 2
+                path.addCurve(
+                    to: CGPoint(x: toX, y: y),
+                    control1: CGPoint(x: midX, y: y - 14),
+                    control2: CGPoint(x: midX, y: y - 14)
+                )
+                context.stroke(
+                    path,
+                    with: .color(colorForAgent(link.toAgentId).opacity(0.42)),
+                    style: StrokeStyle(lineWidth: 1.35, lineCap: .round, lineJoin: .round)
+                )
+            }
+        }
+    }
+
+    private func laneWidth(in width: CGFloat, laneCount: Int) -> CGFloat {
+        guard laneCount > 1 else { return min(160, width) }
+        return min(120, max(64, (width - 72) / CGFloat(laneCount)))
+    }
+
+    private func xPosition(for index: Int, width: CGFloat, laneCount: Int) -> CGFloat {
+        guard laneCount > 1 else { return width / 2 }
+        let available = max(width - 72, 1)
+        return 36 + available * CGFloat(index) / CGFloat(laneCount - 1)
+    }
+
+    private func yPosition(for date: Date, in projection: BranchingTimelineProjection, height: CGFloat) -> CGFloat {
+        let top: CGFloat = 54
+        let bottom: CGFloat = 34
+        let span = max(1, projection.endDate.timeIntervalSince(projection.startDate))
+        let progress = max(0, min(1, date.timeIntervalSince(projection.startDate) / span))
+        return top + (height - top - bottom) * progress
+    }
+
+    private func tooltipX(for x: CGFloat, width: CGFloat) -> CGFloat {
+        min(max(x, 118), max(118, width - 118))
+    }
+}
+
+private struct TimelineIconNode: View {
+    let event: BranchingTimelineEvent
+    let color: Color
+    let action: () -> Void
+    let setHovering: (Bool) -> Void
+
+    var body: some View {
+        Button {
+            setHovering(false)
+            action()
+        } label: {
+            actionMarker
+            .frame(width: 32, height: 32)
+            .contentShape(Rectangle())
+        }
+        .frame(width: 32, height: 32)
+        .contentShape(Rectangle())
+        .buttonStyle(.plain)
+        .onHover(perform: setHovering)
+        .accessibilityLabel(event.helpText)
+    }
+
+    private var creationMarker: some View {
+        Image(systemName: event.systemImage)
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(color.opacity(0.76))
+            .frame(width: 22, height: 22)
+            .background(Color(.sRGB, white: 0.995, opacity: 0.96), in: Circle())
+            .overlay {
+                Circle()
+                    .stroke(color.opacity(0.24), lineWidth: 1)
+            }
+            .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(color.opacity(0.38))
+                .frame(width: 1.5, height: 18)
+                    .offset(y: 16)
+            }
+    }
+
+    @ViewBuilder
+    private var actionMarker: some View {
+        if event.isCreation {
+            creationMarker
+        } else {
+        Image(systemName: event.systemImage)
+            .font(.system(size: iconSize, weight: event.isStatus ? .regular : .semibold))
+            .foregroundStyle(iconForeground)
+            .frame(width: nodeSize, height: nodeSize)
+            .background(iconBackground, in: Circle())
+            .overlay {
+                Circle()
+                    .stroke(color.opacity(strokeOpacity), lineWidth: event.isStatus ? 0.8 : 1)
+            }
+            .shadow(color: .black.opacity(event.isStatus ? 0 : 0.045), radius: 1.5, y: 1)
+        }
+    }
+
+    private var nodeSize: CGFloat {
+        return event.isStatus ? 16 : 22
+    }
+
+    private var iconSize: CGFloat {
+        if event.isStatus { return 8 }
+        return 10.5
+    }
+
+    private var strokeOpacity: Double {
+        if event.isStatus { return 0.16 }
+        return 0.18
+    }
+
+    private var iconForeground: Color {
+        if event.isStatus { return color.opacity(0.42) }
+        if event.linkKind == .message { return .secondary }
+        return color.opacity(0.72)
+    }
+
+    private var iconBackground: Color {
+        if event.isStatus { return Color(.sRGB, white: 1, opacity: 0.74) }
+        return Color(.sRGB, white: 0.995, opacity: 0.96)
+    }
+}
+
+private struct TimelineEventTooltip: View {
+    let event: BranchingTimelineEvent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: event.systemImage)
+                    .font(.caption2.weight(.semibold))
+                Text(event.title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+            }
+            if !event.detail.isEmpty && event.detail != event.title {
+                Text(event.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Text("Click for details")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .frame(width: 220, alignment: .leading)
+        .background(Color(.windowBackgroundColor).opacity(0.98), in: RoundedRectangle(cornerRadius: 7))
+        .overlay {
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(.separator.opacity(0.45))
+        }
+        .shadow(color: .black.opacity(0.16), radius: 10, y: 4)
     }
 }
 
@@ -630,54 +935,6 @@ private struct GroupedEventRow: View {
                     .stroke(.separator.opacity(0.45))
             }
         }
-    }
-}
-
-private func timelineCompactTitle(for item: TranscriptItem) -> String {
-    switch item.type {
-    case "agent.created":
-        return "\(item.sender) created"
-    case "agent.status":
-        return "\(item.sender) \(item.payload["status"]?.stringValue ?? item.text.replacingOccurrences(of: "Status: ", with: ""))"
-    case "agent.reasoning":
-        return "\(item.sender) reasoning"
-    case "agent.tool_result":
-        let tool = item.payload["toolName"]?.stringValue ?? "tool"
-        let status = item.payload["status"]?.stringValue ?? "done"
-        return "\(tool) \(status)"
-    case "handoff.created":
-        return "\(item.sender) handed off to \(item.recipient ?? "agent")"
-    case "actor.mailbox.enqueued":
-        return "\(item.payload["mailbox"]?.stringValue ?? item.sender) mailbox received \(item.payload["messageType"]?.stringValue ?? "message")"
-    case "actor.mailbox.dequeued":
-        return "\(item.payload["mailbox"]?.stringValue ?? item.sender) mailbox dequeued message"
-    case "workflow.instantiated":
-        return "\(item.sender) instantiated workflow"
-    case "workflow.completed":
-        return item.payload["message"]?.stringValue ?? "workflow completed"
-    case "workflow.stopped":
-        return "workflow stopped: \(item.payload["reason"]?.stringValue ?? "no reason provided")"
-    case "agent.stopped":
-        return "\(item.sender) stopped: \(item.payload["reason"]?.stringValue ?? "done")"
-    case "agent.stop_blocked":
-        let dependencies = arrayValue(item.payload["unresolvedDependencies"])?.compactMap(\.stringValue).joined(separator: ", ") ?? "dependencies"
-        let childWorkflows = arrayValue(item.payload["activeChildWorkflows"])?.compactMap(\.stringValue).joined(separator: ", ")
-        if let childWorkflows, !childWorkflows.isEmpty {
-            return "\(item.sender) stop blocked by child workflow \(childWorkflows)"
-        }
-        return "\(item.sender) stop blocked by \(dependencies.isEmpty ? "completion gates" : dependencies)"
-    case "message.skipped":
-        let target = item.payload["to"]?.stringValue ?? item.recipient ?? "agent"
-        let status = item.payload["targetStatus"]?.stringValue
-        let reason = item.payload["reason"]?.stringValue ?? "target unavailable"
-        if let status {
-            return "message to \(target) skipped (\(status)): \(reason)"
-        }
-        return "message to \(target) skipped: \(reason)"
-    case "plan.created", "plan.instantiated", "graph.updated":
-        return item.text
-    default:
-        return "\(item.sender) \(item.type)"
     }
 }
 

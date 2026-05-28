@@ -9,7 +9,11 @@ struct SessionDetailView: View {
         GeometryReader { proxy in
             HStack(alignment: .top, spacing: 0) {
                 VStack(spacing: 0) {
-                    OrchestratorChatView(store: store)
+                    OrchestratorChatView(store: store) {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            inspectorVisible = true
+                        }
+                    }
                         .frame(minWidth: 480, maxHeight: .infinity, alignment: .top)
                     ComposerView(store: store)
                 }
@@ -134,20 +138,6 @@ struct SessionDetailView: View {
                 .help("Copy, export, or share session artifacts")
 
                 Menu {
-                    ForEach(store.graph.nodes) { node in
-                        Button {
-                            store.setControlAgent(node.id)
-                        } label: {
-                            Label(node.label, systemImage: node.id == store.selectedControlAgentId ? "checkmark.circle.fill" : "circle")
-                        }
-                    }
-                } label: {
-                    Label("Control: \(store.selectedControlAgentLabel)", systemImage: "scope")
-                }
-                .disabled(store.graph.nodes.isEmpty || store.isLoadingSelection)
-                .help("Choose which agent the toolbar controls target")
-
-                Menu {
                     Button {
                         store.pauseOrchestrator()
                     } label: {
@@ -158,14 +148,14 @@ struct SessionDetailView: View {
                     Button {
                         store.resumeOrchestrator()
                     } label: {
-                        Label("Resume Agent", systemImage: "play.circle")
+                        Label("Resume Orchestrator", systemImage: "play.circle")
                     }
                     .disabled(!store.canResumeOrchestrator)
                 } label: {
-                    Label(store.orchestratorStatus == .paused ? "Resume Agent" : "Run Controls", systemImage: store.orchestratorStatus == .paused ? "play.circle" : "play.circle")
+                    Label(store.orchestratorStatus == .paused ? "Resume Orchestrator" : "Run Controls", systemImage: store.orchestratorStatus == .paused ? "play.circle" : "play.circle")
                 }
                 .disabled(!store.canPauseOrchestrator && !store.canResumeOrchestrator)
-                .help("Pause or resume the selected agent")
+                .help("Pause or resume orchestrator scheduling")
 
                 Button {
                     store.pauseOrchestrator()
@@ -173,7 +163,7 @@ struct SessionDetailView: View {
                     Label("Pause Scheduling", systemImage: "pause")
                 }
                 .disabled(!store.canPauseOrchestrator)
-                .help("Pause scheduling for the selected agent")
+                .help("Pause orchestrator scheduling")
 
                 Menu {
                     Button {
@@ -194,7 +184,7 @@ struct SessionDetailView: View {
                     Button(role: .destructive) {
                         confirmCancel = true
                     } label: {
-                        Label("Stop Agent", systemImage: "xmark.octagon")
+                        Label("Stop Orchestrator", systemImage: "xmark.octagon")
                     }
                     .disabled(!store.canCancelOrchestrator)
                 } label: {
@@ -210,8 +200,8 @@ struct SessionDetailView: View {
                 )
             }
         }
-        .confirmationDialog("Stop \(store.selectedControlAgentLabel)?", isPresented: $confirmCancel) {
-            Button("Stop \(store.selectedControlAgentLabel)", role: .destructive) {
+        .confirmationDialog("Stop orchestrator?", isPresented: $confirmCancel) {
+            Button("Stop Orchestrator", role: .destructive) {
                 store.cancelOrchestrator()
             }
             Button("Cancel", role: .cancel) {}

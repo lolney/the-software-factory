@@ -134,13 +134,6 @@ private struct WorkflowDetail: View {
                     WorkflowSpecGraphView(workflow: workflow)
                         .frame(height: 280)
                         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
-
-                    HStack(spacing: 12) {
-                        Label("Handoff", systemImage: "arrow.right")
-                        Label("Message", systemImage: "ellipsis.message")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 }
 
                 if !workflow.stopCriteria.isEmpty {
@@ -198,7 +191,6 @@ private struct WorkflowSpecGraphView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let positions = layout(size: proxy.size)
             ZStack {
                 Canvas { context, size in
                     let positions = layout(size: size)
@@ -224,18 +216,6 @@ private struct WorkflowSpecGraphView: View {
                         context.stroke(Path(roundedRect: rect, cornerRadius: 8), with: .color(color), lineWidth: 1.8)
                         context.draw(Text(shortLabel(node.label)).font(.caption.weight(.semibold)), at: CGPoint(x: rect.midX, y: rect.midY - 6), anchor: .center)
                         context.draw(Text(node.roleId).font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: rect.midX, y: rect.midY + 12), anchor: .center)
-                    }
-                }
-
-                ForEach(workflow.edges) { edge in
-                    if let start = positions[edge.from], let end = positions[edge.to] {
-                        Text(edge.kind == .handoff ? "handoff" : "message")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 4)
-                            .background(.regularMaterial, in: Capsule())
-                            .position(labelPoint(from: start, to: end, offset: reciprocalOffset(for: edge)))
-                            .help(edge.description)
                     }
                 }
             }

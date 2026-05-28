@@ -15,6 +15,37 @@ final class ProjectionTests: XCTestCase {
         XCTAssertEqual(store.filteredTranscript.map(\.id), ["call", "result"])
     }
 
+    func testTranscriptAgentOptionsIncludeFallbackTranscriptAgents() {
+        let store = SessionStore()
+        store.graph = GraphState(
+            sessionId: "session-1",
+            workflowId: "wf",
+            nodes: [node(id: "orchestrator", status: .idle)],
+            edges: []
+        )
+        store.transcript = [
+            item(id: "handoff", agentId: "orchestrator", sender: "orchestrator", recipient: "qa", type: "handoff.created", text: "handoff", payload: ["from": .string("orchestrator"), "to": .string("qa")]),
+            item(id: "message", agentId: "reviewer", sender: "reviewer", recipient: "orchestrator", type: "message.sent", text: "reviewed")
+        ]
+
+        XCTAssertEqual(store.transcriptAgentOptions.map(\.id), ["orchestrator", "qa", "reviewer"])
+    }
+
+    func testSelectingAgentClearsTimelineEventDetail() {
+        let store = SessionStore()
+        store.graph = GraphState(sessionId: "session-1", workflowId: "wf", nodes: [node(id: "qa", status: .idle)], edges: [])
+        store.transcript = [
+            item(id: "qa-event", agentId: "qa", type: "agent.message", text: "QA"),
+            item(id: "impl-event", agentId: "implementor", type: "agent.message", text: "Implementation")
+        ]
+        store.selectTimelineEvent("impl-event")
+
+        store.selectAgent("qa")
+
+        XCTAssertNil(store.selectedTimelineEventId)
+        XCTAssertNil(store.selectedTimelineEvent)
+    }
+
     func testStatusBannerRedactsSecretBearingCommandFailures() {
         let store = SessionStore()
         store.lastError = #"Command failed: security add-generic-password -a codex-public-client -s local.softwarefactory.codex-oauth -w {"accessToken":"secret-access","refreshToken":"secret-refresh"} -U"#
@@ -165,6 +196,151 @@ final class ProjectionTests: XCTestCase {
             return XCTFail("Expected the singleton handoff to remain visible as a compact event")
         }
         XCTAssertEqual(handoff.id, "handoff")
+    }
+
+    func testBranchingTimelineProjectionUsesFullMetadataForLaneCreation() throws {
+        let start = Date(timeIntervalSince1970: 10)
+        let later = Date(timeIntervalSince1970: 100)
+        let metadata = [
+            item(
+                id: "handoff",
+                agentId: "orchestrator",
+                sender: "orchestrator",
+                recipient: "implementor",
+                type: "handoff.created",
+                text: "Handoff",
+                timestamp: start,
+                payload: ["from": .string("orchestrator"), "to": .string("implementor")]
+            ),
+            item(id: "working", agentId: "implementor", type: "agent.status", text: "working", timestamp: start.addingTimeInterval(5), payload: ["status": .string("working")]),
+            item(id: "done", agentId: "implementor", type: "agent.status", text: "done", timestamp: later, payload: ["status": .string("completed")])
+        ]
+        let visible = [
+            item(id: "edit", agentId: "implementor", type: "workspace.file_touched", text: "main.py", timestamp: later, payload: ["path": .string("main.py")])
+        ]
+
+        let projection = BranchingTimelineProjection(
+            graph: GraphState(sessionId: "session-1", workflowId: "wf", nodes: [], edges: []),
+            metadataTranscript: metadata,
+            visibleTranscript: visible
+        )
+
+        let implementor = try XCTUnwrap(projection.lanes.first { $0.id == "implementor" })
+        XCTAssertEqual(implementor.createdAt, start)
+        XCTAssertEqual(implementor.activeRanges.first?.start, start.addingTimeInterval(5))
+        XCTAssertEqual(projection.events.map(\.id), ["edit"])
+    }
+
+    func testBranchingTimelineProjectionDropsBlankFallbackAgentIds() {
+        let projection = BranchingTimelineProjection(
+            graph: GraphState(sessionId: "session-1", workflowId: "wf", nodes: [], edges: []),
+            metadataTranscript: [
+                item(id: "blank", agentId: nil, sender: "", type: "agent.status", text: "blank", payload: ["status": .string("working")]),
+                item(id: "real", agentId: "qa", sender: "", type: "agent.message", text: "QA finished")
+            ],
+            visibleTranscript: [
+                item(id: "real", agentId: "qa", sender: "", type: "agent.message", text: "QA finished")
+            ]
+        )
+
+        XCTAssertFalse(projection.lanes.contains { $0.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+        XCTAssertTrue(projection.lanes.contains { $0.id == "qa" })
+    }
+
+    func testBranchingTimelineProjectionKeepsStatusInLanesAndIcons() throws {
+        let projection = BranchingTimelineProjection(
+            graph: GraphState(sessionId: "session-1", workflowId: "wf", nodes: [], edges: []),
+            metadataTranscript: [
+                item(id: "working", agentId: "qa", type: "agent.status", text: "working", timestamp: Date(timeIntervalSince1970: 10), payload: ["status": .string("working")]),
+                item(id: "completed", agentId: "qa", type: "agent.status", text: "completed", timestamp: Date(timeIntervalSince1970: 30), payload: ["status": .string("completed")]),
+                item(id: "failed", agentId: "qa", type: "agent.status", text: "failed", timestamp: Date(timeIntervalSince1970: 40), payload: ["status": .string("failed")])
+            ],
+            visibleTranscript: [
+                item(id: "working", agentId: "qa", type: "agent.status", text: "working", timestamp: Date(timeIntervalSince1970: 10), payload: ["status": .string("working")]),
+                item(id: "completed", agentId: "qa", type: "agent.status", text: "completed", timestamp: Date(timeIntervalSince1970: 30), payload: ["status": .string("completed")]),
+                item(id: "failed", agentId: "qa", type: "agent.status", text: "failed", timestamp: Date(timeIntervalSince1970: 40), payload: ["status": .string("failed")])
+            ]
+        )
+
+        let qa = try XCTUnwrap(projection.lanes.first { $0.id == "qa" })
+        XCTAssertEqual(qa.activeRanges.count, 1)
+        XCTAssertEqual(qa.activeRanges.first?.start, Date(timeIntervalSince1970: 10))
+        XCTAssertEqual(qa.activeRanges.first?.end, Date(timeIntervalSince1970: 30))
+        XCTAssertEqual(projection.events.map(\.id), ["working", "completed", "failed"])
+    }
+
+    func testBranchingTimelineProjectionUsesSpecificIconsForRuntimeEvents() throws {
+        let events = [
+            item(id: "mail-in", agentId: "qa", type: "actor.mailbox.enqueued", text: "queued", payload: ["mailbox": .string("qa")]),
+            item(id: "job-started", agentId: "qa", type: "scheduler.job.started", text: "started", payload: ["jobId": .string("job-1")]),
+            item(id: "claimed", agentId: "qa", type: "workspace.file_claimed", text: "claimed"),
+            item(id: "checkpoint", agentId: "qa", type: "workspace.review_checkpoint", text: "review"),
+            item(id: "capability", agentId: "qa", type: "capability.checked", text: "checked")
+        ]
+        let projection = BranchingTimelineProjection(
+            graph: GraphState(sessionId: "session-1", workflowId: "wf", nodes: [], edges: []),
+            metadataTranscript: events,
+            visibleTranscript: events
+        )
+
+        XCTAssertEqual(projection.events.map(\.systemImage), [
+            "tray.and.arrow.down",
+            "play.circle",
+            "doc.badge.gearshape",
+            "text.badge.checkmark",
+            "checkmark.seal"
+        ])
+        XCTAssertFalse(projection.events.contains { $0.systemImage == "circle.fill" })
+    }
+
+    func testBranchingTimelineProjectionOnlyMarksFirstBranchAsCreation() throws {
+        let projection = BranchingTimelineProjection(
+            graph: GraphState(sessionId: "session-1", workflowId: "wf", nodes: [], edges: []),
+            metadataTranscript: [
+                item(id: "create-reviewer", agentId: "implementor", sender: "implementor", recipient: "reviewer", type: "handoff.created", text: "Create reviewer", timestamp: Date(timeIntervalSince1970: 10), payload: ["from": .string("implementor"), "to": .string("reviewer")]),
+                item(id: "later-reviewer", agentId: "qa", sender: "qa", recipient: "reviewer", type: "handoff.created", text: "Ask reviewer again", timestamp: Date(timeIntervalSince1970: 40), payload: ["from": .string("qa"), "to": .string("reviewer")])
+            ],
+            visibleTranscript: [
+                item(id: "create-reviewer", agentId: "implementor", sender: "implementor", recipient: "reviewer", type: "handoff.created", text: "Create reviewer", timestamp: Date(timeIntervalSince1970: 10), payload: ["from": .string("implementor"), "to": .string("reviewer")]),
+                item(id: "later-reviewer", agentId: "qa", sender: "qa", recipient: "reviewer", type: "handoff.created", text: "Ask reviewer again", timestamp: Date(timeIntervalSince1970: 40), payload: ["from": .string("qa"), "to": .string("reviewer")])
+            ]
+        )
+
+        let creation = try XCTUnwrap(projection.events.first { $0.id == "create-reviewer" })
+        let later = try XCTUnwrap(projection.events.first { $0.id == "later-reviewer" })
+        XCTAssertTrue(creation.isCreation)
+        XCTAssertFalse(later.isCreation)
+        XCTAssertEqual(later.systemImage, "arrow.right")
+    }
+
+    func testBranchingTimelineProjectionKeepsLinkAndEventOffsetsAligned() throws {
+        let first = item(id: "review-message", agentId: "reviewer", sender: "reviewer", recipient: "orchestrator", type: "message.sent", text: "Review accepted", timestamp: Date(timeIntervalSince1970: 10), payload: ["from": .string("reviewer"), "to": .string("orchestrator")])
+        let second = item(id: "qa-message", agentId: "qa", sender: "qa", recipient: "orchestrator", type: "message.sent", text: "QA passed", timestamp: Date(timeIntervalSince1970: 12), payload: ["from": .string("qa"), "to": .string("orchestrator")])
+        let projection = BranchingTimelineProjection(
+            graph: GraphState(sessionId: "session-1", workflowId: "wf", nodes: [], edges: []),
+            metadataTranscript: [first, second],
+            visibleTranscript: [first, second]
+        )
+        let eventOffsets = Dictionary(uniqueKeysWithValues: projection.events.map { ($0.id, $0.visualOffset) })
+
+        for link in projection.links {
+            XCTAssertEqual(link.visualOffset, eventOffsets[link.id])
+        }
+    }
+
+    func testBranchingTimelineProjectionClampsStartBurstOffsetsIntoCanvas() {
+        let timestamp = Date(timeIntervalSince1970: 10)
+        let events = (0..<5).map { index in
+            item(id: "burst-\(index)", agentId: "qa", type: "agent.message", text: "burst \(index)", timestamp: timestamp)
+        }
+
+        let projection = BranchingTimelineProjection(
+            graph: GraphState(sessionId: "session-1", workflowId: "wf", nodes: [], edges: []),
+            metadataTranscript: events,
+            visibleTranscript: events
+        )
+
+        XCTAssertGreaterThanOrEqual(projection.events.map(\.visualOffset).min() ?? 0, -38)
     }
 
     func testEventLogExportPreservesStructuredPayloadFields() throws {
@@ -367,6 +543,8 @@ final class ProjectionTests: XCTestCase {
         id: String,
         sessionId: String = "session-1",
         agentId: String?,
+        sender: String? = nil,
+        recipient: String? = nil,
         type: String,
         text: String,
         timestamp: Date = Date(timeIntervalSince1970: 0),
@@ -377,8 +555,8 @@ final class ProjectionTests: XCTestCase {
             id: id,
             sessionId: sessionId,
             agentId: agentId,
-            sender: agentId ?? "system",
-            recipient: nil,
+            sender: sender ?? agentId ?? "system",
+            recipient: recipient,
             type: type,
             text: text,
             timestamp: timestamp,

@@ -14,16 +14,10 @@ Computer Use could inspect this app, but direct Computer Use access to `com.open
 
 Clear fixes to work down:
 
-- Redact credentials and token-like payloads from daemon/client error surfaces before they reach status banners, Settings, or logs intended for users.
-- Stop formatting the daemon port with locale grouping separators in Settings.
 - Make the inspector tab bar and inspector header actions adapt cleanly at narrow widths; current segmented controls and action buttons clip on Workspace/Debug.
 - Improve Workspace diff previews: hide zero-diff repeats by default, wrap or horizontally scroll long diff lines, and make latest-vs-history clearer.
-- Make Plan completion criteria scannable by hiding raw event/workflow IDs until expanded or copied.
 - Improve Roles editor responsiveness; the detail form clips horizontally and important fields disappear at common window widths.
-- Improve Settings MCP server rows; long command/auth-instruction text truncates without a way to expand or inspect details.
-- Add safer, less prominent presentation of account identifiers in Auth settings, with copy affordances for users who need exact values.
 - Make the New Session setup controls read as one coherent form; the current mode/model/workspace strip is cramped and easy to miss.
-- Add transcript result counts and an obvious active-filter summary near search, especially when an agent filter and text search are combined.
 
 Big product/design judgment calls:
 
@@ -38,7 +32,6 @@ Audited with Computer Use across transcript expansion, inspector tabs, toolbar m
 
 Clear fixes to work down:
 
-- Fix the All Sessions navigation state loss in the mockup fixture; clicking All Sessions/reselecting the current session can clear the loaded transcript into a permanent "Loading session..." empty state while the selected row remains unchanged.
 - Reconcile connection status surfaces. The top bar/status strip can say Connected/Local while the session banner says "Daemon is not connected," which leaves users with no trustworthy source of truth.
 - Make the Plan inspector consume the same plan/checklist signal as the transcript. The transcript shows an expandable plan row, while the Plan pane still says "No plan yet."
 - Populate the Debug inspector for completed fixture workflows or clearly label fixture/debug-data unavailability. "0 runs / 0 logs" looks wrong next to a completed multi-agent transcript.
@@ -52,10 +45,8 @@ Clear fixes to work down:
 - Rename or clarify the Embed Code toolbar control. The menu opens workspace targets such as VS Code, Finder, and iTerm, so "Open Workspace" would match the action better.
 - Tone down disabled primary buttons in Auth settings. Disabled actions such as Save API Key still look blue/primary and clickable.
 - Clarify Settings > Skills empty state. It says "0 installed / No Skills" even though the active Codex environment has plugin and user skills available; distinguish app-discoverable skills from runtime skills.
-- Add a visible transcript result count, active-filter summary, and clear-search affordance near the search field. The current filtered state is too implicit, especially when text search and agent filters combine.
 - Smooth graph zoom behavior so zooming keeps important nodes in frame. One zoom-in can crop node labels abruptly, although Reset recovers the view.
 - Add app-specific View menu commands for the visible UI: toggle inspector/details, reset/zoom graph, focus search, show dashboard, and switch common panels.
-- Make the agent filter control's behavior match its chevron. It looks like a menu, but clicking the current agent label can act like a clear/toggle action.
 
 ### 2026-05-27 Adversarial Code Review
 
@@ -103,7 +94,7 @@ Judgement-heavy follow-ups:
 - **2026-05-25: Isolate OpenAI and WHAM runtimes.** Split live execution into per-run Agents SDK and WHAM compatibility adapters, passed a per-run OpenAI provider to the SDK, added timeout/retry behavior, preserved model/reasoning settings, captured WHAM usage/retry/duration telemetry, and documented the WHAM compatibility boundary.
 - **2026-05-25: Harden daemon ownership proof.** Added a token-derived nonce challenge endpoint and changed the macOS launcher to verify daemon ownership with local HMAC proof before sending the WebSocket auth token to any loopback listener.
 - **2026-05-25: Surface failures prominently.** Added a session-level status banner with a Debug shortcut and dismissible transient errors.
-- **2026-05-25: Clarify agent controls.** Split transcript viewing from the control target, added a `Control` toolbar menu, exposed `Controlling: <agent>` in the graph panel, and renamed pause to "Pause Scheduling."
+- **2026-05-25: Clarify agent controls.** Split transcript viewing from run control state and renamed pause to "Pause Scheduling."
 - **2026-05-25: Add a Workspace inspector.** Added a Workspace inspector tab with root path, copy/open actions, touched files, diff stats, conflict counts, and empty states.
 - **2026-05-25: Add transcript search and filters.** Added text search across transcript event text, participants, event type, and payload content.
 - **2026-05-25: Route workflow prompts with real context.** Workflow handoffs and messages now include the original goal, role-specific fallback tasks, done criteria, and the sender's latest artifact/message instead of generic edge text.
@@ -139,3 +130,4 @@ Judgement-heavy follow-ups:
 - **2026-05-27: Work down second UX audit pass.** Added transcript event counts for filtered and unfiltered views, suppressed zero-diff Workspace events in previews and copy output, tucked Plan criterion identifiers behind disclosure, and added expandable MCP server detail rows for long commands/auth guidance.
 - **2026-05-27: Implement mockup 1 direction while keeping Graph.** Added a compact session state strip above the transcript, grouped dense low-level transcript events behind expandable rows, and replaced the resizable inspector split with a collapsible fixed-width detail drawer that preserves the current Workflow Graph view.
 - **2026-05-27: Tighten mockup 1 visual density.** Reduced the state strip to conditional signal, hid escaped single-row lifecycle noise from the main transcript, stopped mailbox internals from rendering as user messages, capped action summary rows, and simplified recent-session rows toward the mockup's calmer sidebar.
+- **2026-05-27: Implement workflow-grouped graph sidebar.** Removed the control-agent chooser from the graph/sidebar surface, kept Graph/Plan/Workspace/Debug tabs available, added explicit workflow grouping behind agent nodes, made message edges dotted and handoff edges solid, routed fan-out edges around intermediate nodes, and kept event detail dismissal in sync with inspector tab changes.
