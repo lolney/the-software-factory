@@ -2,6 +2,7 @@ import SwiftUI
 
 struct InspectorPanelView: View {
     @Bindable var store: SessionStore
+    var graphCommandRequest: GraphViewCommandRequest?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,7 +16,7 @@ struct InspectorPanelView: View {
             } else {
                 switch store.inspectorPanel {
                 case .graph:
-                    GraphPanelView(store: store)
+                    GraphPanelView(store: store, commandRequest: graphCommandRequest)
                 case .plan:
                     PlanInspectorPanelView(store: store)
                 case .workspace:

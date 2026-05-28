@@ -4,12 +4,14 @@ struct SessionDetailView: View {
     @Bindable var store: SessionStore
     @State private var confirmCancel = false
     @State private var inspectorVisible = true
+    @State private var focusTranscriptSearchSignal = 0
+    @State private var graphCommandRequest: GraphViewCommandRequest?
 
     var body: some View {
         GeometryReader { proxy in
             HStack(alignment: .top, spacing: 0) {
                 VStack(spacing: 0) {
-                    OrchestratorChatView(store: store) {
+                    OrchestratorChatView(store: store, focusTranscriptSearchSignal: focusTranscriptSearchSignal) {
                         withAnimation(.easeInOut(duration: 0.18)) {
                             inspectorVisible = true
                         }
@@ -21,7 +23,7 @@ struct SessionDetailView: View {
 
                 if inspectorVisible && !store.isComposingNewSession {
                     Divider()
-                    InspectorPanelView(store: store)
+                    InspectorPanelView(store: store, graphCommandRequest: graphCommandRequest)
                         .frame(width: detailDrawerWidth(for: proxy.size.width))
                         .frame(maxHeight: .infinity)
                         .background(.regularMaterial)
@@ -189,6 +191,7 @@ struct SessionDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+        .focusedValue(\.softwareFactoryViewCommands, viewCommands)
     }
 
     private var selectedSessionTitle: String {
@@ -220,6 +223,37 @@ struct SessionDetailView: View {
 
     private var effectiveInspectorVisible: Bool {
         inspectorVisible && !store.isComposingNewSession
+    }
+
+    private var viewCommands: SoftwareFactoryViewCommands {
+        SoftwareFactoryViewCommands(
+            canShowDetails: !store.isComposingNewSession,
+            focusTranscriptSearch: {
+                focusTranscriptSearchSignal += 1
+            },
+            toggleDetails: {
+                guard !store.isComposingNewSession else { return }
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    inspectorVisible.toggle()
+                }
+            },
+            showPanel: { panel in
+                showInspectorPanel(panel)
+            },
+            applyGraphCommand: { command in
+                showInspectorPanel(.graph)
+                graphCommandRequest = GraphViewCommandRequest(command: command)
+            }
+        )
+    }
+
+    private func showInspectorPanel(_ panel: InspectorPanel) {
+        guard !store.isComposingNewSession else { return }
+        store.clearSelectedTimelineEvent()
+        store.inspectorPanel = panel
+        withAnimation(.easeInOut(duration: 0.18)) {
+            inspectorVisible = true
+        }
     }
 }
 

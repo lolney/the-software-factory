@@ -2,11 +2,13 @@ import SwiftUI
 
 struct GraphPanelView: View {
     @Bindable var store: SessionStore
+    var commandRequest: GraphViewCommandRequest?
     @State private var zoom: CGFloat = 1
     @State private var zoomStart: CGFloat?
     @State private var pan: CGSize = .zero
     @State private var panStart: CGSize?
     @State private var graphViewportSize: CGSize = .zero
+    @State private var handledCommandId: UUID?
 
     private let nodeSize = CGSize(width: 152, height: 72)
     private let nodeGap = CGSize(width: 72, height: 70)
@@ -19,6 +21,12 @@ struct GraphPanelView: View {
             header
             graphCanvas
                 .frame(minHeight: 320)
+        }
+        .onAppear {
+            handleGraphCommandRequest(commandRequest)
+        }
+        .onChange(of: commandRequest) { _, request in
+            handleGraphCommandRequest(request)
         }
     }
 
@@ -416,6 +424,23 @@ struct GraphPanelView: View {
         zoom = min(2.2, max(0.55, proposedZoom))
         guard graphViewportSize != .zero else { return }
         pan = focusedPan(pan, viewport: graphViewportSize, contentSize: layout(size: graphViewportSize).contentSize)
+    }
+
+    private func applyGraphCommand(_ command: GraphViewCommand) {
+        switch command {
+        case .zoomIn:
+            setZoom(zoom + 0.15)
+        case .zoomOut:
+            setZoom(zoom - 0.15)
+        case .reset:
+            resetGraphView()
+        }
+    }
+
+    private func handleGraphCommandRequest(_ request: GraphViewCommandRequest?) {
+        guard let request, request.id != handledCommandId else { return }
+        handledCommandId = request.id
+        applyGraphCommand(request.command)
     }
 
     private func resetGraphView() {

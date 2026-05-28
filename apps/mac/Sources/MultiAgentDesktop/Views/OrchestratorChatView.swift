@@ -2,6 +2,7 @@ import SwiftUI
 
 struct OrchestratorChatView: View {
     @Bindable var store: SessionStore
+    var focusTranscriptSearchSignal = 0
     var openInspector: () -> Void = {}
     @State private var timelineItems: [TimelineItem] = []
     @State private var timelineIsTruncated = false
@@ -70,7 +71,8 @@ struct OrchestratorChatView: View {
             TranscriptTopBar(
                 store: store,
                 followLiveTail: $followLiveTail,
-                transcriptCountSummary: transcriptCountSummary
+                transcriptCountSummary: transcriptCountSummary,
+                focusSearchSignal: focusTranscriptSearchSignal
             )
 
             if let status = store.statusBannerText {
@@ -243,6 +245,8 @@ private struct TranscriptTopBar: View {
     @Bindable var store: SessionStore
     @Binding var followLiveTail: Bool
     let transcriptCountSummary: String
+    let focusSearchSignal: Int
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -284,6 +288,7 @@ private struct TranscriptTopBar: View {
                         .foregroundStyle(.secondary.opacity(0.62))
                     TextField("Search transcript", text: $store.transcriptSearchText)
                         .textFieldStyle(.plain)
+                        .focused($searchFocused)
                     Image(systemName: "command")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.tertiary.opacity(0.62))
@@ -315,6 +320,9 @@ private struct TranscriptTopBar: View {
                 .offset(x: -15, y: -4)
         }
         .background(Color.black.opacity(0.005))
+        .onChange(of: focusSearchSignal) { _, _ in
+            searchFocused = true
+        }
         .overlay(alignment: .top) {
             Rectangle()
                 .fill(Color(.sRGB, white: 225 / 255, opacity: 1))

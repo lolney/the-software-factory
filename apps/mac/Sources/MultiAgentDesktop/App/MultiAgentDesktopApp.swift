@@ -31,10 +31,82 @@ struct TheSoftwareFactoryApp: App {
                 }
                 .keyboardShortcut("n", modifiers: [.command])
             }
+            SoftwareFactoryViewMenuCommands(store: store)
         }
 
         Settings {
             SettingsView(store: store)
+        }
+    }
+}
+
+private struct SoftwareFactoryViewMenuCommands: Commands {
+    let store: SessionStore
+    @FocusedValue(\.softwareFactoryViewCommands) private var viewCommands
+
+    var body: some Commands {
+        CommandGroup(after: .toolbar) {
+            Button("Show Dashboard") {
+                store.viewAllSessions()
+            }
+            .keyboardShortcut("0", modifiers: [.command])
+
+            Divider()
+
+            Button("Focus Transcript Search") {
+                viewCommands?.focusTranscriptSearch()
+            }
+            .keyboardShortcut("f", modifiers: [.command])
+            .disabled(viewCommands == nil)
+
+            Button("Toggle Details") {
+                viewCommands?.toggleDetails()
+            }
+            .keyboardShortcut("i", modifiers: [.command, .option])
+            .disabled(viewCommands?.canShowDetails != true)
+
+            Divider()
+
+            ForEach(InspectorPanel.allCases) { panel in
+                Button(showPanelTitle(panel)) {
+                    viewCommands?.showPanel(panel)
+                }
+                .keyboardShortcut(panelShortcut(panel), modifiers: [.command, .option])
+                .disabled(viewCommands?.canShowDetails != true)
+            }
+
+            Divider()
+
+            Button("Zoom Graph In") {
+                viewCommands?.applyGraphCommand(.zoomIn)
+            }
+            .keyboardShortcut("+", modifiers: [.command])
+            .disabled(viewCommands?.canShowDetails != true)
+
+            Button("Zoom Graph Out") {
+                viewCommands?.applyGraphCommand(.zoomOut)
+            }
+            .keyboardShortcut("-", modifiers: [.command])
+            .disabled(viewCommands?.canShowDetails != true)
+
+            Button("Reset Graph View") {
+                viewCommands?.applyGraphCommand(.reset)
+            }
+            .keyboardShortcut("0", modifiers: [.command, .option])
+            .disabled(viewCommands?.canShowDetails != true)
+        }
+    }
+
+    private func showPanelTitle(_ panel: InspectorPanel) -> String {
+        "Show \(panel.rawValue) Panel"
+    }
+
+    private func panelShortcut(_ panel: InspectorPanel) -> KeyEquivalent {
+        switch panel {
+        case .graph: return "1"
+        case .plan: return "2"
+        case .workspace: return "3"
+        case .debug: return "4"
         }
     }
 }
