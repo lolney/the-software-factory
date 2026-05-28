@@ -173,13 +173,26 @@ final class SessionStore {
 
     var statusBannerText: String? {
         if let lastError, !lastError.isEmpty {
+            if isConnectionHealthy && isDaemonDisconnectedMessage(lastError) {
+                return nil
+            }
             return sanitizedDisplayError(lastError)
+        }
+        if !isConnectionHealthy && connectionStatus == "Connecting" {
+            return "Connecting to the local daemon..."
+        }
+        if !isConnectionHealthy && hasActiveSession && !isComposingNewSession {
+            return "Daemon is disconnected. Reconnect before controlling this session."
         }
         if sessionErrorCount > 0 {
             let suffix = sessionErrorCount == 1 ? "" : "s"
             return "\(sessionErrorCount) agent error\(suffix) in this session. Open Debug for details."
         }
         return nil
+    }
+
+    var isConnectionHealthy: Bool {
+        usesStaticMockupFixture || daemon.isConnected
     }
 
     var touchedWorkspaceFiles: [WorkspaceFileSummary] {
@@ -650,6 +663,12 @@ final class SessionStore {
         lastError = nil
     }
 
+    private func clearStaleDaemonDisconnectedError() {
+        if let lastError, isDaemonDisconnectedMessage(lastError) {
+            self.lastError = nil
+        }
+    }
+
     func sendComposerMessage() {
         let trimmed = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -1017,6 +1036,7 @@ final class SessionStore {
     private func handleDaemonMessage(_ data: Data) {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         connectionStatus = "Connected"
+        clearStaleDaemonDisconnectedError()
         if pendingOpenAIOAuth, object["method"] == nil {
             pendingOpenAIOAuth = false
             sendBeginOpenAIOAuth()
@@ -1189,6 +1209,7 @@ final class SessionStore {
         let summary = SessionSummary(id: snapshot.sessionId, title: snapshot.title, detail: snapshot.workflowId, createdAt: snapshot.createdAt, updatedAt: snapshot.updatedAt, workspaceRoot: snapshot.workspaceRoot, archived: snapshot.archived, debugMode: snapshot.debugMode, model: snapshot.model, reasoningEffort: snapshot.reasoningEffort)
         upsertSessionSummary(summary)
         connectionStatus = "Connected"
+        clearStaleDaemonDisconnectedError()
         isCreatingSession = false
         isLoadingSelection = false
         isComposingNewSession = false
@@ -1830,6 +1851,13 @@ func workspaceDiffHasContent(_ item: TranscriptItem) -> Bool {
 
 func workspaceEventPath(_ item: TranscriptItem) -> String? {
     item.payload["path"]?.stringValue ?? item.text.nilIfEmpty
+}
+
+func isDaemonDisconnectedMessage(_ message: String) -> Bool {
+    let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return normalized == "daemon is not connected."
+        || normalized == "daemon is not connected"
+        || normalized.contains("daemon disconnected")
 }
 
 @discardableResult

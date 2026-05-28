@@ -7,7 +7,7 @@ struct ComposerView: View {
     var body: some View {
         VStack(spacing: 8) {
             Divider()
-            if !store.daemon.isConnected {
+            if !store.isConnectionHealthy {
                 Text(store.isComposingNewSession ? "The daemon will be started before creating the session." : "Connect to the daemon before sending a nudge.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -18,7 +18,7 @@ struct ComposerView: View {
             if store.isComposingNewSession {
                 NewSessionSetupView(store: store)
                     .padding(.horizontal)
-                    .padding(.top, store.daemon.isConnected ? 8 : 0)
+                    .padding(.top, store.isConnectionHealthy ? 8 : 0)
             }
             HStack(alignment: .bottom, spacing: 8) {
                 ZStack(alignment: .topLeading) {

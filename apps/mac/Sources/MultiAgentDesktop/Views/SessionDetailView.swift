@@ -196,7 +196,7 @@ struct SessionDetailView: View {
             ToolbarItem(placement: .principal) {
                 ToolbarSessionPill(
                     title: selectedSessionTitle,
-                    isConnected: store.connectionStatus == "Connected"
+                    isConnected: store.isConnectionHealthy
                 )
             }
         }
