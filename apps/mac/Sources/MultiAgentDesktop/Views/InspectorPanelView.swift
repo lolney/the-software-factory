@@ -5,12 +5,7 @@ struct InspectorPanelView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Inspector", selection: $store.inspectorPanel) {
-                ForEach(InspectorPanel.allCases) { panel in
-                    Text(panel.rawValue).tag(panel)
-                }
-            }
-            .pickerStyle(.segmented)
+            AdaptiveInspectorPanelPicker(store: store)
             .padding([.top, .horizontal])
 
             Divider()
@@ -31,6 +26,107 @@ struct InspectorPanelView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct AdaptiveInspectorPanelPicker: View {
+    @Bindable var store: SessionStore
+
+    var body: some View {
+        GeometryReader { proxy in
+            if proxy.size.width < 330 {
+                Menu {
+                    ForEach(InspectorPanel.allCases) { panel in
+                        Button {
+                            store.inspectorPanel = panel
+                        } label: {
+                            Label(panel.rawValue, systemImage: panel == store.inspectorPanel ? "checkmark.circle.fill" : "circle")
+                        }
+                    }
+                } label: {
+                    Label(store.inspectorPanel.rawValue, systemImage: "sidebar.right")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                Picker("Inspector", selection: $store.inspectorPanel) {
+                    ForEach(InspectorPanel.allCases) { panel in
+                        Text(panel.rawValue).tag(panel)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+        }
+        .frame(height: 28)
+    }
+}
+
+private enum AdaptiveInspectorActionLabelStyle {
+    case titleAndIcon
+    case iconOnly
+}
+
+private struct InspectorHeaderRowLayout: Layout {
+    var spacing: CGFloat = 12
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        guard let title = subviews.first else {
+            return .zero
+        }
+
+        let titleSize = title.sizeThatFits(.unspecified)
+        let trailingSizes = subviews.dropFirst().map { $0.sizeThatFits(.unspecified) }
+        let trailingWidth = trailingSizes.reduce(0) { $0 + $1.width }
+            + CGFloat(max(0, trailingSizes.count - 1)) * spacing
+        let requiredWidth = titleSize.width
+            + (trailingSizes.isEmpty ? 0 : spacing + trailingWidth)
+        let height = max(titleSize.height, trailingSizes.map(\.height).max() ?? 0)
+
+        if let proposedWidth = proposal.width, proposedWidth >= requiredWidth {
+            return CGSize(width: proposedWidth, height: height)
+        }
+        return CGSize(width: requiredWidth, height: height)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard let title = subviews.first else { return }
+
+        let titleSize = title.sizeThatFits(.unspecified)
+        title.place(
+            at: CGPoint(x: bounds.minX, y: bounds.midY - titleSize.height / 2),
+            proposal: ProposedViewSize(titleSize)
+        )
+
+        var trailingX = bounds.maxX
+        for subview in subviews.dropFirst().reversed() {
+            let subviewSize = subview.sizeThatFits(.unspecified)
+            trailingX -= subviewSize.width
+            subview.place(
+                at: CGPoint(x: trailingX, y: bounds.midY - subviewSize.height / 2),
+                proposal: ProposedViewSize(subviewSize)
+            )
+            trailingX -= spacing
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func adaptiveInspectorLabelStyle(_ style: AdaptiveInspectorActionLabelStyle) -> some View {
+        switch style {
+        case .titleAndIcon:
+            self.labelStyle(.titleAndIcon)
+        case .iconOnly:
+            self.labelStyle(.iconOnly)
+        }
     }
 }
 
@@ -548,21 +644,7 @@ struct PlanInspectorPanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Plan")
-                    .font(.headline)
-                Spacer()
-                if let latestPlan {
-                    Button {
-                        store.selectAgent(nil)
-                        store.transcriptSearchText = latestPlan.id
-                    } label: {
-                        Label("Find Event", systemImage: "magnifyingglass")
-                    }
-                    .help("Filter the transcript to the plan event")
-                }
-            }
-            .padding()
+            planHeader
 
             if let plan = planObject {
                 List {
@@ -627,6 +709,37 @@ struct PlanInspectorPanelView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var planHeader: some View {
+        ViewThatFits(in: .horizontal) {
+            InspectorHeaderRowLayout {
+                Text("Plan")
+                    .font(.headline)
+                findPlanEventButton(labelStyle: .titleAndIcon)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Plan")
+                    .font(.headline)
+                findPlanEventButton(labelStyle: .iconOnly)
+            }
+        }
+        .padding()
+    }
+
+    @ViewBuilder
+    private func findPlanEventButton(labelStyle: AdaptiveInspectorActionLabelStyle) -> some View {
+        if let latestPlan {
+            Button {
+                store.selectAgent(nil)
+                store.transcriptSearchText = latestPlan.id
+            } label: {
+                Label("Find Event", systemImage: "magnifyingglass")
+                    .adaptiveInspectorLabelStyle(labelStyle)
+            }
+            .help("Filter the transcript to the plan event")
+            .accessibilityLabel("Find plan event")
+        }
     }
 }
 
@@ -837,24 +950,7 @@ struct WorkspacePanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Workspace")
-                    .font(.headline)
-                Spacer()
-                Button {
-                    store.copyCurrentWorkspacePath()
-                } label: {
-                    Label("Copy Path", systemImage: "doc.on.doc")
-                }
-                .disabled(store.currentWorkspaceRoot == nil)
-                Button {
-                    store.openWorkspace(tool: .finder)
-                } label: {
-                    Label("Finder", systemImage: "folder")
-                }
-                .disabled(store.currentWorkspaceRoot == nil)
-            }
-            .padding()
+            workspaceHeader
 
             if let root = store.currentWorkspaceRoot {
                 VStack(alignment: .leading, spacing: 0) {
@@ -914,6 +1010,46 @@ struct WorkspacePanelView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var workspaceHeader: some View {
+        ViewThatFits(in: .horizontal) {
+            InspectorHeaderRowLayout {
+                Text("Workspace")
+                    .font(.headline)
+                workspaceActions(labelStyle: .titleAndIcon)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Workspace")
+                    .font(.headline)
+                workspaceActions(labelStyle: .iconOnly)
+            }
+        }
+        .padding()
+    }
+
+    private func workspaceActions(labelStyle: AdaptiveInspectorActionLabelStyle) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                store.copyCurrentWorkspacePath()
+            } label: {
+                Label("Copy Path", systemImage: "doc.on.doc")
+                    .adaptiveInspectorLabelStyle(labelStyle)
+            }
+            .disabled(store.currentWorkspaceRoot == nil)
+            .help("Copy workspace path")
+            .accessibilityLabel("Copy workspace path")
+
+            Button {
+                store.openWorkspace(tool: .finder)
+            } label: {
+                Label("Finder", systemImage: "folder")
+                    .adaptiveInspectorLabelStyle(labelStyle)
+            }
+            .disabled(store.currentWorkspaceRoot == nil)
+            .help("Open workspace in Finder")
+            .accessibilityLabel("Open workspace in Finder")
+        }
     }
 
     private var totalDiffText: String {
@@ -1203,15 +1339,7 @@ struct DebugLogPanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Session Debug")
-                    .font(.headline)
-                Spacer()
-                Text("\(store.schedulerRuns.count) runs / \(store.debugLogs.count) logs")
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-            }
-            .padding()
+            debugHeader
 
             if store.schedulerRuns.isEmpty && store.recoveredSchedulerJobs.isEmpty && store.debugLogs.isEmpty {
                 emptyDebugState
@@ -1239,6 +1367,30 @@ struct DebugLogPanelView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var debugHeader: some View {
+        ViewThatFits(in: .horizontal) {
+            InspectorHeaderRowLayout {
+                Text("Session Debug")
+                    .font(.headline)
+                debugCount
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Session Debug")
+                    .font(.headline)
+                debugCount
+            }
+        }
+        .padding()
+    }
+
+    private var debugCount: some View {
+        Text("\(store.schedulerRuns.count) runs / \(store.debugLogs.count) logs")
+            .foregroundStyle(.secondary)
+            .font(.caption)
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
     }
 
     private var emptyDebugState: some View {

@@ -14,7 +14,6 @@ Computer Use could inspect this app, but direct Computer Use access to `com.open
 
 Clear fixes to work down:
 
-- Make the inspector tab bar and inspector header actions adapt cleanly at narrow widths; current segmented controls and action buttons clip on Workspace/Debug.
 - Improve Workspace diff previews: hide zero-diff repeats by default, wrap or horizontally scroll long diff lines, and make latest-vs-history clearer.
 - Improve Roles editor responsiveness; the detail form clips horizontally and important fields disappear at common window widths.
 - Make the New Session setup controls read as one coherent form; the current mode/model/workspace strip is cramped and easy to miss.
@@ -70,7 +69,6 @@ Judgement-heavy follow-ups:
 
 ## Not Completed
 
-- Inspector tab/header responsive layout clips at common widths.
 - Workspace diff preview still has clipped long diff lines and could make latest-vs-history clearer.
 - Roles editor still needs responsive detail work.
 - New Session setup needs a clearer form hierarchy.
@@ -78,6 +76,7 @@ Judgement-heavy follow-ups:
 
 ## Completed Non-Controversial Items
 
+- **2026-05-27: Make inspector chrome responsive.** Added a narrow-width inspector panel menu and adaptive Plan, Workspace, and Debug headers so tabs and actions remain available without clipping.
 - **2026-05-25: Add archived sessions.** Added durable `session.archived`/`session.restored` events, an Archived Sessions destination, restore actions, read-only archived sessions, and daemon tests proving logs are preserved.
 - **2026-05-25: Add multi-session dashboard and actions.** Added sidebar multi-selection, confirmed batch archive, "View Selected Sessions", and a session dashboard/table with status, last activity, mode, workspace path, active/paused agents, failure count, and quick actions.
 - **2026-05-25: Add real new-session setup.** Added quick blank-workspace setup, parent-folder workspace selection, live auth preflight, and model/reasoning controls on the composer.
