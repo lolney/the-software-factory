@@ -21,7 +21,7 @@ struct SettingsView: View {
                     Label("MCP Servers", systemImage: "point.3.connected.trianglepath.dotted")
                 }
 
-            SkillsSettingsPane(skills: store.integrations.skills)
+            SkillsSettingsPane(store: store)
                 .tabItem {
                     Label("Skills", systemImage: "wand.and.stars")
                 }
@@ -385,7 +385,11 @@ private struct MCPServerRow: View {
 }
 
 private struct SkillsSettingsPane: View {
-    let skills: [SkillCatalogItem]
+    @Bindable var store: SessionStore
+
+    private var skills: [SkillCatalogItem] {
+        store.integrations.skills
+    }
 
     private var skillSources: [String] {
         Array(Set(skills.map(\.source))).sorted()
@@ -397,13 +401,31 @@ private struct SkillsSettingsPane: View {
                 Text("Codex Skills")
                     .font(.headline)
                 Spacer()
-                Text("\(skills.count) installed")
+                Text("\(skills.count) app-discoverable")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Button {
+                    store.refreshIntegrations()
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .disabled(!store.isConnectionHealthy)
+                .help("Refresh app-discoverable skills from the local daemon")
             }
 
             if skills.isEmpty {
-                ContentUnavailableView("No Skills", systemImage: "wand.and.stars", description: Text("No installed user or plugin skills found in the Codex config directories."))
+                ContentUnavailableView {
+                    Label(skillsEmptyTitle, systemImage: skillsEmptyIcon)
+                } description: {
+                    Text(skillsEmptyDescription)
+                } actions: {
+                    Button {
+                        store.refreshIntegrations()
+                    } label: {
+                        Label("Refresh Catalog", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(!store.isConnectionHealthy)
+                }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -416,6 +438,21 @@ private struct SkillsSettingsPane: View {
                 }
             }
         }
+    }
+
+    private var skillsEmptyTitle: String {
+        store.isConnectionHealthy ? "No App-Discoverable Skills" : "Skill Catalog Unavailable"
+    }
+
+    private var skillsEmptyDescription: String {
+        if store.isConnectionHealthy {
+            return "The app did not receive any user or plugin skills from the local daemon. Runtime skills may still be available to the active Codex environment."
+        }
+        return "Connect to the local daemon to load the app-discoverable skill catalog. Runtime skills may still be available to the active Codex environment."
+    }
+
+    private var skillsEmptyIcon: String {
+        store.isConnectionHealthy ? "wand.and.stars" : "antenna.radiowaves.left.and.right.slash"
     }
 }
 
