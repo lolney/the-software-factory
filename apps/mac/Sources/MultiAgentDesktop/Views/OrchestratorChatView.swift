@@ -147,7 +147,7 @@ struct OrchestratorChatView: View {
                                 .id("branching-agent-timeline")
                             } else {
                                 ForEach(timelineItems) { item in
-                                    TimelineRow(item: item, color: color(for: item.primaryAgentId))
+                                    TimelineRow(store: store, item: item, color: color(for: item.primaryAgentId), openInspector: openInspector)
                                         .id(item.id)
                                 }
                             }
@@ -768,8 +768,10 @@ private struct TinySparkline: View {
 }
 
 private struct TimelineRow: View {
+    @Bindable var store: SessionStore
     let item: TimelineItem
     let color: Color
+    let openInspector: () -> Void
     @State private var expanded = false
 
     var body: some View {
@@ -783,7 +785,7 @@ private struct TimelineRow: View {
         case .transition(let transition):
             TransitionEventRow(item: transition, color: color, expanded: $expanded)
         case .plan(let plan):
-            PlanEventRow(item: plan, color: color, expanded: $expanded)
+            PlanEventRow(store: store, item: plan, color: color, expanded: $expanded, openInspector: openInspector)
         case .tool(let call, let result):
             ToolEventRow(call: call, result: result, color: color, expanded: $expanded)
         }
@@ -1026,9 +1028,11 @@ private struct TransitionEventRow: View {
 }
 
 private struct PlanEventRow: View {
+    @Bindable var store: SessionStore
     let item: TranscriptItem
     let color: Color
     @Binding var expanded: Bool
+    let openInspector: () -> Void
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
@@ -1037,9 +1041,17 @@ private struct PlanEventRow: View {
                     if let plan = item.payload["plan"]?.objectValue {
                         PlanPayloadView(plan: plan, workflowSpecs: arrayValue(item.payload["workflowSpecs"]) ?? [])
                     }
-                    if let planId = item.payload["planId"] {
-                        ToolPayloadBlock(title: "Plan ID", value: planId)
+                    if item.payload["plan"]?.objectValue == nil {
+                        planSummary
                     }
+                    Button {
+                        store.inspectorPanel = .plan
+                        store.clearSelectedTimelineEvent()
+                        openInspector()
+                    } label: {
+                        Label("Open Plan Inspector", systemImage: "sidebar.right")
+                    }
+                    .font(.caption)
                 }
                 .padding(.top, 6)
                 .padding(.leading, 20)
@@ -1060,6 +1072,29 @@ private struct PlanEventRow: View {
             }
         }
         .padding(.horizontal, 4)
+    }
+
+    private var planSummary: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let planId = item.payload["planId"]?.stringValue {
+                Label(planId, systemImage: "number")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            if !item.text.isEmpty {
+                Text(item.text)
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            Text("Structured workflow and criteria details are available in the Plan inspector when the plan event records them.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
