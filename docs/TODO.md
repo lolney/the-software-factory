@@ -28,7 +28,6 @@ Audited with Computer Use across transcript expansion, inspector tabs, toolbar m
 
 Clear fixes to work down:
 
-- Remove artifact-menu duplication. Session Artifacts repeats copy/export/share transcript actions both at the top level and again inside nested Copy/Export/Share groups.
 - Rename or clarify the Embed Code toolbar control. The menu opens workspace targets such as VS Code, Finder, and iTerm, so "Open Workspace" would match the action better.
 - Tone down disabled primary buttons in Auth settings. Disabled actions such as Save API Key still look blue/primary and clickable.
 - Clarify Settings > Skills empty state. It says "0 installed / No Skills" even though the active Codex environment has plugin and user skills available; distinguish app-discoverable skills from runtime skills.
@@ -74,6 +73,7 @@ Judgement-heavy follow-ups:
 - **2026-05-27: Hide inspector for New Session drafts.** Kept prior session details from appearing beside the draft composer while preserving the user’s existing inspector tab and drawer state for real sessions.
 - **2026-05-27: Make the New Session status strip draft-aware.** Replaced live runtime metrics with setup-state fields while drafting, including compact fallback layout and accurate daemon/fixture readiness labels.
 - **2026-05-27: Clarify Workflows empty state.** Replaced the generic no-workflows message with daemon-unavailable, empty-catalog, and workflow-selection states that distinguish built-in and personal workflow sources.
+- **2026-05-27: Remove Session Artifacts menu duplication.** Kept artifact actions organized under Copy, Export, and Share submenus and removed repeated top-level transcript/workspace commands.
 - **2026-05-25: Add archived sessions.** Added durable `session.archived`/`session.restored` events, an Archived Sessions destination, restore actions, read-only archived sessions, and daemon tests proving logs are preserved.
 - **2026-05-25: Add multi-session dashboard and actions.** Added sidebar multi-selection, confirmed batch archive, "View Selected Sessions", and a session dashboard/table with status, last activity, mode, workspace path, active/paused agents, failure count, and quick actions.
 - **2026-05-25: Add real new-session setup.** Added quick blank-workspace setup, parent-folder workspace selection, live auth preflight, and model/reasoning controls on the composer.
