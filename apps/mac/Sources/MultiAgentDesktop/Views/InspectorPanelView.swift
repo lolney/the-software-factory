@@ -461,7 +461,7 @@ struct PlanInspectorPanelView: View {
     @Bindable var store: SessionStore
 
     private var latestPlan: TranscriptItem? {
-        store.transcript.last { $0.type == "plan.created" && $0.payload["plan"]?.objectValue != nil }
+        store.transcript.last { $0.type == "plan.created" }
     }
 
     private var planObject: [String: JSONValue]? {
@@ -469,7 +469,27 @@ struct PlanInspectorPanelView: View {
     }
 
     private var planId: String? {
-        planObject?["id"]?.stringValue
+        planObject?["id"]?.stringValue ?? latestPlan?.payload["planId"]?.stringValue
+    }
+
+    private var fallbackPlanName: String {
+        guard let latestPlan else { return "Untitled plan" }
+        if let planId {
+            return planId
+                .replacingOccurrences(of: "-", with: " ")
+                .replacingOccurrences(of: "_", with: " ")
+                .capitalized
+        }
+        return latestPlan.text.isEmpty ? "Untitled plan" : latestPlan.text
+    }
+
+    private var fallbackPlanGoal: String {
+        guard let latestPlan else { return store.selectedSessionId ?? "No goal recorded" }
+        return latestPlan.text.isEmpty ? store.selectedSessionId ?? "No goal recorded" : latestPlan.text
+    }
+
+    private var planSourceIsStructured: Bool {
+        planObject != nil
     }
 
     private var workflows: [[String: JSONValue]] {
@@ -646,16 +666,22 @@ struct PlanInspectorPanelView: View {
         VStack(alignment: .leading, spacing: 0) {
             planHeader
 
-            if let plan = planObject {
+            if latestPlan != nil {
                 List {
                     Section("Goal") {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(plan["name"]?.stringValue ?? "Untitled plan")
+                            Text(planObject?["name"]?.stringValue ?? fallbackPlanName)
                                 .font(.callout.weight(.semibold))
-                            Text(plan["goal"]?.stringValue ?? store.selectedSessionId ?? "No goal recorded")
+                            Text(planObject?["goal"]?.stringValue ?? fallbackPlanGoal)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
+                            if !planSourceIsStructured {
+                                Label("Structured plan details were not recorded for this event. Showing the transcript plan summary.", systemImage: "info.circle")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                         .padding(.vertical, 4)
                     }
@@ -680,9 +706,11 @@ struct PlanInspectorPanelView: View {
                         }
                     }
 
-                    Section("Agent Prompts") {
-                        ForEach(workflows, id: \.self) { workflow in
-                            PlanWorkflowPromptView(workflow: workflow)
+                    if !workflows.isEmpty {
+                        Section("Agent Prompts") {
+                            ForEach(workflows, id: \.self) { workflow in
+                                PlanWorkflowPromptView(workflow: workflow)
+                            }
                         }
                     }
                 }
