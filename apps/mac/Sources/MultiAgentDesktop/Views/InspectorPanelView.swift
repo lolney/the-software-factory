@@ -1146,6 +1146,10 @@ private struct WorkspaceFileReviewRow: View {
         max(0, events.count - diffEvents.count)
     }
 
+    private var hasReportedLineCountsWithoutDiff: Bool {
+        diffEvents.isEmpty && (file.additions > 0 || file.deletions > 0)
+    }
+
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
             if expanded {
@@ -1178,14 +1182,14 @@ private struct WorkspaceFileReviewRow: View {
                     .font(.caption)
 
                     if diffEvents.isEmpty {
-                        Text(file.lastEventType == "workspace.conflict_detected" ? "No diff recorded for this conflict event." : "No diff recorded for this file.")
+                        Text(emptyDiffMessage)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Showing latest recorded diff first.")
                             if hiddenMetadataEventCount > 0 {
-                                Text("\(hiddenMetadataEventCount) metadata-only touch\(hiddenMetadataEventCount == 1 ? "" : "es") hidden.")
+                                Text("\(hiddenMetadataEventCount) no-diff workspace event\(hiddenMetadataEventCount == 1 ? "" : "s") hidden.")
                             }
                         }
                         .font(.caption2)
@@ -1229,7 +1233,7 @@ private struct WorkspaceFileReviewRow: View {
                     Text(file.lastAgentId ?? "system")
                     Text(file.lastEventType.replacingOccurrences(of: "workspace.", with: ""))
                     if file.additions > 0 || file.deletions > 0 {
-                        Text("+\(file.additions) -\(file.deletions)")
+                        Text(lineCountLabel)
                             .foregroundStyle(diffColor)
                     }
                     Spacer()
@@ -1280,14 +1284,29 @@ private struct WorkspaceFileReviewRow: View {
     private var changeSummary: String {
         let conflictText = file.conflictCount == 0 ? "" : ", \(file.conflictCount) conflict\(file.conflictCount == 1 ? "" : "s")"
         let diffText = diffEvents.isEmpty ? "no recorded diffs" : "\(diffEvents.count) recorded diff\(diffEvents.count == 1 ? "" : "s")"
-        let hiddenText = hiddenMetadataEventCount == 0 ? "" : "; \(hiddenMetadataEventCount) metadata-only touch\(hiddenMetadataEventCount == 1 ? "" : "es") hidden"
-        return "Latest event: \(file.lastEventType.replacingOccurrences(of: "workspace.", with: "")) by \(file.lastAgentId ?? "system"); \(diffText); +\(file.additions) -\(file.deletions)\(conflictText)\(hiddenText)."
+        let hiddenText = hiddenMetadataEventCount == 0 ? "" : "; \(hiddenMetadataEventCount) no-diff workspace event\(hiddenMetadataEventCount == 1 ? "" : "s") hidden"
+        let lineText = hasReportedLineCountsWithoutDiff ? "+\(file.additions) -\(file.deletions) reported without diff content" : "+\(file.additions) -\(file.deletions)"
+        return "Latest event: \(file.lastEventType.replacingOccurrences(of: "workspace.", with: "")) by \(file.lastAgentId ?? "system"); \(diffText); \(lineText)\(conflictText)\(hiddenText)."
     }
 
     private func diffLabel(for index: Int) -> String {
         if index == 0 { return "Latest recorded diff" }
         if index == 1 { return "Previous diff" }
         return "Older diff \(index)"
+    }
+
+    private var lineCountLabel: String {
+        if hasReportedLineCountsWithoutDiff {
+            return "+\(file.additions) -\(file.deletions) reported"
+        }
+        return "+\(file.additions) -\(file.deletions)"
+    }
+
+    private var emptyDiffMessage: String {
+        if hasReportedLineCountsWithoutDiff {
+            return "Line counts were reported for this file, but no diff content was recorded. Copy Diff is unavailable."
+        }
+        return file.lastEventType == "workspace.conflict_detected" ? "No diff recorded for this conflict event." : "No diff recorded for this file."
     }
 }
 

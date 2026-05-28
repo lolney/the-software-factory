@@ -28,7 +28,6 @@ Audited with Computer Use across transcript expansion, inspector tabs, toolbar m
 
 Clear fixes to work down:
 
-- Make Workspace changed-file expansion consistent with its summary. Rows can show changed-line counts but expand to "No diff recorded for this file," with Copy Diff disabled.
 - Clean up the dashboard table: important values truncate heavily, empty placeholder rows look like loading skeletons after data is loaded, and tiny action icons need clearer affordances.
 - Reset or hide the inspector for New Session drafts. Leaving the prior Debug pane visible beside the draft composer makes the draft look tied to an unrelated session.
 - Make the New Session status strip draft-aware; runtime/event/connection metrics read like live session state even while the user is only configuring a new session.
@@ -74,6 +73,7 @@ Judgement-heavy follow-ups:
 - **2026-05-27: Sync Plan inspector with transcript plan signal.** Let the Plan pane consume all `plan.created` transcript events, preserve structured plan/checklist rendering when available, and show a deliberate fallback summary for unstructured fixture plan events.
 - **2026-05-27: Clarify Debug fixture telemetry.** Replaced misleading fixture `0 runs / 0 logs` debug states with explicit copy that scheduler runs and daemon logs are unavailable in the static mock session.
 - **2026-05-27: Improve expanded plan transcript rows.** Replaced raw plan ID output with a compact human-facing summary and a working jump to the Plan inspector while preserving structured plan payload rendering.
+- **2026-05-27: Clarify no-diff Workspace expansions.** Made changed-file rows explicit when line counts exist without recorded diff bodies, kept Copy Diff disabled only when no copyable diff exists, and renamed hidden entries as no-diff workspace events.
 - **2026-05-25: Add archived sessions.** Added durable `session.archived`/`session.restored` events, an Archived Sessions destination, restore actions, read-only archived sessions, and daemon tests proving logs are preserved.
 - **2026-05-25: Add multi-session dashboard and actions.** Added sidebar multi-selection, confirmed batch archive, "View Selected Sessions", and a session dashboard/table with status, last activity, mode, workspace path, active/paused agents, failure count, and quick actions.
 - **2026-05-25: Add real new-session setup.** Added quick blank-workspace setup, parent-folder workspace selection, live auth preflight, and model/reasoning controls on the composer.
