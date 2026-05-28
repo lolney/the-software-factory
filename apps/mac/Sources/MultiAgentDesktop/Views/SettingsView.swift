@@ -75,14 +75,7 @@ private struct AuthSettingsPane: View {
                 SecureField("OpenAI API key", text: $store.openAIApiKeyInput)
                     .textFieldStyle(.roundedBorder)
                 HStack {
-                    Button {
-                        store.saveOpenAIAPIKey()
-                    } label: {
-                        Label("Save API Key", systemImage: "key")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(store.openAIApiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .help("Store this API key in macOS Keychain")
+                    saveAPIKeyButton
 
                     Button(role: .destructive) {
                         store.disconnectOpenAIAPIKey()
@@ -173,14 +166,7 @@ private struct AuthSettingsPane: View {
                 TextField("ChatGPT-Account-Id", text: $store.chatGPTAccountIdInput)
                     .textFieldStyle(.roundedBorder)
                 HStack {
-                    Button {
-                        store.saveChatGPTAccountId()
-                    } label: {
-                        Label("Save Account ID", systemImage: "person.text.rectangle")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(store.chatGPTAccountIdInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .help("Store this ChatGPT account id in macOS Keychain")
+                    saveAccountIDButton
 
                     Button(role: .destructive) {
                         store.disconnectChatGPTAccountId()
@@ -208,6 +194,52 @@ private struct AuthSettingsPane: View {
             return "Ready"
         }
         return "Not Ready"
+    }
+
+    @ViewBuilder
+    private var saveAPIKeyButton: some View {
+        let canSave = !store.openAIApiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if canSave {
+            Button {
+                store.saveOpenAIAPIKey()
+            } label: {
+                Label("Save API Key", systemImage: "key")
+            }
+            .buttonStyle(.borderedProminent)
+            .help("Store this API key in macOS Keychain")
+        } else {
+            Button {
+                store.saveOpenAIAPIKey()
+            } label: {
+                Label("Save API Key", systemImage: "key")
+            }
+            .buttonStyle(.bordered)
+            .disabled(true)
+            .help("Enter an API key to enable saving")
+        }
+    }
+
+    @ViewBuilder
+    private var saveAccountIDButton: some View {
+        let canSave = !store.chatGPTAccountIdInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if canSave {
+            Button {
+                store.saveChatGPTAccountId()
+            } label: {
+                Label("Save Account ID", systemImage: "person.text.rectangle")
+            }
+            .buttonStyle(.borderedProminent)
+            .help("Store this ChatGPT account id in macOS Keychain")
+        } else {
+            Button {
+                store.saveChatGPTAccountId()
+            } label: {
+                Label("Save Account ID", systemImage: "person.text.rectangle")
+            }
+            .buttonStyle(.bordered)
+            .disabled(true)
+            .help("Enter an account id to enable saving")
+        }
     }
 }
 
