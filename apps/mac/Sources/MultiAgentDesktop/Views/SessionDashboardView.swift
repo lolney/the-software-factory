@@ -71,10 +71,12 @@ struct SessionDashboardView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(session.title)
                                 .lineLimit(1)
+                                .truncationMode(.tail)
                             Text(session.id)
                                 .font(.caption2.monospaced())
                                 .foregroundStyle(.tertiary)
                                 .lineLimit(1)
+                                .truncationMode(.middle)
                         }
                     }
                     TableColumn("Status") { session in
@@ -90,8 +92,9 @@ struct SessionDashboardView: View {
                             .foregroundStyle(.secondary)
                     }
                     TableColumn("Active/Paused") { session in
-                        Text("\(session.activeAgents ?? 0)")
+                        Text(agentActivityLabel(for: session))
                             .monospacedDigit()
+                            .lineLimit(1)
                     }
                     TableColumn("Failures") { session in
                         Text("\(session.failureCount ?? 0)")
@@ -99,18 +102,26 @@ struct SessionDashboardView: View {
                             .monospacedDigit()
                     }
                     TableColumn("Workflow") { session in
-                        Text(session.detail)
+                        Text(session.detail.isEmpty ? "None" : session.detail)
+                            .foregroundStyle(session.detail.isEmpty ? .tertiary : .secondary)
                             .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                     TableColumn("Last Activity") { session in
                         Text(dateLabel(session.updatedAt ?? session.createdAt))
                             .foregroundStyle(.secondary)
                     }
                     TableColumn("Workspace") { session in
-                        Text(session.workspaceRoot ?? "None")
-                            .font(.caption.monospaced())
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                        if let workspaceRoot = session.workspaceRoot, !workspaceRoot.isEmpty {
+                            Text(abbreviatedPath(workspaceRoot))
+                                .font(.caption.monospaced())
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .help(workspaceRoot)
+                        } else {
+                            Text("No workspace")
+                                .foregroundStyle(.tertiary)
+                        }
                     }
                     TableColumn("Actions") { session in
                         HStack(spacing: 8) {
@@ -119,21 +130,33 @@ struct SessionDashboardView: View {
                             } label: {
                                 Label("View", systemImage: "eye")
                             }
-                            if session.archived == true {
-                                Button {
-                                    store.restoreSessions([session.id])
-                                } label: {
-                                    Label("Restore", systemImage: "arrow.uturn.backward")
+                            .buttonStyle(.bordered)
+                            .help("View session")
+                            .accessibilityLabel("View session")
+
+                            Menu {
+                                if session.archived == true {
+                                    Button {
+                                        store.restoreSessions([session.id])
+                                    } label: {
+                                        Label("Restore", systemImage: "arrow.uturn.backward")
+                                    }
+                                } else {
+                                    Button {
+                                        requestArchive([session.id])
+                                    } label: {
+                                        Label("Archive", systemImage: "archivebox")
+                                    }
                                 }
-                            } else {
-                                Button {
-                                    requestArchive([session.id])
-                                } label: {
-                                    Label("Archive", systemImage: "archivebox")
-                                }
+                            } label: {
+                                Label("More", systemImage: "ellipsis.circle")
                             }
+                            .menuStyle(.borderlessButton)
+                            .help(session.archived == true ? "Restore session" : "Archive session")
+                            .accessibilityLabel(session.archived == true ? "Restore session" : "Archive session")
                         }
                         .labelStyle(.iconOnly)
+                        .controlSize(.small)
                     }
                 }
             }
@@ -198,14 +221,20 @@ struct SessionDashboardView: View {
     }
 
     private var emptyStateTitle: String {
-        selectedStatusFilter == nil ? "No Sessions" : "No \(statusFilterLabel(selectedStatusFilter ?? "").lowercased()) sessions"
+        if selectedStatusFilter != nil {
+            return "No \(statusFilterLabel(selectedStatusFilter ?? "").lowercased()) sessions"
+        }
+        return store.dashboardSessionFilterIds.isEmpty ? "No Sessions Yet" : "No Selected Sessions"
     }
 
     private var emptyStateDescription: String {
         if selectedStatusFilter != nil {
             return "Choose another status filter or show all sessions."
         }
-        return "Create a session or choose a different dashboard filter."
+        if store.dashboardSessionFilterIds.isEmpty {
+            return store.isConnectionHealthy ? "Create a session to populate the dashboard." : "Connect to the local daemon to load sessions."
+        }
+        return "The selected sessions are no longer available in the current dashboard scope."
     }
 
     private func count(for status: String) -> Int {
@@ -261,6 +290,26 @@ struct SessionDashboardView: View {
         return ISO8601DateFormatter().date(from: timestamp)
     }
 
+    private func abbreviatedPath(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") {
+            return "~" + String(path.dropFirst(home.count))
+        }
+        return path
+    }
+
+    private func agentActivityLabel(for session: SessionSummary) -> String {
+        let count = session.activeAgents ?? 0
+        switch normalizedStatus(for: session) {
+        case "active":
+            return "\(count) active"
+        case "paused":
+            return "\(count) paused"
+        default:
+            return "\(count) agent\(count == 1 ? "" : "s")"
+        }
+    }
     private func statusLabel(for session: SessionSummary) -> String {
         if session.archived == true { return "Archived" }
         switch session.status {
