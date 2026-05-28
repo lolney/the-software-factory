@@ -49,10 +49,11 @@ struct SessionDetailView: View {
                         Label("iTerm", systemImage: "terminal")
                     }
                 } label: {
-                    Label("Open", systemImage: "chevron.left.forwardslash.chevron.right")
+                    Label("Open Workspace", systemImage: "folder.badge.gearshape")
                 }
+                .accessibilityLabel("Open Workspace")
                 .disabled(store.currentWorkspaceRoot == nil || store.isLoadingSelection)
-                .help("Open the current session workspace")
+                .help("Open the current session workspace in another app")
 
                 Menu {
                     Menu("Copy") {
