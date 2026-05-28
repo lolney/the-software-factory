@@ -12,55 +12,21 @@ struct RolesView: View {
     }
 
     var body: some View {
-        HSplitView {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text("Roles")
-                        .font(.title2.weight(.semibold))
-                    Spacer()
-                    Button {
-                        store.copyPersonalRolesPath()
-                    } label: {
-                        Label("Copy Path", systemImage: "doc.on.doc")
-                    }
-                    .help(store.personalRolesPath ?? "Personal roles directory")
-                    if let index = selectedIndex, store.roles.indices.contains(index) {
-                        let role = store.roles[index]
-                        Button(role: .destructive) {
-                            rolePendingDeletion = role
-                            showDeleteConfirmation = true
-                        } label: {
-                            Label("Delete Role", systemImage: "trash")
-                        }
-                        .disabled(!store.canDeleteRole(role))
-                        .help(store.canDeleteRole(role) ? "Delete this user-created role" : "Built-in roles cannot be deleted")
-                    }
-                    Button {
-                        store.addRole()
-                    } label: {
-                        Label("Add Role", systemImage: "plus")
-                    }
-                    .help("Add a blank role JSON file")
+        GeometryReader { proxy in
+            if proxy.size.width < 760 {
+                VStack(spacing: 0) {
+                    roleListPane(compact: true)
+                        .frame(minHeight: 180, idealHeight: 220, maxHeight: 260)
+                    Divider()
+                    roleDetailPane
                 }
-                .padding()
-
-                List(selection: $selectedRoleId) {
-                    ForEach(store.roles) { role in
-                        Label(role.name.isEmpty ? role.id : role.name, systemImage: "person.crop.circle")
-                            .tag(role.id)
-                    }
-                }
-            }
-            .frame(minWidth: 240, idealWidth: 280)
-
-            if let index = selectedIndex, store.roles.indices.contains(index) {
-                RoleEditor(role: $store.roles[index]) {
-                    store.saveRole(store.roles[index])
-                }
-                .frame(minWidth: 520)
             } else {
-                ContentUnavailableView("No Role Selected", systemImage: "person.2", description: Text("Select a role or add a new one."))
-                    .frame(minWidth: 520)
+                HSplitView {
+                    roleListPane(compact: false)
+                        .frame(minWidth: 220, idealWidth: 280)
+                    roleDetailPane
+                        .frame(minWidth: 340)
+                }
             }
         }
         .task {
@@ -84,6 +50,92 @@ struct RolesView: View {
             Button("Cancel", role: .cancel) {}
         } message: { _ in
             Text("This removes the user-created role from the local role catalog. Built-in roles are protected.")
+        }
+    }
+
+    private func roleListPane(compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Roles")
+                    .font(.title2.weight(.semibold))
+                Spacer()
+                roleActions(labelStyle: compact ? .iconOnly : .titleAndIcon)
+            }
+            .padding()
+
+            List(selection: $selectedRoleId) {
+                ForEach(store.roles) { role in
+                    Label(role.name.isEmpty ? role.id : role.name, systemImage: "person.crop.circle")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .tag(role.id)
+                }
+            }
+        }
+    }
+
+    private func roleActions(labelStyle: AdaptiveRolesActionLabelStyle) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                store.copyPersonalRolesPath()
+            } label: {
+                Label("Copy Path", systemImage: "doc.on.doc")
+                    .adaptiveRolesLabelStyle(labelStyle)
+            }
+            .help(store.personalRolesPath ?? "Personal roles directory")
+            .accessibilityLabel("Copy personal roles path")
+
+            if let index = selectedIndex, store.roles.indices.contains(index) {
+                let role = store.roles[index]
+                Button(role: .destructive) {
+                    rolePendingDeletion = role
+                    showDeleteConfirmation = true
+                } label: {
+                    Label("Delete Role", systemImage: "trash")
+                        .adaptiveRolesLabelStyle(labelStyle)
+                }
+                .disabled(!store.canDeleteRole(role))
+                .help(store.canDeleteRole(role) ? "Delete this user-created role" : "Built-in roles cannot be deleted")
+                .accessibilityLabel("Delete role")
+            }
+
+            Button {
+                store.addRole()
+            } label: {
+                Label("Add Role", systemImage: "plus")
+                    .adaptiveRolesLabelStyle(labelStyle)
+            }
+            .help("Add a blank role JSON file")
+            .accessibilityLabel("Add role")
+        }
+    }
+
+    @ViewBuilder
+    private var roleDetailPane: some View {
+        if let index = selectedIndex, store.roles.indices.contains(index) {
+            RoleEditor(role: $store.roles[index]) {
+                store.saveRole(store.roles[index])
+            }
+        } else {
+            ContentUnavailableView("No Role Selected", systemImage: "person.2", description: Text("Select a role or add a new one."))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+private enum AdaptiveRolesActionLabelStyle {
+    case titleAndIcon
+    case iconOnly
+}
+
+private extension View {
+    @ViewBuilder
+    func adaptiveRolesLabelStyle(_ style: AdaptiveRolesActionLabelStyle) -> some View {
+        switch style {
+        case .titleAndIcon:
+            self.labelStyle(.titleAndIcon)
+        case .iconOnly:
+            self.labelStyle(.iconOnly)
         }
     }
 }
@@ -159,5 +211,6 @@ private struct RoleEditor: View {
         }
         .formStyle(.grouped)
         .padding()
+        .frame(minWidth: 320)
     }
 }
