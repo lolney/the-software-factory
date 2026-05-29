@@ -27,17 +27,19 @@ export class WorkspaceCoordinator {
 
   claimFile(policy: WorkspacePolicy, agentId: string, candidatePath: string): SessionEvent {
     const absolute = this.assertAllowed(policy, candidatePath);
+    const relativePath = path.relative(path.resolve(policy.workspaceRoot), absolute);
     const sessionLeases = getOrCreate(this.leases, policy.sessionId, () => new Map<string, string>());
     const existingAgent = sessionLeases.get(absolute);
     if (existingAgent && existingAgent !== agentId) {
       return this.event(policy.sessionId, agentId, "workspace.conflict_detected", {
         path: absolute,
+        relativePath,
         ownerAgentId: existingAgent,
         requestingAgentId: agentId
       });
     }
     sessionLeases.set(absolute, agentId);
-    return this.event(policy.sessionId, agentId, "workspace.file_claimed", { path: absolute });
+    return this.event(policy.sessionId, agentId, "workspace.file_claimed", { path: absolute, relativePath });
   }
 
   ownerOf(policy: WorkspacePolicy, candidatePath: string) {
@@ -47,8 +49,10 @@ export class WorkspaceCoordinator {
 
   conflictEvent(policy: WorkspacePolicy, agentId: string, candidatePath: string, ownerAgentId: string): SessionEvent {
     const absolute = this.assertAllowed(policy, candidatePath);
+    const relativePath = path.relative(path.resolve(policy.workspaceRoot), absolute);
     return this.event(policy.sessionId, agentId, "workspace.conflict_detected", {
       path: absolute,
+      relativePath,
       ownerAgentId,
       requestingAgentId: agentId
     });
@@ -85,11 +89,13 @@ export class WorkspaceCoordinator {
 
   recordTouched(policy: WorkspacePolicy, agentId: string, candidatePath: string, operation: "read" | "write" | "delete" = "write", diff?: string, diffStats?: { additions: number; deletions: number }): SessionEvent {
     const absolute = this.assertAllowed(policy, candidatePath);
+    const relativePath = path.relative(path.resolve(policy.workspaceRoot), absolute);
     const sessionTouched = getOrCreate(this.touched, policy.sessionId, () => new Map<string, Set<string>>());
     const agentTouched = getOrCreate(sessionTouched, agentId, () => new Set<string>());
     agentTouched.add(absolute);
     return this.event(policy.sessionId, agentId, "workspace.file_touched", {
       path: absolute,
+      relativePath,
       operation,
       diff,
       diffStats

@@ -9,7 +9,7 @@ struct OrchestratorChatView: View {
     @State private var followLiveTail = true
     @State private var tailIsVisible = true
 
-    private let timelineRenderLimit = 500
+    private let timelineRenderLimit = 260
     private let timelineTailId = "timeline-tail"
 
     private var filteredTranscript: [TranscriptItem] {
@@ -583,7 +583,7 @@ private struct AgentBranchingTimelineView: View {
     @State private var hoveredEventId: String?
 
     private func canvasHeight(for projection: BranchingTimelineProjection) -> CGFloat {
-        max(540, CGFloat(max(projection.events.count, 10)) * 38)
+        max(540, CGFloat(max(projection.events.count, 10)) * 46)
     }
 
     var body: some View {
@@ -608,20 +608,21 @@ private struct AgentBranchingTimelineView: View {
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.secondary.opacity(0.78))
                             .lineLimit(1)
-                            .frame(width: laneWidth(in: proxy.size.width, laneCount: lanes.count), alignment: .leading)
+                            .frame(width: laneLabelWidth(in: proxy.size.width, laneCount: lanes.count), alignment: lane.index == lanes.count - 1 ? .trailing : .leading)
                             .position(
-                                x: xPosition(for: lane.index, width: proxy.size.width, laneCount: lanes.count) + 74,
+                                x: laneLabelX(for: lane.index, width: proxy.size.width, laneCount: lanes.count),
                                 y: max(16, yPosition(for: lane.createdAt, in: projection, height: proxy.size.height) - 18)
                             )
                     }
                     ForEach(projection.events) { event in
-                        TimelineIconNode(event: event, color: colorForAgent(event.agentId)) {
+                        let nodePlacement = eventNodePlacement(for: event.laneIndex, width: proxy.size.width, laneCount: lanes.count)
+                        TimelineIconNode(event: event, color: colorForAgent(event.agentId), labelPlacement: nodePlacement.labelPlacement) {
                             selectEvent(event.id)
                         } setHovering: { isHovering in
                             hoveredEventId = isHovering ? event.id : (hoveredEventId == event.id ? nil : hoveredEventId)
                         }
                             .position(
-                                x: xPosition(for: event.laneIndex, width: proxy.size.width, laneCount: lanes.count),
+                                x: nodePlacement.x,
                                 y: yPosition(for: event.timestamp, in: projection, height: proxy.size.height) + event.visualOffset
                             )
                     }
@@ -708,15 +709,39 @@ private struct AgentBranchingTimelineView: View {
         }
     }
 
-    private func laneWidth(in width: CGFloat, laneCount: Int) -> CGFloat {
-        guard laneCount > 1 else { return min(160, width) }
-        return min(120, max(64, (width - 72) / CGFloat(laneCount)))
+    private func laneLabelWidth(in width: CGFloat, laneCount: Int) -> CGFloat {
+        guard laneCount > 1 else { return min(180, width) }
+        return min(150, max(72, (width - 48) / CGFloat(laneCount)))
+    }
+
+    private func laneLabelX(for index: Int, width: CGFloat, laneCount: Int) -> CGFloat {
+        let labelWidth = laneLabelWidth(in: width, laneCount: laneCount)
+        let laneX = xPosition(for: index, width: width, laneCount: laneCount)
+        if laneCount <= 1 {
+            return width / 2
+        }
+        if index == laneCount - 1 {
+            return max(labelWidth / 2, laneX - labelWidth / 2 + 14)
+        }
+        return min(width - labelWidth / 2, laneX + labelWidth / 2 + 14)
     }
 
     private func xPosition(for index: Int, width: CGFloat, laneCount: Int) -> CGFloat {
         guard laneCount > 1 else { return width / 2 }
-        let available = max(width - 72, 1)
-        return 36 + available * CGFloat(index) / CGFloat(laneCount - 1)
+        let available = max(width - 104, 1)
+        return 52 + available * CGFloat(index) / CGFloat(laneCount - 1)
+    }
+
+    private func eventNodePlacement(for index: Int, width: CGFloat, laneCount: Int) -> (x: CGFloat, labelPlacement: TimelineIconLabelPlacement) {
+        let laneX = xPosition(for: index, width: width, laneCount: laneCount)
+        let nodeWidth = TimelineIconNode.nodeWidth
+        if laneCount > 1, index == laneCount - 1 {
+            return (max(nodeWidth / 2, laneX - nodeWidth / 2 + 17), .trailing)
+        }
+        if laneX + nodeWidth > width {
+            return (max(nodeWidth / 2, laneX - nodeWidth / 2 + 17), .trailing)
+        }
+        return (min(width - nodeWidth / 2, laneX + nodeWidth / 2 - 17), .leading)
     }
 
     private func yPosition(for date: Date, in projection: BranchingTimelineProjection, height: CGFloat) -> CGFloat {
@@ -733,8 +758,11 @@ private struct AgentBranchingTimelineView: View {
 }
 
 private struct TimelineIconNode: View {
+    static let nodeWidth: CGFloat = 156
+
     let event: BranchingTimelineEvent
     let color: Color
+    let labelPlacement: TimelineIconLabelPlacement
     let action: () -> Void
     let setHovering: (Bool) -> Void
 
@@ -743,15 +771,36 @@ private struct TimelineIconNode: View {
             setHovering(false)
             action()
         } label: {
-            actionMarker
-            .frame(width: 32, height: 32)
-            .contentShape(Rectangle())
+            labelContent
+                .frame(width: Self.nodeWidth, height: 34, alignment: labelPlacement == .leading ? .leading : .trailing)
+                .contentShape(Rectangle())
         }
-        .frame(width: 32, height: 32)
+        .frame(width: Self.nodeWidth, height: 34)
         .contentShape(Rectangle())
         .buttonStyle(.plain)
         .onHover(perform: setHovering)
         .accessibilityLabel(event.helpText)
+    }
+
+    @ViewBuilder
+    private var labelContent: some View {
+        if labelPlacement == .leading {
+            HStack(spacing: 6) {
+                actionMarker
+                Text(event.title)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary.opacity(0.86))
+                    .lineLimit(1)
+            }
+        } else {
+            HStack(spacing: 6) {
+                Text(event.title)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary.opacity(0.86))
+                    .lineLimit(1)
+                actionMarker
+            }
+        }
     }
 
     private var creationMarker: some View {
@@ -767,8 +816,8 @@ private struct TimelineIconNode: View {
             .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(color.opacity(0.38))
-                .frame(width: 1.5, height: 18)
-                    .offset(y: 16)
+                .frame(width: 1.5, height: 20)
+                    .offset(y: 17)
             }
     }
 
@@ -791,12 +840,12 @@ private struct TimelineIconNode: View {
     }
 
     private var nodeSize: CGFloat {
-        return event.isStatus ? 16 : 22
+        return event.isStatus ? 22 : 28
     }
 
     private var iconSize: CGFloat {
-        if event.isStatus { return 8 }
-        return 10.5
+        if event.isStatus { return 10 }
+        return 13
     }
 
     private var strokeOpacity: Double {
@@ -814,6 +863,11 @@ private struct TimelineIconNode: View {
         if event.isStatus { return Color(.sRGB, white: 1, opacity: 0.74) }
         return Color(.sRGB, white: 0.995, opacity: 0.96)
     }
+}
+
+private enum TimelineIconLabelPlacement: Equatable {
+    case leading
+    case trailing
 }
 
 private struct TimelineEventTooltip: View {

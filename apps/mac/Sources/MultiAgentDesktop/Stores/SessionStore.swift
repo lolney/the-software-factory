@@ -1896,7 +1896,7 @@ func workspaceDiffHasContent(_ item: TranscriptItem) -> Bool {
 }
 
 func workspaceEventPath(_ item: TranscriptItem) -> String? {
-    item.payload["path"]?.stringValue ?? item.text.nilIfEmpty
+    item.payload["relativePath"]?.stringValue ?? item.payload["path"]?.stringValue ?? item.text.nilIfEmpty
 }
 
 func isDaemonDisconnectedMessage(_ message: String) -> Bool {

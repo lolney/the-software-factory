@@ -150,15 +150,15 @@ final class ProjectionTests: XCTestCase {
 
         let window = timelineWindow(from: transcript, limit: 2)
 
-        guard let pairedTool = window.items.first(where: {
-            if case .tool = $0 { return true }
+        guard let actionGroup = window.items.first(where: {
+            if case .group = $0 { return true }
             return false
         }),
-        case .tool(let call, let result?) = pairedTool else {
-            return XCTFail("Expected paired tool row to survive timeline limiting")
+        case .group(let group) = actionGroup else {
+            return XCTFail("Expected paired tool action to survive timeline limiting as a summary")
         }
-        XCTAssertEqual(call.id, "call")
-        XCTAssertEqual(result.id, "result")
+        XCTAssertTrue(group.title.localizedCaseInsensitiveContains("ran 1 command"))
+        XCTAssertEqual(group.events.map(\.id), ["result"])
     }
 
     func testTimelineHidesDenseRuntimeEventBursts() {
@@ -228,7 +228,7 @@ final class ProjectionTests: XCTestCase {
         let implementor = try XCTUnwrap(projection.lanes.first { $0.id == "implementor" })
         XCTAssertEqual(implementor.createdAt, start)
         XCTAssertEqual(implementor.activeRanges.first?.start, start.addingTimeInterval(5))
-        XCTAssertEqual(projection.events.map(\.id), ["edit"])
+        XCTAssertEqual(projection.events.map(\.id), [])
     }
 
     func testBranchingTimelineProjectionDropsBlankFallbackAgentIds() {
@@ -247,7 +247,7 @@ final class ProjectionTests: XCTestCase {
         XCTAssertTrue(projection.lanes.contains { $0.id == "qa" })
     }
 
-    func testBranchingTimelineProjectionKeepsStatusInLanesAndIcons() throws {
+    func testBranchingTimelineProjectionKeepsStatusInLanesWithoutRenderingStatusIcons() throws {
         let projection = BranchingTimelineProjection(
             graph: GraphState(sessionId: "session-1", workflowId: "wf", nodes: [], edges: []),
             metadataTranscript: [
@@ -266,16 +266,15 @@ final class ProjectionTests: XCTestCase {
         XCTAssertEqual(qa.activeRanges.count, 1)
         XCTAssertEqual(qa.activeRanges.first?.start, Date(timeIntervalSince1970: 10))
         XCTAssertEqual(qa.activeRanges.first?.end, Date(timeIntervalSince1970: 30))
-        XCTAssertEqual(projection.events.map(\.id), ["working", "completed", "failed"])
+        XCTAssertEqual(projection.events.map(\.id), [])
     }
 
-    func testBranchingTimelineProjectionUsesSpecificIconsForRuntimeEvents() throws {
+    func testBranchingTimelineProjectionUsesSpecificIconsForVisibleMilestones() throws {
         let events = [
-            item(id: "mail-in", agentId: "qa", type: "actor.mailbox.enqueued", text: "queued", payload: ["mailbox": .string("qa")]),
-            item(id: "job-started", agentId: "qa", type: "scheduler.job.started", text: "started", payload: ["jobId": .string("job-1")]),
-            item(id: "claimed", agentId: "qa", type: "workspace.file_claimed", text: "claimed"),
-            item(id: "checkpoint", agentId: "qa", type: "workspace.review_checkpoint", text: "review"),
-            item(id: "capability", agentId: "qa", type: "capability.checked", text: "checked")
+            item(id: "message", agentId: "qa", type: "agent.message", text: "Done"),
+            item(id: "handoff", agentId: "qa", sender: "qa", recipient: "reviewer", type: "handoff.created", text: "handoff", payload: ["from": .string("qa"), "to": .string("reviewer")]),
+            item(id: "plan", agentId: "qa", type: "plan.created", text: "plan"),
+            item(id: "error", agentId: "qa", type: "error", text: "failed")
         ]
         let projection = BranchingTimelineProjection(
             graph: GraphState(sessionId: "session-1", workflowId: "wf", nodes: [], edges: []),
@@ -284,11 +283,10 @@ final class ProjectionTests: XCTestCase {
         )
 
         XCTAssertEqual(projection.events.map(\.systemImage), [
-            "tray.and.arrow.down",
-            "play.circle",
-            "doc.badge.gearshape",
-            "text.badge.checkmark",
-            "checkmark.seal"
+            "envelope.fill",
+            "plus",
+            "checklist",
+            "exclamationmark.triangle.fill"
         ])
         XCTAssertFalse(projection.events.contains { $0.systemImage == "circle.fill" })
     }

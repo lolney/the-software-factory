@@ -43,6 +43,7 @@ describe("WorkspaceCoordinator", () => {
     const event = coordinator.recordTouched(policy, "implementor", "src/app.ts");
 
     expect(event.type).toBe("workspace.file_touched");
+    expect(event.payload.relativePath).toBe("src/app.ts");
     expect(coordinator.touchedFiles(policy.sessionId, "implementor")).toHaveLength(1);
   });
 });

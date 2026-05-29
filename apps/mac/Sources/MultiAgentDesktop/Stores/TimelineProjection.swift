@@ -100,7 +100,7 @@ private func backfilledToolWindow(from transcript: [TranscriptItem], tailCount: 
 
 private func makeTimelineItems(from transcript: [TranscriptItem]) -> [TimelineItem] {
     var items: [TimelineItem?] = []
-    var pendingToolCalls: [String: (index: Int, call: TranscriptItem)] = [:]
+    var pendingToolCalls: [String: TranscriptItem] = [:]
     var seenNarrativeMessages = Set<String>()
     let finalOutputId = finalOrchestratorOutputId(in: transcript)
 
@@ -117,19 +117,17 @@ private func makeTimelineItems(from transcript: [TranscriptItem]) -> [TimelineIt
             continue
         }
         if event.type == "agent.tool_call", let callId = event.payload["callId"]?.stringValue {
-            pendingToolCalls[callId] = (items.count, event)
-            items.append(.tool(call: event, result: nil))
+            pendingToolCalls[callId] = event
             continue
         }
         if event.type == "agent.tool_result",
            let callId = event.payload["callId"]?.stringValue,
            let pending = pendingToolCalls[callId] {
-            items[pending.index] = nil
-            if lowSignalToolPair(call: pending.call, result: event) {
+            if lowSignalToolPair(call: pending, result: event) {
                 pendingToolCalls.removeValue(forKey: callId)
                 continue
             }
-            items.append(.tool(call: pending.call, result: event))
+            items.append(.compact(event))
             pendingToolCalls.removeValue(forKey: callId)
             continue
         }
@@ -159,6 +157,10 @@ private func makeTimelineItems(from transcript: [TranscriptItem]) -> [TimelineIt
         } else if shouldShowSingleCompactEvent(event) {
             items.append(.compact(event))
         }
+    }
+
+    for pending in pendingToolCalls.values.sorted(by: { $0.timestamp < $1.timestamp }) {
+        items.append(.compact(pending))
     }
 
     return groupConsecutiveToolActions(groupCompactBursts(items.compactMap { $0 }))
@@ -192,13 +194,13 @@ private func groupCompactBursts(_ items: [TimelineItem]) -> [TimelineItem] {
 
     func flushCompactBuffer() {
         guard !compactBuffer.isEmpty else { return }
-        if compactBuffer.count >= 2 {
-            let group = makeGroup(from: compactBuffer)
-            if group.isActionGroup {
-                grouped.append(.group(group))
-            }
+        let group = makeGroup(from: compactBuffer)
+        if group.isActionGroup {
+            grouped.append(.group(group))
         } else {
-            grouped.append(contentsOf: compactBuffer.map(TimelineItem.compact))
+            if compactBuffer.count == 1 {
+                grouped.append(contentsOf: compactBuffer.map(TimelineItem.compact))
+            }
         }
         compactBuffer.removeAll()
     }
@@ -296,7 +298,7 @@ private func makeGroup(from events: [TranscriptItem]) -> TimelineEventGroup {
         agentSummary = "\(agents.prefix(2).joined(separator: ", ")) +\(agents.count - 2)"
     }
     let categories = eventGroupCategories(for: events)
-    let title = categories == "action" ? "\(events.count) actions" : "\(events.count) \(categories) events"
+    let title = actionSummaryTitle(for: events) ?? (categories == "action" ? "\(events.count) actions" : "\(events.count) \(categories) events")
     let subtitle = agentSummary.isEmpty ? "Low-level session activity" : "Low-level activity from \(agentSummary)"
     return TimelineEventGroup(
         id: "group-\(events.first?.id ?? "start")-\(events.last?.id ?? "end")",
@@ -309,6 +311,9 @@ private func makeGroup(from events: [TranscriptItem]) -> TimelineEventGroup {
 
 private func eventGroupCategories(for events: [TranscriptItem]) -> String {
     let categories = Set(events.map { compactEventCategory($0) })
+    if categories.contains("workspace") || categories.contains("tool") || categories.contains("capability") {
+        return "action"
+    }
     if categories.count == 1 {
         return categories.first ?? "low-level"
     }
@@ -318,10 +323,64 @@ private func eventGroupCategories(for events: [TranscriptItem]) -> String {
     if categories.contains("mailbox") {
         return "mailbox and status"
     }
-    if categories.contains("workspace") || categories.contains("tool") || categories.contains("routing") {
-        return "action"
-    }
     return "low-level"
+}
+
+private func actionSummaryTitle(for events: [TranscriptItem]) -> String? {
+    var exploredFiles = Set<String>()
+    var editedFiles = Set<String>()
+    var searches = 0
+    var commands = 0
+    var reviews = 0
+    var checks = 0
+    var otherActions = 0
+
+    for event in events {
+        let toolName = event.payload["toolName"]?.stringValue ?? ""
+        let haystack = [
+            event.type,
+            toolName,
+            event.payload["path"]?.stringValue,
+            event.text
+        ]
+        .compactMap { $0 }
+        .joined(separator: " ")
+        .lowercased()
+
+        if event.type == "workspace.file_touched" || toolName == "workspace.write_file" || haystack.contains("write_file") {
+            editedFiles.insert(event.payload["path"]?.stringValue ?? event.id)
+        } else if event.type == "workspace.review_checkpoint" || haystack.contains("review") {
+            reviews += 1
+        } else if event.type == "capability.checked" {
+            checks += 1
+        } else if toolName == "workspace.run_command" || toolName == "workspace_run_command" || haystack.contains("run_command") {
+            commands += 1
+        } else if haystack.contains("search") || haystack.contains("grep") || haystack.contains("rg ") || haystack.contains("ripgrep") {
+            searches += 1
+        } else if event.type.hasPrefix("workspace.") || haystack.contains("read_file") || haystack.contains("read file") || haystack.contains("inspect") {
+            exploredFiles.insert(event.payload["path"]?.stringValue ?? event.id)
+        } else if event.type == "agent.tool_call" || event.type == "agent.tool_result" {
+            otherActions += 1
+        }
+    }
+
+    var parts: [String] = []
+    appendSummaryPart(&parts, count: exploredFiles.count, singular: "Explored 1 file", plural: "Explored \(exploredFiles.count) files")
+    appendSummaryPart(&parts, count: editedFiles.count, singular: "edited 1 file", plural: "edited \(editedFiles.count) files")
+    appendSummaryPart(&parts, count: searches, singular: "1 search", plural: "\(searches) searches")
+    appendSummaryPart(&parts, count: commands, singular: "ran 1 command", plural: "ran \(commands) commands")
+    appendSummaryPart(&parts, count: reviews, singular: "reviewed 1 checkpoint", plural: "reviewed \(reviews) checkpoints")
+    appendSummaryPart(&parts, count: checks, singular: "checked 1 capability", plural: "checked \(checks) capabilities")
+    appendSummaryPart(&parts, count: otherActions, singular: "ran 1 action", plural: "ran \(otherActions) actions")
+
+    guard !parts.isEmpty else { return nil }
+    let title = parts.joined(separator: ", ")
+    return String(title.prefix(1)).uppercased() + String(title.dropFirst())
+}
+
+private func appendSummaryPart(_ parts: inout [String], count: Int, singular: String, plural: String) {
+    guard count > 0 else { return }
+    parts.append(count == 1 ? singular : plural)
 }
 
 private func compactEventCategory(_ item: TranscriptItem) -> String {
@@ -336,7 +395,6 @@ private func compactEventCategory(_ item: TranscriptItem) -> String {
     if item.type == "agent.stopped" { return "status" }
     if item.type == "agent.stop_blocked" { return "status" }
     if item.type == "agent.tool_result" { return "tool" }
-    if item.type == "handoff.created" || item.type == "message.sent" { return "routing" }
     if item.type == "capability.checked" { return "capability" }
     return "low-level"
 }
@@ -355,10 +413,10 @@ private func isGroupableCompactEvent(_ item: TranscriptItem) -> Bool {
         || lowSignalMessage(item)
         || item.type == "agent.stopped"
         || item.type == "agent.stop_blocked"
+        || item.type == "agent.tool_call"
+        || item.type == "agent.tool_result"
         || (item.type == "agent.tool_result" && lowSignalToolName(item.payload["toolName"]?.stringValue))
         || (item.type == "agent.tool_result" && zeroDiffWorkspaceWrite(item))
-        || item.type == "handoff.created"
-        || item.type == "message.sent"
         || item.type == "workspace.file_claimed"
         || item.type == "workspace.file_touched"
         || item.type == "workspace.review_checkpoint"
@@ -402,11 +460,13 @@ func timelineCompactTitle(for item: TranscriptItem) -> String {
     case "agent.reasoning":
         return "\(item.sender) reasoning"
     case "agent.tool_result":
-        let tool = item.payload["toolName"]?.stringValue ?? "tool"
+        let tool = displayToolName(item.payload["toolName"]?.stringValue ?? "tool")
         let status = item.payload["status"]?.stringValue ?? "done"
         return "\(tool) \(status)"
     case "handoff.created":
-        return "\(item.sender) handed off to \(item.recipient ?? "agent")"
+        return "Handoff to \(item.payload["to"]?.stringValue ?? item.recipient ?? "agent")"
+    case "message.sent":
+        return "Message sent"
     case "actor.mailbox.enqueued":
         return "\(item.payload["mailbox"]?.stringValue ?? item.sender) mailbox received \(item.payload["messageType"]?.stringValue ?? "message")"
     case "actor.mailbox.dequeued":
@@ -438,6 +498,17 @@ func timelineCompactTitle(for item: TranscriptItem) -> String {
         return item.text
     default:
         return "\(item.sender) \(item.type)"
+    }
+}
+
+private func displayToolName(_ toolName: String) -> String {
+    switch toolName {
+    case "workspace.write_file":
+        return "file edit"
+    case "workspace.run_command", "workspace_run_command":
+        return "command"
+    default:
+        return toolName.replacingOccurrences(of: "_", with: " ")
     }
 }
 
@@ -548,7 +619,12 @@ struct BranchingTimelineProjection {
     }
 
     private static func shouldRenderIcon(for event: TranscriptItem) -> Bool {
-        return true
+        switch event.type {
+        case "agent.message", "message", "message.sent", "handoff.created", "plan.created", "workflow.completed", "workflow.stopped", "agent.stopped", "agent.stop_blocked", "message.skipped", "error":
+            return true
+        default:
+            return false
+        }
     }
 
     private static func isCreationEvent(_ event: TranscriptItem, laneId: String, creationDates: [String: Date]) -> Bool {
@@ -728,9 +804,21 @@ struct BranchingTimelineProjection {
     private static func title(for event: TranscriptItem) -> String {
         switch event.type {
         case "handoff.created":
-            return "Handoff to \(event.payload["to"]?.stringValue ?? event.recipient ?? "agent")"
+            return "Handoff"
         case "message.sent":
-            return "Message to \(event.payload["to"]?.stringValue ?? event.recipient ?? "agent")"
+            return "Message sent"
+        case "agent.message":
+            return "Text output"
+        case "message":
+            return event.sender == "user" ? "Prompt" : "Message"
+        case "plan.created":
+            return "Plan created"
+        case "workflow.completed":
+            return "Workflow completed"
+        case "workflow.stopped":
+            return "Workflow stopped"
+        case "agent.stopped":
+            return "Agent stopped"
         case "workspace.file_touched":
             return "Edited \(event.payload["path"]?.stringValue ?? "file")"
         default:

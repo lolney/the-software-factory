@@ -224,8 +224,12 @@ export class SessionManager {
         }
         await this.initializeWorkspace(workspaceRoot, title);
         await this.appendDebugLog(snapshot.sessionId, "info", "workspace", `Initialized workspace at ${workspaceRoot}`, { workspaceRoot }, publishLog);
-        await this.recordOrchestratorTurn(snapshot, request.params.prompt, request.params.debugMode, publish);
-        await this.activateWorkflowStart(await this.store.readSnapshot(sessionId), publish);
+        if (request.params.debugMode || this.options.runtime) {
+          await this.recordOrchestratorTurn(snapshot, request.params.prompt, request.params.debugMode, publish);
+          await this.activateWorkflowStart(await this.store.readSnapshot(sessionId), publish);
+        } else {
+          this.startLiveSessionRun(sessionId, request.params.prompt, request.params.debugMode, publish, publishLog);
+        }
         return this.store.readSnapshot(sessionId);
       }
       case "getSnapshot":
@@ -312,6 +316,37 @@ export class SessionManager {
 
   emit(event: SessionEvent) {
     this.publish(event);
+  }
+
+  private startLiveSessionRun(
+    sessionId: string,
+    prompt: string,
+    debugMode: boolean,
+    publish: (event: SessionEvent) => void,
+    publishLog: (entry: DebugLogEntry) => void
+  ) {
+    void this.runLiveSessionStart(sessionId, prompt, debugMode, publish).catch(async (error) => {
+      await this.logErrorForSession(sessionId, error instanceof Error ? error.message : String(error), {
+        method: "createSession",
+        phase: "live-session-start"
+      }, publishLog);
+      try {
+        await this.store.rebuildSnapshot(sessionId);
+      } catch {
+        // The original error is the useful one; avoid masking it with rebuild failures.
+      }
+    });
+  }
+
+  private async runLiveSessionStart(
+    sessionId: string,
+    prompt: string,
+    debugMode: boolean,
+    publish: (event: SessionEvent) => void
+  ) {
+    const snapshot = await this.store.readSnapshot(sessionId);
+    await this.recordOrchestratorTurn(snapshot, prompt, debugMode, publish);
+    await this.activateWorkflowStart(await this.store.readSnapshot(sessionId), publish);
   }
 
   private async recordOrchestratorTurn(
@@ -750,6 +785,9 @@ export class SessionManager {
 
     for (let step = 0; step < maxSteps; step += 1) {
       snapshot = await this.store.readSnapshot(snapshot.sessionId);
+      if (rootOrchestratorIsTerminal(snapshot, orchestratorId)) {
+        break;
+      }
       const graph = snapshot.graph;
       const readyHandoffs = graph.edges
         .filter((edge) => edge.kind === "handoff")
@@ -1891,6 +1929,13 @@ export class SessionManager {
         return `Instantiated plan ${planId}.`;
       };
       tools.startWorkflow = async (workflowId: string, anchorNodeId?: string) => {
+        const latest = await this.store.readSnapshot(snapshot.sessionId);
+        if (workflowId === latest.workflowId && (anchorNodeId ?? agentId) === agentId) {
+          return [
+            `Workflow ${workflowId} is already the root workflow for this session.`,
+            "Do not start a duplicate copy; use the existing graph agents and workflow edges."
+          ].join(" ");
+        }
         const result = await this.instantiateWorkflowGraph(snapshot.sessionId, workflowId, anchorNodeId ?? agentId, publish);
         await this.scheduleMappedWorkflowExecution({
           sessionId: snapshot.sessionId,
@@ -3477,12 +3522,17 @@ function hasAgentProgressAfter(events: SessionEvent[], eventId: string, agentId:
   );
 }
 
+function rootOrchestratorIsTerminal(snapshot: SessionSnapshot, orchestratorId: string) {
+  const status = snapshot.graph.nodes.find((node) => node.id === orchestratorId)?.status;
+  return ["completed", "cancelled", "failed"].includes(status ?? "");
+}
+
 async function scanWorkspaceFiles(root: string) {
   const files = new Map<string, string>();
   async function walk(directory: string) {
     const entries = await readdir(directory, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "__pycache__") continue;
+      if (shouldSkipWorkspaceScanEntry(entry.name)) continue;
       const absolute = path.join(directory, entry.name);
       if (entry.isDirectory()) {
         await walk(absolute);
@@ -3501,6 +3551,23 @@ async function scanWorkspaceFiles(root: string) {
     await walk(root);
   }
   return files;
+}
+
+function shouldSkipWorkspaceScanEntry(name: string) {
+  return [
+    ".git",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "node_modules",
+    "coverage",
+    "dist",
+    "build"
+  ].includes(name);
 }
 
 function changedWorkspaceFiles(before: Map<string, string>, after: Map<string, string>) {
@@ -3584,8 +3651,9 @@ function modelForRun(snapshot: SessionSnapshot, role?: { model?: string }) {
 
 function reasoningEffortForRun(snapshot: SessionSnapshot) {
   const value = typeof snapshot.reasoningEffort === "string" ? snapshot.reasoningEffort : undefined;
+  if (value === "minimal") return "low";
   return ["none", "minimal", "low", "medium", "high", "xhigh"].includes(value ?? "")
-    ? value as "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+    ? value as "none" | "low" | "medium" | "high" | "xhigh"
     : undefined;
 }
 
