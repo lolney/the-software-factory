@@ -970,7 +970,6 @@ describe("SessionManager deterministic debug sessions", () => {
   it("emits an OpenAI reauthentication prompt when auth refresh is unavailable", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
     try {
-      let deletedTokens = false;
       const manager = new SessionManager({
         sessionsRoot: root,
         runtime: {
@@ -991,7 +990,7 @@ describe("SessionManager deterministic debug sessions", () => {
           authorizationUrl: `http://auth.example.test/start?port=${port}`
         }),
         deleteTokens: async () => {
-          deletedTokens = true;
+          throw new Error("refreshLiveConnectionAfterAuthError owns token cleanup classification");
         }
       };
 
@@ -1014,7 +1013,6 @@ describe("SessionManager deterministic debug sessions", () => {
       });
 
       const error = events.find((event) => event.type === "error");
-      expect(deletedTokens).toBe(true);
       expect(error?.payload.authenticationRequired).toBe(true);
       expect(error?.payload.authProvider).toBe("openai");
       expect(error?.payload.authorizationUrl).toBe("http://auth.example.test/start?port=4567");

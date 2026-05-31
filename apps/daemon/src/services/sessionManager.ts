@@ -3402,9 +3402,6 @@ export class SessionManager {
         }
       }
       const message = finalError instanceof Error ? finalError.message : String(finalError);
-      if (requiresReauth) {
-        await this.auth.deleteTokens();
-      }
       const authPayload: Record<string, unknown> = requiresReauth || (!input.debugMode && this.isOpenAIAuthFailure(finalError))
         ? await this.authenticationRequiredPayload(message)
         : {};

@@ -12,11 +12,18 @@ export const OPENAI_OAUTH_SCOPES = [
   "openid",
   "profile",
   "email",
-  "offline_access"
+  "offline_access",
+  "api.connectors.read",
+  "api.connectors.invoke"
+] as const;
+export const OPENAI_OAUTH_LIVE_REQUIRED_SCOPES = [
+  "api.connectors.read",
+  "api.connectors.invoke"
 ] as const;
 export const OPENAI_WHAM_BASE_URL = "https://chatgpt.com/backend-api/wham";
 export const OPENAI_OAUTH_CLIENT_NAME = "the-software-factory";
 export const OPENAI_OAUTH_CLIENT_VERSION = "0.1.0";
+export const OPENAI_OAUTH_ORIGINATOR = "codex_cli_rs";
 
 export interface OAuthTokenSet {
   accessToken: string;
@@ -42,6 +49,13 @@ interface PendingOAuth {
   redirectUri: string;
 }
 
+class OAuthTokenEndpointError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "OAuthTokenEndpointError";
+  }
+}
+
 export class AuthManager {
   private readonly keychainService = "local.softwarefactory.codex-oauth";
   private readonly legacyKeychainService = "local.multiagent.codex-oauth";
@@ -61,7 +75,7 @@ export class AuthManager {
     url.searchParams.set("state", state);
     url.searchParams.set("id_token_add_organizations", "true");
     url.searchParams.set("codex_cli_simplified_flow", "true");
-    url.searchParams.set("originator", "opencode");
+    url.searchParams.set("originator", OPENAI_OAUTH_ORIGINATOR);
     if (codeChallenge) {
       url.searchParams.set("code_challenge", codeChallenge);
       url.searchParams.set("code_challenge_method", "S256");
@@ -113,7 +127,7 @@ export class AuthManager {
       body
     });
     if (!response.ok) {
-      throw new Error(`OAuth token exchange failed with HTTP ${response.status}.`);
+      throw new OAuthTokenEndpointError(`OAuth token exchange failed with HTTP ${response.status}.`, response.status);
     }
     const raw = await response.json() as {
       access_token?: string;
@@ -122,6 +136,8 @@ export class AuthManager {
       id_token?: string;
       account_id?: string;
       accountId?: string;
+      scope?: string;
+      scopes?: string[] | string;
     };
     if (!raw.access_token) {
       throw new Error("OAuth token exchange did not return an access token.");
@@ -132,7 +148,7 @@ export class AuthManager {
       expiresAt: raw.expires_in ? new Date(Date.now() + raw.expires_in * 1000).toISOString() : undefined,
       email: emailFromIdToken(raw.id_token),
       accountId: raw.account_id ?? raw.accountId ?? accountIdFromToken(raw.id_token) ?? accountIdFromToken(raw.access_token),
-      scopes: [...OPENAI_OAUTH_SCOPES]
+      scopes: parseGrantedScopes(raw) ?? [...OPENAI_OAUTH_SCOPES]
     };
   }
 
@@ -151,7 +167,7 @@ export class AuthManager {
       body
     });
     if (!response.ok) {
-      throw new Error(`OAuth token refresh failed with HTTP ${response.status}. Reconnect OpenAI OAuth in Settings.`);
+      throw new OAuthTokenEndpointError(`OAuth token refresh failed with HTTP ${response.status}. Reconnect OpenAI OAuth in Settings.`, response.status);
     }
     const raw = await response.json() as {
       access_token?: string;
@@ -160,6 +176,8 @@ export class AuthManager {
       id_token?: string;
       account_id?: string;
       accountId?: string;
+      scope?: string;
+      scopes?: string[] | string;
     };
     if (!raw.access_token) {
       throw new Error("OAuth token refresh did not return an access token.");
@@ -170,7 +188,7 @@ export class AuthManager {
       expiresAt: raw.expires_in ? new Date(Date.now() + raw.expires_in * 1000).toISOString() : tokens.expiresAt,
       email: emailFromIdToken(raw.id_token) ?? tokens.email,
       accountId: raw.account_id ?? raw.accountId ?? accountIdFromToken(raw.id_token) ?? accountIdFromToken(raw.access_token) ?? tokens.accountId,
-      scopes: tokens.scopes ?? [...OPENAI_OAUTH_SCOPES]
+      scopes: parseGrantedScopes(raw) ?? tokens.scopes
     };
     await this.saveTokens(refreshed);
     return refreshed;
@@ -178,10 +196,21 @@ export class AuthManager {
 
   async refreshLiveConnectionAfterAuthError(): Promise<OpenAIConnection | undefined> {
     const tokens = await this.loadTokens();
-    if (!tokens?.accessToken || !tokens.refreshToken) {
+    if (!tokens?.accessToken) {
       return undefined;
     }
-    await this.refreshTokens(tokens);
+    if (!tokens.refreshToken) {
+      await this.deleteTokens();
+      return undefined;
+    }
+    try {
+      await this.refreshTokens(tokens);
+    } catch (error) {
+      if (isPermanentOAuthRefreshFailure(error)) {
+        await this.deleteTokens();
+      }
+      return undefined;
+    }
     return this.loadLiveConnection();
   }
 
@@ -191,8 +220,21 @@ export class AuthManager {
     }
     let tokens = await this.loadTokens();
     if (tokens?.accessToken) {
-      if (await this.needsRefresh()) {
-        tokens = await this.refreshTokens(tokens);
+      try {
+        if (this.tokensNeedRefresh(tokens)) {
+          tokens = await this.refreshTokens(tokens);
+        }
+      } catch (error) {
+        if (isPermanentOAuthRefreshFailure(error)) {
+          await this.deleteTokens();
+        }
+        tokens = null;
+      }
+    }
+    if (tokens?.accessToken) {
+      if (missingRequiredOAuthScopes(tokens).length > 0) {
+        const apiKey = await this.loadApiKey();
+        return apiKey ? { apiKey, source: "keychain" } : undefined;
       }
       const resolvedAccount = await this.resolveChatGPTAccountId(tokens);
       if (!resolvedAccount.accountId) {
@@ -308,17 +350,8 @@ export class AuthManager {
   }
 
   async deleteTokens() {
-    try {
-      await execFileAsync("security", [
-        "delete-generic-password",
-        "-a",
-        this.keychainAccount,
-        "-s",
-        this.keychainService
-      ]);
-    } catch {
-      // The user may already be disconnected; deletion is idempotent for callers.
-    }
+    await this.deleteGenericPassword(this.keychainAccount, this.keychainService);
+    await this.deleteGenericPassword(this.keychainAccount, this.legacyKeychainService);
   }
 
   async saveApiKey(apiKey: string) {
@@ -380,17 +413,8 @@ export class AuthManager {
   }
 
   async deleteChatGPTAccountId() {
-    try {
-      await execFileAsync("security", [
-        "delete-generic-password",
-        "-a",
-        this.chatGPTAccountIdKeychainAccount,
-        "-s",
-        this.keychainService
-      ]);
-    } catch {
-      // Deletion is idempotent for callers.
-    }
+    await this.deleteGenericPassword(this.chatGPTAccountIdKeychainAccount, this.keychainService);
+    await this.deleteGenericPassword(this.chatGPTAccountIdKeychainAccount, this.legacyKeychainService);
   }
 
   async loadApiKey() {
@@ -420,13 +444,18 @@ export class AuthManager {
   }
 
   async deleteApiKey() {
+    await this.deleteGenericPassword(this.apiKeychainAccount, this.apiKeychainService);
+    await this.deleteGenericPassword(this.apiKeychainAccount, this.legacyApiKeychainService);
+  }
+
+  private async deleteGenericPassword(account: string, service: string) {
     try {
       await execFileAsync("security", [
         "delete-generic-password",
         "-a",
-        this.apiKeychainAccount,
+        account,
         "-s",
-        this.apiKeychainService
+        service
       ]);
     } catch {
       // Deletion is idempotent for callers.
@@ -434,17 +463,35 @@ export class AuthManager {
   }
 
   async status() {
-    const tokens = await this.loadTokens();
-    const needsRefresh = await this.needsRefresh();
+    let tokens = await this.loadTokens();
+    let hasStoredTokens = Boolean(tokens);
+    let refreshError: string | undefined;
+    if (tokens?.accessToken && this.tokensNeedRefresh(tokens)) {
+      try {
+        tokens = await this.refreshTokens(tokens);
+        hasStoredTokens = Boolean(tokens);
+      } catch (error) {
+        if (isPermanentOAuthRefreshFailure(error)) {
+          await this.deleteTokens();
+          hasStoredTokens = false;
+        }
+        tokens = null;
+        refreshError = isPermanentOAuthRefreshFailure(error)
+          ? "Stored OpenAI OAuth credentials could not be refreshed. Sign in again to continue live runs."
+          : "Stored OpenAI OAuth credentials could not be refreshed right now. Try again when the connection is available.";
+      }
+    }
+    const needsRefresh = tokens ? this.tokensNeedRefresh(tokens) : false;
+    const missingScopes = tokens ? missingRequiredOAuthScopes(tokens) : [];
     const apiKeyConfigured = Boolean(process.env.OPENAI_API_KEY || await this.loadApiKey());
     const account = await this.resolveChatGPTAccountId(tokens ?? undefined);
-    const oauthUsable = Boolean(tokens?.accessToken) && (!needsRefresh || Boolean(tokens?.refreshToken));
+    const oauthUsable = Boolean(tokens?.accessToken) && (!needsRefresh || Boolean(tokens?.refreshToken)) && missingScopes.length === 0;
     const oauthLiveReady = oauthUsable && Boolean(account.accountId);
     const liveCredentialConfigured = apiKeyConfigured || oauthLiveReady;
     return {
       clientId: CODEX_PUBLIC_CLIENT_ID,
       connected: oauthUsable,
-      hasTokens: Boolean(tokens),
+      hasTokens: hasStoredTokens,
       email: tokens?.email,
       expiresAt: tokens?.expiresAt,
       needsRefresh,
@@ -459,15 +506,22 @@ export class AuthManager {
         ? "environment"
         : oauthLiveReady ? "codex-oauth" : apiKeyConfigured ? "keychain" : undefined,
       whamBaseURL: OPENAI_WHAM_BASE_URL,
-      liveReadinessError: oauthUsable && !account.accountId && !apiKeyConfigured
+      liveReadinessError: refreshError
+        ?? (missingScopes.length > 0 && !apiKeyConfigured
+        ? `Stored OpenAI OAuth credentials are missing required scopes (${missingScopes.join(", ")}). Sign in again to continue live runs.`
+        : oauthUsable && !account.accountId && !apiKeyConfigured
         ? "Codex OAuth is connected, but live WHAM runs need a ChatGPT account id. Configure ChatGPT-Account-Id in Settings or sign in with Codex so ~/.codex/auth.json contains tokens.account_id."
-        : undefined
+        : undefined)
     };
   }
 
   async needsRefresh(now = new Date()) {
     const tokens = await this.loadTokens();
-    if (!tokens?.expiresAt) return false;
+    return tokens ? this.tokensNeedRefresh(tokens, now) : false;
+  }
+
+  private tokensNeedRefresh(tokens: OAuthTokenSet, now = new Date()) {
+    if (!tokens.expiresAt) return Boolean(tokens.refreshToken);
     return new Date(tokens.expiresAt).getTime() - now.getTime() < 60_000;
   }
 
@@ -562,4 +616,27 @@ function jwtPayload(token?: string): Record<string, unknown> | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function missingRequiredOAuthScopes(tokens: OAuthTokenSet) {
+  const scopes = new Set(tokens.scopes ?? []);
+  return OPENAI_OAUTH_LIVE_REQUIRED_SCOPES.filter((scope) => !scopes.has(scope));
+}
+
+function parseGrantedScopes(raw: { scope?: string; scopes?: string[] | string }) {
+  if (Array.isArray(raw.scopes)) {
+    return raw.scopes.filter((scope): scope is string => typeof scope === "string" && scope.length > 0);
+  }
+  const rawScopes = raw.scope ?? raw.scopes;
+  if (typeof rawScopes !== "string") return undefined;
+  return rawScopes.split(/\s+/).map((scope) => scope.trim()).filter(Boolean);
+}
+
+function isPermanentOAuthRefreshFailure(error: unknown) {
+  const status = typeof (error as { status?: unknown })?.status === "number"
+    ? (error as { status: number }).status
+    : undefined;
+  const message = error instanceof Error ? error.message : String(error);
+  if (status === 400 || status === 401 || status === 403) return true;
+  return /\b(400|401|403|invalid_grant|invalid[_ -]?token|refresh_token_(expired|reused|invalidated)|token_expired|no refresh token is available)\b/i.test(message);
 }

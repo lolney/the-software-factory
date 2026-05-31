@@ -168,7 +168,7 @@ private struct AuthSettingsPane: View {
                     } label: {
                         Label("Disconnect", systemImage: "xmark.circle")
                     }
-                    .disabled(store.authStatus?.connected != true)
+                    .disabled(!canDisconnectOAuth)
                     .help("Disconnect the stored OpenAI OAuth credentials")
                 }
                 if let liveReadinessError = store.authStatus?.liveReadinessError {
@@ -218,6 +218,10 @@ private struct AuthSettingsPane: View {
             return "Ready"
         }
         return "Not Ready"
+    }
+
+    private var canDisconnectOAuth: Bool {
+        store.authStatus?.hasTokens == true || store.authStatus?.connected == true
     }
 
     @ViewBuilder
