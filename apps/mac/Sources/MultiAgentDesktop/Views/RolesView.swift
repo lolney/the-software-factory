@@ -232,6 +232,10 @@ private struct RoleEditor: View {
                     get: { role.toolPolicy.canUseComputer ?? false },
                     set: { role.toolPolicy.canUseComputer = $0 }
                 ))
+                Toggle("Can use MCP servers", isOn: Binding(
+                    get: { role.toolPolicy.canUseMCP ?? false },
+                    set: { role.toolPolicy.canUseMCP = $0 }
+                ))
             }
 
             Section("Workspace") {

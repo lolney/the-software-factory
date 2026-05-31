@@ -55,6 +55,7 @@ struct ToolPolicy: Hashable, Codable {
     var canCreatePlans: Bool?
     var canUseBrowser: Bool?
     var canUseComputer: Bool?
+    var canUseMCP: Bool?
 }
 
 struct RoleWorkspace: Hashable, Codable {
@@ -221,6 +222,28 @@ struct TranscriptItem: Identifiable, Hashable {
         ]
         .compactMap { $0 }
         .joined(separator: "\n")
+    }
+}
+
+struct ImageAttachment: Identifiable, Hashable {
+    var id: String
+    var name: String
+    var mimeType: String
+    var dataBase64: String
+    var detail: String = "auto"
+
+    var data: Data? {
+        Data(base64Encoded: dataBase64)
+    }
+
+    var payload: [String: Any] {
+        [
+            "id": id,
+            "name": name,
+            "mimeType": mimeType,
+            "dataBase64": dataBase64,
+            "detail": detail
+        ]
     }
 }
 

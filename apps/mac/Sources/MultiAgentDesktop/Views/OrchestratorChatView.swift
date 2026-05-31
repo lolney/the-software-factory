@@ -966,11 +966,58 @@ private struct MessageRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 TimelineHeader(item: item, isFinalOutput: isFinalOutput)
                 BoundedTextBlock(text: narrativeMessageText(for: item, isFinalOutput: isFinalOutput), font: .body, limit: 8_000)
+                if !imageAttachments(from: item).isEmpty {
+                    TranscriptImageAttachmentStrip(attachments: imageAttachments(from: item))
+                }
             }
             .frame(maxWidth: 680, alignment: .leading)
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 4)
+    }
+}
+
+private struct TranscriptImageAttachmentStrip: View {
+    let attachments: [TranscriptImageAttachment]
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], alignment: .leading, spacing: 8) {
+            ForEach(attachments) { attachment in
+                VStack(alignment: .leading, spacing: 5) {
+                    if let image = attachment.image {
+                        Image(nsImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxHeight: 180)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    } else {
+                        Image(systemName: "photo")
+                            .font(.title2)
+                            .frame(width: 120, height: 80)
+                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    Text(attachment.name)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .padding(6)
+                .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+            }
+        }
+        .padding(.top, 2)
+    }
+}
+
+private struct TranscriptImageAttachment: Identifiable {
+    let id: String
+    let name: String
+    let dataBase64: String
+
+    var image: NSImage? {
+        guard let data = Data(base64Encoded: dataBase64) else { return nil }
+        return NSImage(data: data)
     }
 }
 
@@ -1797,4 +1844,15 @@ private func arrayValue(_ value: JSONValue?) -> [JSONValue]? {
         return values
     }
     return nil
+}
+
+private func imageAttachments(from item: TranscriptItem) -> [TranscriptImageAttachment] {
+    (arrayValue(item.payload["imageAttachments"]) ?? [])
+        .compactMap(\.objectValue)
+        .compactMap { object in
+            guard let dataBase64 = object["dataBase64"]?.stringValue else { return nil }
+            let id = object["id"]?.stringValue ?? UUID().uuidString
+            let name = object["name"]?.stringValue ?? "Image"
+            return TranscriptImageAttachment(id: id, name: name, dataBase64: dataBase64)
+        }
 }

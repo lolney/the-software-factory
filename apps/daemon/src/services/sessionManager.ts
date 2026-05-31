@@ -1,4 +1,4 @@
-import { CompletionCriterionSchema, PlanSpecSchema, type CompletionCriterion, type DaemonRequest, type DebugLogEntry, type DebugLogLevel, type GraphState, type PlanSpec, type SessionEvent, type SessionSnapshot, type WorkflowSpec } from "@software-factory/shared";
+import { CompletionCriterionSchema, ImageAttachmentSchema, PlanSpecSchema, type CompletionCriterion, type DaemonRequest, type DebugLogEntry, type DebugLogLevel, type GraphState, type ImageAttachment, type PlanSpec, type SessionEvent, type SessionSnapshot, type WorkflowSpec } from "@software-factory/shared";
 import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
@@ -202,6 +202,7 @@ export class SessionManager {
       case "createSession": {
         const sessionId = `sess_${crypto.randomUUID()}`;
         const title = firstLine(request.params.prompt) || "Untitled Session";
+        const imageAttachments = normalizeImageAttachments(request.params.imageAttachments);
         const spec = this.workflows.get(request.params.workflowId ?? "planner-orchestrator");
         const graph: GraphState = this.workflows.graphForSession(sessionId, spec);
         const workspaceRoot = await this.store.workspaceDir(sessionId, request.params.workspaceRoot);
@@ -217,6 +218,7 @@ export class SessionManager {
           debugMode: request.params.debugMode,
           model: request.params.model,
           reasoningEffort: request.params.reasoningEffort,
+          imageAttachments,
           graph
         });
         for (const event of snapshot.transcript) {
@@ -225,10 +227,10 @@ export class SessionManager {
         await this.initializeWorkspace(workspaceRoot, title);
         await this.appendDebugLog(snapshot.sessionId, "info", "workspace", `Initialized workspace at ${workspaceRoot}`, { workspaceRoot }, publishLog);
         if (request.params.debugMode || this.options.runtime) {
-          await this.recordOrchestratorTurn(snapshot, request.params.prompt, request.params.debugMode, publish);
+          await this.recordOrchestratorTurn(snapshot, request.params.prompt, request.params.debugMode, publish, undefined, imageAttachments);
           await this.activateWorkflowStart(await this.store.readSnapshot(sessionId), publish);
         } else {
-          this.startLiveSessionRun(sessionId, request.params.prompt, request.params.debugMode, publish, publishLog);
+          this.startLiveSessionRun(sessionId, request.params.prompt, request.params.debugMode, publish, publishLog, imageAttachments);
         }
         return this.store.readSnapshot(sessionId);
       }
@@ -242,15 +244,16 @@ export class SessionManager {
         this.assertSessionMutable(snapshot);
         const targetAgentId = request.params.targetAgentId ?? "orchestrator";
         this.assertAgentCanReceive(snapshot, targetAgentId);
+        const imageAttachments = normalizeImageAttachments(request.params.imageAttachments);
         const nudge = await this.appendAndPublish({
           eventId: makeEventId(),
           sessionId: request.params.sessionId,
           agentId: targetAgentId,
           timestamp: new Date().toISOString(),
           type: "control.nudge",
-          payload: { text: request.params.text }
+          payload: { text: request.params.text, imageAttachments }
         }, publish);
-        await this.recordAgentTurn(snapshot, targetAgentId, request.params.text, snapshot.debugMode, publish, nudge.eventId);
+        await this.recordAgentTurn(snapshot, targetAgentId, request.params.text, snapshot.debugMode, publish, nudge.eventId, imageAttachments);
         return this.store.readSnapshot(request.params.sessionId);
       }
       case "subscribeEvents":
@@ -323,9 +326,10 @@ export class SessionManager {
     prompt: string,
     debugMode: boolean,
     publish: (event: SessionEvent) => void,
-    publishLog: (entry: DebugLogEntry) => void
+    publishLog: (entry: DebugLogEntry) => void,
+    imageAttachments: ImageAttachment[] = []
   ) {
-    void this.runLiveSessionStart(sessionId, prompt, debugMode, publish).catch(async (error) => {
+    void this.runLiveSessionStart(sessionId, prompt, debugMode, publish, imageAttachments).catch(async (error) => {
       await this.logErrorForSession(sessionId, error instanceof Error ? error.message : String(error), {
         method: "createSession",
         phase: "live-session-start"
@@ -342,10 +346,11 @@ export class SessionManager {
     sessionId: string,
     prompt: string,
     debugMode: boolean,
-    publish: (event: SessionEvent) => void
+    publish: (event: SessionEvent) => void,
+    imageAttachments: ImageAttachment[] = []
   ) {
     const snapshot = await this.store.readSnapshot(sessionId);
-    await this.recordOrchestratorTurn(snapshot, prompt, debugMode, publish);
+    await this.recordOrchestratorTurn(snapshot, prompt, debugMode, publish, undefined, imageAttachments);
     await this.activateWorkflowStart(await this.store.readSnapshot(sessionId), publish);
   }
 
@@ -354,9 +359,10 @@ export class SessionManager {
     userText: string,
     debugMode: boolean,
     publish: (event: SessionEvent) => void,
-    causationId?: string
+    causationId?: string,
+    imageAttachments: ImageAttachment[] = []
   ) {
-    await this.recordAgentTurn(snapshot, "orchestrator", userText, debugMode, publish, causationId);
+    await this.recordAgentTurn(snapshot, "orchestrator", userText, debugMode, publish, causationId, imageAttachments);
   }
 
   private async recordAgentTurn(
@@ -365,7 +371,8 @@ export class SessionManager {
     userText: string,
     debugMode: boolean,
     publish: (event: SessionEvent) => void,
-    causationId?: string
+    causationId?: string,
+    imageAttachments: ImageAttachment[] = []
   ) {
     await this.rehydrateActors(snapshot.sessionId);
     const promptEvent = await this.appendAndPublish({
@@ -377,7 +384,8 @@ export class SessionManager {
       payload: {
         from: "user",
         to: agentId,
-        text: userText
+        text: userText,
+        imageAttachments
       },
       causationId
     }, publish);
@@ -396,12 +404,14 @@ export class SessionManager {
     const latest = await this.store.readSnapshot(snapshot.sessionId);
     if (!this.canSchedule(latest, agentId)) return false;
     const prompt = this.promptFromMailboxMessage(promptEvent);
+    const imageAttachments = this.imageAttachmentsFromMailboxMessage(promptEvent);
     const role = this.resolveRole(snapshot, agentId);
     const integrationCatalog = await this.integrations.listCatalog();
     const openAI = await this.openAIConnection(debugMode);
     const job = await this.startScheduledTurn(snapshot.sessionId, agentId, publish, {
       kind: "agent-turn",
       prompt,
+      imageAttachments,
       causationId: promptEvent.eventId
     });
     try {
@@ -410,6 +420,7 @@ export class SessionManager {
         sessionId: snapshot.sessionId,
         agentId,
         prompt,
+        imageAttachments,
         debugMode,
         roleName: role?.name,
         instructions: role?.promptTemplate,
@@ -482,6 +493,7 @@ export class SessionManager {
     const kind = typeof created.payload.kind === "string" ? created.payload.kind : "";
     const agentId = typeof created.payload.agentId === "string" ? created.payload.agentId : created.agentId;
     const prompt = typeof created.payload.prompt === "string" ? created.payload.prompt : "";
+    const imageAttachments = normalizeImageAttachments(created.payload.imageAttachments);
     if (!agentId || !prompt) throw new Error(`Scheduler job ${jobId} is missing retry metadata.`);
     await this.controlEvent(sessionId, agentId, "control.resume", "idle", publish, { jobId });
     const snapshot = await this.store.readSnapshot(sessionId);
@@ -501,7 +513,7 @@ export class SessionManager {
       return this.store.readSnapshot(sessionId);
     }
     if (kind === "agent-turn") {
-      await this.recordAgentTurn(snapshot, agentId, prompt, snapshot.debugMode, publish, recovered.eventId);
+      await this.recordAgentTurn(snapshot, agentId, prompt, snapshot.debugMode, publish, recovered.eventId, imageAttachments);
       await this.markRecoveredJobRetryRequested(sessionId, jobId, agentId, "manual retry requested", recovered.eventId, publish);
       return this.store.readSnapshot(sessionId);
     }
@@ -651,6 +663,10 @@ export class SessionManager {
     if (typeof message.payload.text === "string") return message.payload.text;
     if (typeof message.payload.reason === "string") return message.payload.reason;
     return `${message.type} ${message.eventId}`;
+  }
+
+  private imageAttachmentsFromMailboxMessage(message: SessionEvent): ImageAttachment[] {
+    return normalizeImageAttachments(message.payload.imageAttachments);
   }
 
   private isScheduleBlockedError(error: unknown) {
@@ -3168,6 +3184,7 @@ export class SessionManager {
     metadata: {
       kind: string;
       prompt: string;
+      imageAttachments?: ImageAttachment[];
       workflowInstanceId?: string;
       workflowId?: string;
       callerAgentId?: string;
@@ -3188,6 +3205,7 @@ export class SessionManager {
     metadata: {
       kind: string;
       prompt: string;
+      imageAttachments?: ImageAttachment[];
       workflowInstanceId?: string;
       workflowId?: string;
       callerAgentId?: string;
@@ -3220,6 +3238,7 @@ export class SessionManager {
         kind: metadata.kind,
         agentId,
         prompt: metadata.prompt,
+        imageAttachments: metadata.imageAttachments ?? [],
         workflowInstanceId: metadata.workflowInstanceId,
         workflowId: metadata.workflowId,
         callerAgentId: metadata.callerAgentId,
@@ -3655,6 +3674,14 @@ function reasoningEffortForRun(snapshot: SessionSnapshot) {
   return ["none", "minimal", "low", "medium", "high", "xhigh"].includes(value ?? "")
     ? value as "none" | "low" | "medium" | "high" | "xhigh"
     : undefined;
+}
+
+function normalizeImageAttachments(value: unknown): ImageAttachment[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate) => {
+    const parsed = ImageAttachmentSchema.safeParse(candidate);
+    return parsed.success ? [parsed.data] : [];
+  });
 }
 
 function temperatureConverterProgram() {

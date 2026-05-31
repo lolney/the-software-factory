@@ -23,6 +23,7 @@ export interface CreateSessionInput {
   archived?: boolean;
   model?: string;
   reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  imageAttachments?: unknown[];
   graph: GraphState;
 }
 
@@ -85,6 +86,7 @@ export class EventStore {
         archived: input.archived ?? false,
         model: input.model,
         reasoningEffort: input.reasoningEffort,
+        imageAttachments: input.imageAttachments ?? [],
         graph: input.graph
       }
     };

@@ -115,6 +115,44 @@ describe("OpenAIAgentRuntime", () => {
     expect(message?.payload.attempts).toBe(2);
   });
 
+  it("passes image attachments to WHAM responses input", async () => {
+    const { OpenAIAgentRuntime } = await import("./agentRuntime.js");
+    let requestBody: Record<string, any> | undefined;
+    const fetchMock = async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response([
+        `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "image reviewed" })}`,
+        "",
+        "data: [DONE]",
+        ""
+      ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+
+    await new OpenAIAgentRuntime({ fetch: fetchMock as unknown as typeof fetch, timeoutMs: 1_000 }).runTurn({
+      sessionId: "sess_image",
+      agentId: "ui_qa",
+      prompt: "Review this screenshot",
+      debugMode: false,
+      openAI: {
+        apiKey: "test-token",
+        baseURL: "https://chatgpt.com/backend-api/wham"
+      },
+      imageAttachments: [{
+        id: "img_test",
+        name: "screenshot.png",
+        mimeType: "image/png",
+        dataBase64: "iVBORw0KGgo=",
+        detail: "high"
+      }]
+    });
+
+    const content = requestBody?.input?.[0]?.content;
+    expect(content).toEqual([
+      { type: "input_text", text: "Review this screenshot" },
+      { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=", detail: "high" }
+    ]);
+  });
+
   it("does not retry caller-cancelled WHAM requests", async () => {
     const { OpenAIAgentRuntime } = await import("./agentRuntime.js");
     let attempts = 0;

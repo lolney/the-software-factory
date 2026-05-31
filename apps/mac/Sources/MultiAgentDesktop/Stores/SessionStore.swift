@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import Observation
+import UniformTypeIdentifiers
 
 @MainActor
 @Observable
@@ -35,6 +36,7 @@ final class SessionStore {
     var currentSessionDebugMode: Bool?
     var isComposingNewSession = false
     var composerText = ""
+    var composerImageAttachments: [ImageAttachment] = []
     var openAIApiKeyInput = ""
     var chatGPTAccountIdInput = ""
     var connectionStatus = "Disconnected"
@@ -62,6 +64,7 @@ final class SessionStore {
     private var subscribedSessionIds = Set<String>()
     private var subscribedDebugLogSessionIds = Set<String>()
     private var pendingCreatePrompt: String?
+    private var pendingCreateImageAttachments: [ImageAttachment] = []
     private var pendingOpenAIOAuth = false
     private let localDaemonLauncher = LocalDaemonLauncher()
     @ObservationIgnored private var sessionRefreshTask: Task<Void, Never>?
@@ -117,10 +120,11 @@ final class SessionStore {
 
     var canSendComposerMessage: Bool {
         let hasText = !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasImages = !composerImageAttachments.isEmpty
         if isComposingNewSession {
-            return hasText && !isCreatingSession && (debugMode || authStatus?.liveCredentialConfigured == true)
+            return (hasText || hasImages) && !isCreatingSession && (debugMode || authStatus?.liveCredentialConfigured == true)
         }
-        return daemon.isConnected && hasActiveSession && !selectedSessionArchived && ![.paused, .cancelled, .failed, .completed].contains(orchestratorStatus) && hasText
+        return daemon.isConnected && hasActiveSession && !selectedSessionArchived && ![.paused, .cancelled, .failed, .completed].contains(orchestratorStatus) && (hasText || hasImages)
     }
 
     var orchestratorStatus: AgentStatus {
@@ -428,6 +432,7 @@ final class SessionStore {
                 self?.lastError = reason
                 self?.isCreatingSession = false
                 self?.pendingCreatePrompt = nil
+                self?.pendingCreateImageAttachments = []
                 self?.pendingOpenAIOAuth = false
                 self?.resetSubscriptions()
                 self?.stopSessionRefreshLoop()
@@ -438,6 +443,7 @@ final class SessionStore {
                 self?.lastError = reason
                 self?.isCreatingSession = false
                 self?.pendingCreatePrompt = nil
+                self?.pendingCreateImageAttachments = []
                 self?.pendingOpenAIOAuth = false
             }
         }
@@ -482,8 +488,10 @@ final class SessionStore {
         daemon.connect(port: daemonPort)
         try? await Task.sleep(for: .milliseconds(250))
         if let prompt = pendingCreatePrompt {
+            let attachments = pendingCreateImageAttachments
             pendingCreatePrompt = nil
-            sendCreateSession(prompt: prompt)
+            pendingCreateImageAttachments = []
+            sendCreateSession(prompt: prompt, imageAttachments: attachments)
             return
         }
         refreshSessions()
@@ -518,19 +526,21 @@ final class SessionStore {
         sessionRefreshTask = nil
     }
 
-    func createSession(prompt: String) {
+    func createSession(prompt: String, imageAttachments: [ImageAttachment] = []) {
         guard daemon.isConnected else {
             pendingCreatePrompt = prompt
+            pendingCreateImageAttachments = imageAttachments
             isCreatingSession = true
             connectAndRefresh()
             lastError = "Connecting to daemon. The session will be created automatically."
             return
         }
-        sendCreateSession(prompt: prompt)
+        sendCreateSession(prompt: prompt, imageAttachments: imageAttachments)
     }
 
     func cancelNewSession() {
         pendingCreatePrompt = nil
+        pendingCreateImageAttachments = []
         isCreatingSession = false
         isComposingNewSession = false
         if selectedSidebarItem == Self.newSessionDraftId {
@@ -546,12 +556,13 @@ final class SessionStore {
         }
     }
 
-    private func sendCreateSession(prompt: String) {
+    private func sendCreateSession(prompt: String, imageAttachments: [ImageAttachment] = []) {
         isCreatingSession = true
         lastError = nil
         let workflowId = selectedWorkflowId(for: prompt)
         var params: [String: Any] = [
             "prompt": prompt,
+            "imageAttachments": imageAttachments.map(\.payload),
             "workflowId": workflowId,
             "debugMode": debugMode
         ]
@@ -670,6 +681,26 @@ final class SessionStore {
         selectedTimelineEventId = nil
     }
 
+    func attachComposerImages() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.png, .jpeg, .webP, .gif, .heic, .tiff]
+        panel.prompt = "Attach"
+        guard panel.runModal() == .OK else { return }
+        var next = composerImageAttachments
+        for url in panel.urls.prefix(max(0, 6 - next.count)) {
+            guard let attachment = imageAttachment(for: url) else { continue }
+            next.append(attachment)
+        }
+        composerImageAttachments = next
+    }
+
+    func removeComposerImageAttachment(_ attachmentId: String) {
+        composerImageAttachments.removeAll { $0.id == attachmentId }
+    }
+
     func focusTranscriptSearch() {
         guard canUseSessionViewCommands else { return }
         focusTranscriptSearchSignal += 1
@@ -708,17 +739,21 @@ final class SessionStore {
 
     func sendComposerMessage() {
         let trimmed = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        let attachments = composerImageAttachments
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
+        let text = trimmed.isEmpty ? "Please review the attached image." : trimmed
         if isComposingNewSession {
-            createSession(prompt: trimmed)
+            createSession(prompt: text, imageAttachments: attachments)
             return
         }
         guard let selectedSessionId, daemon.isConnected else { return }
         daemon.sendRequest(method: "sendMessage", params: [
             "sessionId": selectedSessionId,
-            "text": trimmed
+            "text": text,
+            "imageAttachments": attachments.map(\.payload)
         ])
         composerText = ""
+        composerImageAttachments = []
     }
 
     func pauseOrchestrator() {
@@ -1032,7 +1067,9 @@ final class SessionStore {
         isComposingNewSession = true
         isCreatingSession = false
         pendingCreatePrompt = nil
+        pendingCreateImageAttachments = []
         composerText = ""
+        composerImageAttachments = []
         newSessionWorkspaceRoot = ""
         newSessionModel = ""
         newSessionReasoningEffort = "none"
@@ -1252,6 +1289,7 @@ final class SessionStore {
         isLoadingSelection = false
         isComposingNewSession = false
         composerText = ""
+        composerImageAttachments = []
     }
 
     private func apply(event: SessionEvent) {
@@ -1283,6 +1321,7 @@ final class SessionStore {
                     isCreatingSession = false
                     isComposingNewSession = false
                     composerText = ""
+                    composerImageAttachments = []
                 }
             } else if event.type == "session.renamed",
                       let title = event.payload["title"]?.stringValue {
@@ -1841,6 +1880,33 @@ enum WorkspaceOpenTool {
 private func jsonObject<T: Encodable>(_ value: T) -> Any? {
     guard let data = try? JSONEncoder().encode(value) else { return nil }
     return try? JSONSerialization.jsonObject(with: data)
+}
+
+private func imageAttachment(for url: URL) -> ImageAttachment? {
+    guard let data = try? Data(contentsOf: url),
+          data.count <= 10_000_000 else {
+        return nil
+    }
+    let contentType = (try? url.resourceValues(forKeys: [.contentTypeKey]).contentType)
+    let mimeType = contentType?.preferredMIMEType ?? mimeTypeForImageExtension(url.pathExtension)
+    guard mimeType.hasPrefix("image/") else { return nil }
+    return ImageAttachment(
+        id: "img_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))",
+        name: url.lastPathComponent,
+        mimeType: mimeType,
+        dataBase64: data.base64EncodedString()
+    )
+}
+
+private func mimeTypeForImageExtension(_ pathExtension: String) -> String {
+    switch pathExtension.lowercased() {
+    case "jpg", "jpeg": return "image/jpeg"
+    case "webp": return "image/webp"
+    case "gif": return "image/gif"
+    case "heic": return "image/heic"
+    case "tif", "tiff": return "image/tiff"
+    default: return "image/png"
+    }
 }
 
 @discardableResult

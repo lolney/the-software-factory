@@ -92,6 +92,54 @@ describe("SessionManager deterministic debug sessions", () => {
     }
   });
 
+  it("preserves initial prompt image attachments in logs and runtime input", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-images-"));
+    const seenAttachments: unknown[] = [];
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            if (input.agentId === "orchestrator") {
+              seenAttachments.push(...(input.imageAttachments ?? []));
+            }
+            return [];
+          }
+        }
+      });
+      const imageAttachments = [{
+        id: "img_test",
+        name: "mockup.png",
+        mimeType: "image/png",
+        dataBase64: "iVBORw0KGgo=",
+        detail: "high" as const
+      }];
+
+      const snapshot = await manager.handle({
+        id: "req_create_images",
+        method: "createSession",
+        params: {
+          prompt: "Review this mockup",
+          imageAttachments,
+          workspaceRoot: root,
+          workflowId: "planner-orchestrator",
+          debugMode: true
+        }
+      }) as SessionSnapshot;
+      const replay = await manager.handle({
+        id: "req_subscribe_images",
+        method: "subscribeEvents",
+        params: { sessionId: snapshot.sessionId }
+      }) as { events: ReplayEvent[] };
+
+      expect(seenAttachments).toEqual(imageAttachments);
+      expect(replay.events.find((event) => event.type === "session.created")?.payload.imageAttachments).toEqual(imageAttachments);
+      expect(replay.events.find((event) => event.type === "message.sent" && event.agentId === "orchestrator")?.payload.imageAttachments).toEqual(imageAttachments);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   it("records durable mailbox enqueue and dequeue events for delivered actor turns", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
     try {

@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises";
+import { chmod, readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -104,6 +104,7 @@ export class CodexIntegrationManager {
       this.connected.delete(server.name);
       this.errors.delete(server.name);
       try {
+        await repairNpxPackageBins(server);
         const instance = this.createMCPServer(server);
         if (!instance) continue;
         await instance.connect();
@@ -121,6 +122,7 @@ export class CodexIntegrationManager {
     for (const server of configured) {
       if (this.connected.has(server.name) || this.errors.has(server.name)) continue;
       try {
+        await repairNpxPackageBins(server);
         const instance = this.createMCPServer(server);
         if (!instance) continue;
         await instance.connect();
@@ -256,6 +258,55 @@ function parseSkillFrontmatter(raw: string) {
     meta[line.slice(0, index).trim()] = line.slice(index + 1).trim();
   }
   return meta;
+}
+
+async function repairNpxPackageBins(server: RawMCPServer) {
+  if (path.basename(server.command ?? "") !== "npx") return;
+  const packageSpec = server.args.find((arg) => !arg.startsWith("-"));
+  const packageName = packageNameFromNpxSpec(packageSpec);
+  if (!packageName) return;
+  const npmCache = process.env.npm_config_cache ?? path.join(os.homedir(), ".npm");
+  const npxRoot = path.join(npmCache, "_npx");
+  if (!existsSync(npxRoot)) return;
+  for (const entry of await readdir(npxRoot, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory()) continue;
+    const packageDir = path.join(npxRoot, entry.name, "node_modules", ...packageName.split("/"));
+    const packageJson = path.join(packageDir, "package.json");
+    if (!existsSync(packageJson)) continue;
+    const raw = await readFile(packageJson, "utf8").catch(() => "");
+    for (const relativeBin of binPaths(safeJson(raw))) {
+      const binPath = path.join(packageDir, relativeBin);
+      if (existsSync(binPath)) {
+        await chmod(binPath, 0o755).catch(() => undefined);
+      }
+    }
+  }
+}
+
+function packageNameFromNpxSpec(spec: string | undefined) {
+  if (!spec) return undefined;
+  if (spec.startsWith("@")) {
+    const [scope, nameWithVersion] = spec.split("/");
+    if (!scope || !nameWithVersion) return undefined;
+    return `${scope}/${nameWithVersion.replace(/@.*$/, "")}`;
+  }
+  return spec.replace(/@.*$/, "");
+}
+
+function binPaths(value: unknown): string[] {
+  if (!value || typeof value !== "object" || !("bin" in value)) return [];
+  const bin = (value as { bin?: unknown }).bin;
+  if (typeof bin === "string") return [bin];
+  if (!bin || typeof bin !== "object" || Array.isArray(bin)) return [];
+  return Object.values(bin).filter((candidate): candidate is string => typeof candidate === "string");
+}
+
+function safeJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
 }
 
 function safeId(value: string) {

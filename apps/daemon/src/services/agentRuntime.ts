@@ -1,6 +1,6 @@
 import { Agent, OpenAIProvider, RunContext, run, tool } from "@openai/agents";
 import type { MCPServer } from "@openai/agents";
-import type { SessionEvent, SkillCatalogItem } from "@software-factory/shared";
+import type { ImageAttachment, SessionEvent, SkillCatalogItem } from "@software-factory/shared";
 import OpenAI from "openai";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
@@ -10,6 +10,7 @@ export interface AgentTurnInput {
   sessionId: string;
   agentId: string;
   prompt: string;
+  imageAttachments?: ImageAttachment[];
   debugMode: boolean;
   roleName?: string;
   instructions?: string;
@@ -285,7 +286,7 @@ class AgentsSdkRuntimeAdapter implements RuntimeAdapter {
     }
     try {
       const { result, attempts } = await retryOpenAIRun(async () => {
-        const result: any = await run(agent, input.prompt, runOptions);
+        const result: any = await run(agent, agentInput(input), runOptions);
         await result.completed;
         if (result.error) {
           throw result.error;
@@ -403,6 +404,50 @@ function statusEvent(input: AgentTurnInput, status: string, timestamp = new Date
   };
 }
 
+function agentInput(input: AgentTurnInput) {
+  const attachments = normalizedImageAttachments(input.imageAttachments);
+  if (!attachments.length) return input.prompt;
+  return [{
+    role: "user",
+    content: [
+      { type: "input_text", text: input.prompt || "Please review the attached image." },
+      ...attachments.map((attachment) => ({
+        type: "input_image",
+        image: imageDataUrl(attachment),
+        detail: attachment.detail ?? "auto"
+      }))
+    ]
+  }] as any;
+}
+
+function whamUserMessage(input: AgentTurnInput): Record<string, unknown> {
+  const attachments = normalizedImageAttachments(input.imageAttachments);
+  return {
+    role: "user",
+    content: [
+      { type: "input_text", text: input.prompt || "Please review the attached image." },
+      ...attachments.map((attachment) => ({
+        type: "input_image",
+        image_url: imageDataUrl(attachment),
+        detail: attachment.detail ?? "auto"
+      }))
+    ]
+  };
+}
+
+function normalizedImageAttachments(attachments: ImageAttachment[] | undefined) {
+  return (attachments ?? []).filter((attachment) => {
+    return /^image\/[A-Za-z0-9.+-]+$/.test(attachment.mimeType)
+      && typeof attachment.dataBase64 === "string"
+      && attachment.dataBase64.length > 0;
+  });
+}
+
+function imageDataUrl(attachment: ImageAttachment) {
+  if (attachment.dataBase64.startsWith("data:")) return attachment.dataBase64;
+  return `data:${attachment.mimeType};base64,${attachment.dataBase64}`;
+}
+
 async function runWhamTurn(
   input: AgentTurnInput,
   connection: NonNullable<AgentTurnInput["openAI"]>,
@@ -421,10 +466,7 @@ async function runWhamTurn(
     parameters: candidate.parameters,
     strict: candidate.strict
   }));
-  const conversation: Array<Record<string, unknown>> = [{
-    role: "user",
-    content: [{ type: "input_text", text: input.prompt }]
-  }];
+  const conversation: Array<Record<string, unknown>> = [whamUserMessage(input)];
   const usageSamples: unknown[] = [];
   let totalAttempts = 0;
   let totalRequestDurationMs = 0;

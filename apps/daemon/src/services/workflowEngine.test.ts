@@ -82,7 +82,7 @@ describe("WorkflowEngine", () => {
     expect(todoGenerator?.toolPolicy).toMatchObject({ canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: false });
     expect(continuousReviewer?.toolPolicy).toMatchObject({ canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: false });
     const uiQA = engine.listRoles().find((role) => role.id === "ui_qa");
-    expect(uiQA?.toolPolicy).toMatchObject({ canRead: true, canWrite: false, canRunCommands: false, canUseBrowser: true, canUseComputer: true });
+    expect(uiQA?.toolPolicy).toMatchObject({ canRead: true, canWrite: false, canRunCommands: false, canUseBrowser: true, canUseComputer: true, canUseMCP: true });
     expect(workflows.find((workflow) => workflow.id === "ui-qa-review")?.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "ui_qa", roleId: "ui_qa" })
     ]));

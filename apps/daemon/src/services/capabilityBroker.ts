@@ -56,7 +56,7 @@ export class CapabilityBroker {
       case "plan.create":
         return role.toolPolicy.canCreatePlans;
       case "mcp.use":
-        return role.toolPolicy.canRunCommands && role.toolPolicy.canWrite;
+        return role.toolPolicy.canUseMCP === true;
       case "ui.browser":
         return role.toolPolicy.canUseBrowser === true;
       case "ui.computer":

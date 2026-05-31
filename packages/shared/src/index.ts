@@ -21,6 +21,14 @@ export const CompletionCriterionSchema = z.object({
   required: z.boolean().default(true)
 });
 
+export const ImageAttachmentSchema = z.object({
+  id: SafeIdSchema.optional(),
+  name: z.string().max(255).optional(),
+  mimeType: z.string().regex(/^image\/[A-Za-z0-9.+-]+$/),
+  dataBase64: z.string().min(1).max(14_000_000),
+  detail: z.enum(["auto", "low", "high"]).default("auto")
+});
+
 export const RoleSpecSchema = z.object({
   id: SafeIdSchema,
   name: z.string(),
@@ -33,7 +41,8 @@ export const RoleSpecSchema = z.object({
     canRunCommands: z.boolean().default(true),
     canCreatePlans: z.boolean().default(false),
     canUseBrowser: z.boolean().optional(),
-    canUseComputer: z.boolean().optional()
+    canUseComputer: z.boolean().optional(),
+    canUseMCP: z.boolean().optional()
   }).prefault({}),
   workspace: z.object({
     allowedRoots: z.array(z.string()).default(["."])
@@ -239,13 +248,14 @@ export const SessionSnapshotSchema = z.object({
 export const DaemonRequestSchema = z.discriminatedUnion("method", [
   z.object({ id: z.string(), method: z.literal("createSession"), params: z.object({
     prompt: z.string(),
+    imageAttachments: z.array(ImageAttachmentSchema).max(6).optional(),
     workspaceRoot: z.string().optional(),
     workflowId: SafeIdSchema.optional(),
     debugMode: z.boolean().default(false),
     model: z.string().optional(),
     reasoningEffort: z.enum(["none", "minimal", "low", "medium", "high", "xhigh"]).optional()
   }) }),
-  z.object({ id: z.string(), method: z.literal("sendMessage"), params: z.object({ sessionId: SafeIdSchema, targetAgentId: SafeIdSchema.optional(), text: z.string() }) }),
+  z.object({ id: z.string(), method: z.literal("sendMessage"), params: z.object({ sessionId: SafeIdSchema, targetAgentId: SafeIdSchema.optional(), text: z.string(), imageAttachments: z.array(ImageAttachmentSchema).max(6).optional() }) }),
   z.object({ id: z.string(), method: z.literal("pauseAgent"), params: z.object({ sessionId: SafeIdSchema, agentId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("resumeAgent"), params: z.object({ sessionId: SafeIdSchema, agentId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("retryRecoveredJob"), params: z.object({ sessionId: SafeIdSchema, jobId: SafeIdSchema }) }),
@@ -299,6 +309,7 @@ export const DaemonDebugLogNotificationSchema = z.object({
 export type AgentStatus = z.infer<typeof AgentStatusSchema>;
 export type WorkflowEdgeKind = z.infer<typeof WorkflowEdgeKindSchema>;
 export type CompletionCriterion = z.infer<typeof CompletionCriterionSchema>;
+export type ImageAttachment = z.infer<typeof ImageAttachmentSchema>;
 export type RoleSpec = z.infer<typeof RoleSpecSchema>;
 export type WorkflowSpec = z.infer<typeof WorkflowSpecSchema>;
 export type PlanSpec = z.infer<typeof PlanSpecSchema>;

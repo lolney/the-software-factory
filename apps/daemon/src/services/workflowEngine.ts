@@ -455,13 +455,14 @@ const baseRoles: WorkflowSpec["roles"] = [
     color: "#00a8a8",
     promptTemplate: [
       "Perform adversarial UI QA for a local app or UI development task.",
+      "When Chrome DevTools MCP tools are available, use them to inspect pages, console messages, network activity, snapshots, and computed layout during web UI review.",
       "Use Playwright checks when a local browser URL is available.",
       "Use the Computer Use bridge contract for visual desktop/browser QA: request host-side screenshots/action execution, send back updated screenshots, and repeat until complete.",
       "Keep UI actions bounded and non-destructive; require human approval for authenticated, destructive, purchase, or hard-to-reverse steps.",
       "Report visible issues, workflow blockers, accessibility concerns, layout problems, console/runtime failures, and concrete reproduction steps."
     ].join(" "),
     model: "gpt-5.4",
-    toolPolicy: { canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: false, canUseBrowser: true, canUseComputer: true },
+    toolPolicy: { canRead: true, canWrite: false, canRunCommands: false, canCreatePlans: false, canUseBrowser: true, canUseComputer: true, canUseMCP: true },
     workspace: { allowedRoots: ["."] },
     expectedOutputs: ["UI QA findings", "Reproduction steps", "Screenshots or browser-check summary"],
     reviewResponsibilities: ["Visual correctness", "Interaction behavior", "Accessibility", "Responsive layout", "Runtime UI errors"]
