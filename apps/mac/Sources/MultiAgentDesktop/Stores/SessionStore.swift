@@ -528,9 +528,10 @@ final class SessionStore {
 
     private func sendInitialDaemonRequests() {
         if let prompt = pendingCreatePrompt, !pendingCreateRequestSent {
-            pendingCreateRequestSent = true
+            let requestId = pendingCreateRequestId ?? UUID().uuidString
+            pendingCreateRequestId = requestId
             let attachments = pendingCreateImageAttachments
-            sendCreateSession(prompt: prompt, imageAttachments: attachments)
+            sendCreateSession(id: requestId, prompt: prompt, imageAttachments: attachments)
             return
         }
         if pendingOpenAIOAuth, !pendingOpenAIOAuthRequestSent {
@@ -555,20 +556,44 @@ final class SessionStore {
     private func clearPendingCreate() {
         pendingCreatePrompt = nil
         pendingCreateImageAttachments = []
+        pendingCreateRequestId = nil
         pendingCreateRequestSent = false
     }
 
     private func clearPendingOpenAIOAuth() {
         pendingOpenAIOAuth = false
+        pendingOpenAIOAuthRequestId = nil
         pendingOpenAIOAuthRequestSent = false
     }
 
     private func rearmPendingRequestsForSocketRetry() {
-        if pendingCreatePrompt != nil {
-            pendingCreateRequestSent = false
+        if pendingCreatePrompt != nil && !pendingCreateRequestSent {
+            pendingCreateRequestId = nil
+        }
+        if pendingOpenAIOAuth && !pendingOpenAIOAuthRequestSent {
+            pendingOpenAIOAuthRequestId = nil
+        }
+    }
+
+    private func preparePendingRequestsAfterDisconnect() {
+        if pendingCreatePrompt != nil && !pendingCreateRequestSent {
+            pendingCreateRequestId = nil
         }
         if pendingOpenAIOAuth {
-            pendingOpenAIOAuthRequestSent = false
+            if pendingOpenAIOAuthRequestSent {
+                clearPendingOpenAIOAuth()
+            } else {
+                pendingOpenAIOAuthRequestId = nil
+            }
+        }
+    }
+
+    private func markPendingRequestSent(_ requestId: String) {
+        if requestId == pendingCreateRequestId {
+            pendingCreateRequestSent = true
+        }
+        if requestId == pendingOpenAIOAuthRequestId {
+            pendingOpenAIOAuthRequestSent = true
         }
     }
 
@@ -598,6 +623,7 @@ final class SessionStore {
     func createSession(prompt: String, imageAttachments: [ImageAttachment] = []) {
         pendingCreatePrompt = prompt
         pendingCreateImageAttachments = imageAttachments
+        pendingCreateRequestId = nil
         pendingCreateRequestSent = false
         isCreatingSession = true
         guard daemon.isConnected else {
@@ -605,8 +631,9 @@ final class SessionStore {
             lastError = "Connecting to daemon. The session will be created automatically."
             return
         }
-        pendingCreateRequestSent = true
-        sendCreateSession(prompt: prompt, imageAttachments: imageAttachments)
+        let requestId = UUID().uuidString
+        pendingCreateRequestId = requestId
+        sendCreateSession(id: requestId, prompt: prompt, imageAttachments: imageAttachments)
     }
 
     func cancelNewSession() {
@@ -626,7 +653,7 @@ final class SessionStore {
         }
     }
 
-    private func sendCreateSession(prompt: String, imageAttachments: [ImageAttachment] = []) {
+    private func sendCreateSession(id: String? = nil, prompt: String, imageAttachments: [ImageAttachment] = []) {
         isCreatingSession = true
         lastError = nil
         let workflowId = selectedWorkflowId(for: prompt)
@@ -647,7 +674,7 @@ final class SessionStore {
         if !workspaceRoot.isEmpty {
             params["workspaceRoot"] = workspaceRoot
         }
-        daemon.sendRequest(method: "createSession", params: params)
+        daemon.sendRequest(id: id ?? UUID().uuidString, method: "createSession", params: params)
     }
 
     func selectSidebarItem(_ item: String?) {
@@ -1048,6 +1075,7 @@ final class SessionStore {
     func beginOpenAIOAuth() {
         pendingOpenAIOAuth = true
         guard daemon.isConnected else {
+            pendingOpenAIOAuthRequestId = nil
             pendingOpenAIOAuthRequestSent = false
             connectAndRefresh()
             lastError = "Connecting to daemon. OpenAI setup will continue automatically."
@@ -1064,9 +1092,9 @@ final class SessionStore {
         }
     }
 
-    private func sendBeginOpenAIOAuth() {
+    private func sendBeginOpenAIOAuth(id: String? = nil) {
         lastError = nil
-        daemon.sendRequest(method: "beginOpenAIOAuth", params: ["port": daemonPort])
+        daemon.sendRequest(id: id ?? UUID().uuidString, method: "beginOpenAIOAuth", params: ["port": daemonPort])
         Task { @MainActor in
             for _ in 0..<10 {
                 try? await Task.sleep(for: .seconds(3))
@@ -1077,8 +1105,9 @@ final class SessionStore {
 
     private func sendPendingOpenAIOAuth() {
         guard pendingOpenAIOAuth, !pendingOpenAIOAuthRequestSent else { return }
-        pendingOpenAIOAuthRequestSent = true
-        sendBeginOpenAIOAuth()
+        let requestId = pendingOpenAIOAuthRequestId ?? UUID().uuidString
+        pendingOpenAIOAuthRequestId = requestId
+        sendBeginOpenAIOAuth(id: requestId)
     }
 
     func refreshAuthStatus() {
