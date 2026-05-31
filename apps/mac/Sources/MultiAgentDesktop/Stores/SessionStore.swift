@@ -1233,9 +1233,6 @@ final class SessionStore {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         connectionStatus = "Connected"
         clearStaleDaemonDisconnectedError()
-        if pendingOpenAIOAuth, object["method"] == nil {
-            sendPendingOpenAIOAuth()
-        }
         if object["method"] as? String == "event",
            let params = object["params"],
            let eventData = try? JSONSerialization.data(withJSONObject: params),
