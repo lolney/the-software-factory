@@ -697,6 +697,14 @@ final class SessionStore {
         composerImageAttachments = next
     }
 
+    @discardableResult
+    func pasteComposerImagesFromPasteboard(_ pasteboard: NSPasteboard = .general) -> Bool {
+        let pasted = imageAttachments(from: pasteboard, remainingSlots: max(0, 6 - composerImageAttachments.count))
+        guard !pasted.isEmpty else { return false }
+        composerImageAttachments = composerImageAttachments + pasted
+        return true
+    }
+
     func removeComposerImageAttachment(_ attachmentId: String) {
         composerImageAttachments.removeAll { $0.id == attachmentId }
     }
@@ -1896,6 +1904,104 @@ private func imageAttachment(for url: URL) -> ImageAttachment? {
         mimeType: mimeType,
         dataBase64: data.base64EncodedString()
     )
+}
+
+private func imageAttachments(from pasteboard: NSPasteboard, remainingSlots: Int) -> [ImageAttachment] {
+    guard remainingSlots > 0 else { return [] }
+    var attachments: [ImageAttachment] = []
+    for (index, item) in (pasteboard.pasteboardItems ?? []).enumerated() {
+        guard attachments.count < remainingSlots else { break }
+        if let attachment = imageAttachment(from: item, index: index + 1) {
+            attachments.append(attachment)
+        }
+    }
+    if attachments.isEmpty,
+       let urls = pasteboard.readObjects(
+        forClasses: [NSURL.self],
+        options: [.urlReadingFileURLsOnly: true]
+       ) as? [URL] {
+        for url in urls {
+            guard attachments.count < remainingSlots else { break }
+            if let attachment = imageAttachment(for: url) {
+                attachments.append(attachment)
+            }
+        }
+    }
+    if attachments.isEmpty,
+       let images = pasteboard.readObjects(forClasses: [NSImage.self]) as? [NSImage] {
+        for (index, image) in images.enumerated() {
+            guard attachments.count < remainingSlots else { break }
+            if let data = pngData(from: image),
+               let attachment = makeImageAttachment(
+                    name: "Pasted image \(index + 1).png",
+                    mimeType: "image/png",
+                    data: data
+               ) {
+                attachments.append(attachment)
+            }
+        }
+    }
+    return attachments
+}
+
+extension NSPasteboard {
+    var containsComposerImage: Bool {
+        if let items = pasteboardItems,
+           items.contains(where: { imageAttachment(from: $0, index: 1) != nil }) {
+            return true
+        }
+        if let urls = readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL],
+            urls.contains(where: { imageAttachment(for: $0) != nil }) {
+            return true
+        }
+        return canReadObject(forClasses: [NSImage.self], options: nil)
+    }
+}
+
+private func imageAttachment(from item: NSPasteboardItem, index: Int) -> ImageAttachment? {
+    let candidates: [(NSPasteboard.PasteboardType, String, String)] = [
+        (.png, "image/png", "png"),
+        (NSPasteboard.PasteboardType("public.jpeg"), "image/jpeg", "jpg"),
+        (NSPasteboard.PasteboardType("public.webP"), "image/webp", "webp"),
+        (NSPasteboard.PasteboardType("public.heic"), "image/heic", "heic"),
+        (NSPasteboard.PasteboardType("com.compuserve.gif"), "image/gif", "gif")
+    ]
+    for (type, mimeType, pathExtension) in candidates {
+        if let data = item.data(forType: type) {
+            return makeImageAttachment(
+                name: "Pasted image \(index).\(pathExtension)",
+                mimeType: mimeType,
+                data: data
+            )
+        }
+    }
+    if let data = item.data(forType: .tiff),
+       let image = NSImage(data: data),
+       let png = pngData(from: image) {
+        return makeImageAttachment(name: "Pasted image \(index).png", mimeType: "image/png", data: png)
+    }
+    return nil
+}
+
+private func makeImageAttachment(name: String, mimeType: String, data: Data) -> ImageAttachment? {
+    guard data.count <= 10_000_000 else { return nil }
+    return ImageAttachment(
+        id: "img_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))",
+        name: name,
+        mimeType: mimeType,
+        dataBase64: data.base64EncodedString()
+    )
+}
+
+private func pngData(from image: NSImage) -> Data? {
+    guard let tiff = image.tiffRepresentation,
+          let bitmap = NSBitmapImageRep(data: tiff) else {
+        return nil
+    }
+    return bitmap.representation(using: .png, properties: [:])
 }
 
 private func mimeTypeForImageExtension(_ pathExtension: String) -> String {

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct ComposerView: View {
     @Bindable var store: SessionStore
@@ -27,21 +28,18 @@ struct ComposerView: View {
                     }
                     ZStack(alignment: .topLeading) {
                         if store.isComposingNewSession {
-                            TextEditor(text: $store.composerText)
-                                .font(.body)
+                            PasteAwareComposerTextView(
+                                text: $store.composerText,
+                                onPasteImages: { store.pasteComposerImagesFromPasteboard() }
+                            )
                                 .frame(minHeight: 120, maxHeight: 220)
-                                .scrollContentBackground(.hidden)
-                                .padding(4)
-                                .focused($composerFocused)
                                 .accessibilityLabel("New session prompt")
                         } else {
-                            TextField("", text: $store.composerText, axis: .vertical)
-                                .font(.body)
-                                .textFieldStyle(.plain)
-                                .lineLimit(3...8)
-                                .padding(8)
+                            PasteAwareComposerTextView(
+                                text: $store.composerText,
+                                onPasteImages: { store.pasteComposerImagesFromPasteboard() }
+                            )
                                 .frame(minHeight: 56)
-                                .focused($composerFocused)
                                 .accessibilityLabel("Nudge the orchestrator")
                         }
                         if store.composerText.isEmpty {
@@ -98,6 +96,90 @@ struct ComposerView: View {
             .keyboardShortcut(.return, modifiers: [.command])
             .disabled(true)
         }
+    }
+}
+
+private struct PasteAwareComposerTextView: NSViewRepresentable {
+    @Binding var text: String
+    let onPasteImages: () -> Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    func makeNSView(context: Context) -> ComposerNSTextView {
+        let textView = ComposerNSTextView()
+        textView.delegate = context.coordinator
+        textView.onPasteImages = onPasteImages
+        textView.string = text
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.font = NSFont.preferredFont(forTextStyle: .body)
+        textView.textColor = .labelColor
+        textView.drawsBackground = false
+        textView.isRichText = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.allowsUndo = true
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.textContainerInset = NSSize(width: 8, height: 8)
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        textView.autoresizingMask = [.width]
+        return textView
+    }
+
+    func updateNSView(_ textView: ComposerNSTextView, context: Context) {
+        textView.delegate = context.coordinator
+        textView.onPasteImages = onPasteImages
+        if textView.string != text {
+            textView.string = text
+        }
+        textView.font = NSFont.preferredFont(forTextStyle: .body)
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        @Binding var text: String
+
+        init(text: Binding<String>) {
+            _text = text
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            text = textView.string
+        }
+    }
+}
+
+private final class ComposerNSTextView: NSTextView {
+    var onPasteImages: (() -> Bool)?
+
+    override func paste(_ sender: Any?) {
+        if pasteComposerImageIfPresent() {
+            return
+        }
+        super.paste(sender)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "v",
+           pasteComposerImageIfPresent() {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    private func pasteComposerImageIfPresent() -> Bool {
+        if NSPasteboard.general.containsComposerImage,
+           onPasteImages?() == true {
+            return true
+        }
+        return false
     }
 }
 
