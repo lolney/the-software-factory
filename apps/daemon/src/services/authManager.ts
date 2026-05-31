@@ -176,6 +176,15 @@ export class AuthManager {
     return refreshed;
   }
 
+  async refreshLiveConnectionAfterAuthError(): Promise<OpenAIConnection | undefined> {
+    const tokens = await this.loadTokens();
+    if (!tokens?.accessToken || !tokens.refreshToken) {
+      return undefined;
+    }
+    await this.refreshTokens(tokens);
+    return this.loadLiveConnection();
+  }
+
   async loadLiveConnection(): Promise<OpenAIConnection | undefined> {
     if (process.env.OPENAI_API_KEY) {
       return { apiKey: process.env.OPENAI_API_KEY, source: "environment" };

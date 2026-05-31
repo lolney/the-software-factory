@@ -7,7 +7,7 @@ import { authorizeDaemonRequest, daemonOwnershipChallenge } from "./services/dae
 
 const port = Number(process.env.MULTIAGENT_DAEMON_PORT ?? 3767);
 const sessionsRoot = defaultSessionsRoot();
-const manager = new SessionManager({ sessionsRoot });
+const manager = new SessionManager({ sessionsRoot, port });
 
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);

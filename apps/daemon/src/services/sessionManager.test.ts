@@ -7,6 +7,7 @@ import type { SessionEvent, SessionSnapshot } from "@software-factory/shared";
 import { deriveActorStates } from "./concurrency.js";
 import { SessionManager } from "./sessionManager.js";
 import { EventStore, makeEventId } from "./eventStore.js";
+import { OpenAIAuthenticationError } from "./agentRuntime.js";
 
 type ReplayEvent = { eventId?: string; type: string; agentId?: string; payload: Record<string, unknown>; causationId?: string };
 
@@ -894,6 +895,130 @@ describe("SessionManager deterministic debug sessions", () => {
         params: { sessionId: snapshot.sessionId }
       }) as { logs: Array<{ level: string; message: string }> };
       expect(logs.logs.some((entry) => entry.level === "error" && entry.message === "model unavailable")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("refreshes OpenAI OAuth after an auth failure and retries the agent turn once", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const seenKeys: Array<string | undefined> = [];
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn(input) {
+            seenKeys.push(input.openAI?.apiKey);
+            if (seenKeys.length === 1) {
+              throw new OpenAIAuthenticationError("Provided authentication token is expired. Please try signing in again.", {
+                status: 401,
+                code: "token_expired"
+              });
+            }
+            return [{
+              eventId: makeEventId(),
+              sessionId: input.sessionId,
+              agentId: input.agentId,
+              timestamp: new Date().toISOString(),
+              type: "agent.message",
+              payload: { text: "continued after refresh" }
+            }];
+          }
+        }
+      });
+      (manager as unknown as { auth: unknown }).auth = {
+        refreshLiveConnectionAfterAuthError: async () => ({
+          apiKey: "fresh-token",
+          baseURL: "https://chatgpt.com/backend-api/wham",
+          defaultHeaders: { "ChatGPT-Account-Id": "acct_123" },
+          source: "codex-oauth"
+        }),
+        beginOAuth: async () => {
+          throw new Error("should not prompt when refresh succeeds");
+        },
+        deleteTokens: async () => {
+          throw new Error("should not delete refreshed tokens");
+        }
+      };
+
+      const events = await (manager as unknown as {
+        runControlledTurn: (
+          sessionId: string,
+          agentId: string,
+          publish: (event: SessionEvent) => void,
+          input: Record<string, unknown>
+        ) => Promise<SessionEvent[]>;
+      }).runControlledTurn("sess_auth_retry", "orchestrator", () => {}, {
+        sessionId: "sess_auth_retry",
+        agentId: "orchestrator",
+        prompt: "continue",
+        debugMode: false,
+        openAI: {
+          apiKey: "expired-token",
+          baseURL: "https://chatgpt.com/backend-api/wham"
+        }
+      });
+
+      expect(seenKeys).toEqual(["expired-token", "fresh-token"]);
+      expect(events.some((event) => event.type === "agent.message" && event.payload.text === "continued after refresh")).toBe(true);
+      expect(events.some((event) => event.type === "error")).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("emits an OpenAI reauthentication prompt when auth refresh is unavailable", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      let deletedTokens = false;
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        runtime: {
+          async runTurn() {
+            throw new OpenAIAuthenticationError("Provided authentication token is expired. Please try signing in again.", {
+              status: 401,
+              code: "token_expired"
+            });
+          }
+        },
+        port: 4567
+      });
+      (manager as unknown as { auth: unknown }).auth = {
+        refreshLiveConnectionAfterAuthError: async () => undefined,
+        beginOAuth: async (port: number) => ({
+          clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
+          state: "state_test",
+          authorizationUrl: `http://auth.example.test/start?port=${port}`
+        }),
+        deleteTokens: async () => {
+          deletedTokens = true;
+        }
+      };
+
+      const events = await (manager as unknown as {
+        runControlledTurn: (
+          sessionId: string,
+          agentId: string,
+          publish: (event: SessionEvent) => void,
+          input: Record<string, unknown>
+        ) => Promise<SessionEvent[]>;
+      }).runControlledTurn("sess_auth_prompt", "orchestrator", () => {}, {
+        sessionId: "sess_auth_prompt",
+        agentId: "orchestrator",
+        prompt: "continue",
+        debugMode: false,
+        openAI: {
+          apiKey: "expired-token",
+          baseURL: "https://chatgpt.com/backend-api/wham"
+        }
+      });
+
+      const error = events.find((event) => event.type === "error");
+      expect(deletedTokens).toBe(true);
+      expect(error?.payload.authenticationRequired).toBe(true);
+      expect(error?.payload.authProvider).toBe("openai");
+      expect(error?.payload.authorizationUrl).toBe("http://auth.example.test/start?port=4567");
+      expect(error?.payload.message).toContain("Sign in again");
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }

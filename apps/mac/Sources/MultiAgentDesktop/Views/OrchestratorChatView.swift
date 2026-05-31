@@ -86,6 +86,15 @@ struct OrchestratorChatView: View {
                         .font(.caption)
                         .lineLimit(2)
                     Spacer(minLength: 8)
+                    if store.pendingOpenAIReauthURL != nil {
+                        Button {
+                            store.openPendingOpenAIReauthentication()
+                        } label: {
+                            Label("Sign In…", systemImage: "person.badge.key")
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                    }
                     Button {
                         store.inspectorPanel = .debug
                     } label: {

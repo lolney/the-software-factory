@@ -69,6 +69,20 @@ interface RuntimeAdapter {
 
 const defaultInstructions = "You are a role-specific coding agent in a local Software Factory workflow. Be concise, operational, and report concrete progress.";
 
+export class OpenAIAuthenticationError extends Error {
+  readonly status?: number;
+  readonly code?: string;
+  readonly responseBody?: string;
+
+  constructor(message: string, options: { status?: number; code?: string; responseBody?: string } = {}) {
+    super(message);
+    this.name = "OpenAIAuthenticationError";
+    this.status = options.status;
+    this.code = options.code;
+    this.responseBody = options.responseBody;
+  }
+}
+
 export class OpenAIAgentRuntime implements AgentRuntime {
   constructor(private readonly options: { fetch?: typeof fetch; timeoutMs?: number } = {}) {}
 
@@ -609,6 +623,13 @@ async function whamResponsesRequest(
     const errorText = !response.ok && isRetryableStatus(response.status) && lastError
       ? String(lastError)
       : await response.text();
+    if (isAuthenticationStatus(response.status)) {
+      const parsed = parseOpenAIError(errorText);
+      throw new OpenAIAuthenticationError(
+        parsed.message ?? `OpenAI authentication failed with HTTP ${response.status}.`,
+        { status: response.status, code: parsed.code, responseBody: errorText }
+      );
+    }
     throw new Error(`WHAM Responses request failed with HTTP ${response.status}: ${errorText}`);
   }
   const output: string[] = [];
@@ -645,6 +666,10 @@ async function whamResponsesRequest(
 
 function isRetryableStatus(status: number) {
   return status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+function isAuthenticationStatus(status: number) {
+  return status === 401 || status === 403;
 }
 
 async function retryOpenAIRun<T>(runOnce: () => Promise<T>, signal?: AbortSignal) {
@@ -707,6 +732,17 @@ function truncateForTranscript(output: string, maxLength = 8_000) {
   return {
     text: `${output.slice(0, maxLength)}\n... ${output.length - maxLength} more characters omitted from transcript tool result`,
     truncated: true
+  };
+}
+
+function parseOpenAIError(raw: string) {
+  const parsed = safeJson(raw);
+  if (!isRecord(parsed)) return {};
+  const error = parsed.error;
+  if (!isRecord(error)) return {};
+  return {
+    message: typeof error.message === "string" ? error.message : undefined,
+    code: typeof error.code === "string" ? error.code : undefined
   };
 }
 

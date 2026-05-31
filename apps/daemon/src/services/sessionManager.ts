@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import { EventStore, makeEventId, makeLogId } from "./eventStore.js";
-import { OpenAIAgentRuntime, type AgentRuntime } from "./agentRuntime.js";
+import { OpenAIAuthenticationError, OpenAIAgentRuntime, type AgentRuntime } from "./agentRuntime.js";
 import { WorkflowEngine } from "./workflowEngine.js";
 import { WorkspaceCoordinator } from "./workspaceCoordinator.js";
 import { AuthManager, CODEX_PUBLIC_CLIENT_ID } from "./authManager.js";
@@ -68,7 +68,7 @@ export class SessionManager {
   private roleOverridesLoaded = false;
   private recoveryComplete = false;
 
-  constructor(private readonly options: { sessionsRoot: string; runtime?: AgentRuntime }) {
+  constructor(private readonly options: { sessionsRoot: string; runtime?: AgentRuntime; port?: number }) {
     this.store = new EventStore(options.sessionsRoot);
     this.runtime = options.runtime ?? new OpenAIAgentRuntime();
     this.workflows = new WorkflowEngine(process.env.MULTIAGENT_BUILTIN_WORKFLOWS_DIR, path.join(options.sessionsRoot, "config"));
@@ -3379,7 +3379,36 @@ export class SessionManager {
         }
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      let finalError = error;
+      let requiresReauth = false;
+      if (!input.debugMode && this.isOpenAIAuthFailure(finalError)) {
+        try {
+          const refreshed = await this.auth.refreshLiveConnectionAfterAuthError();
+          if (refreshed) {
+            return await this.runtime.runTurn({
+              ...input,
+              apiKey: refreshed.apiKey,
+              openAI: refreshed,
+              signal: controller.signal,
+              emitEvent: async (event) => {
+                await this.appendAndPublish(event, publish);
+              }
+            });
+          }
+          requiresReauth = true;
+        } catch (retryOrRefreshError) {
+          finalError = retryOrRefreshError;
+          requiresReauth = true;
+        }
+      }
+      const message = finalError instanceof Error ? finalError.message : String(finalError);
+      if (requiresReauth) {
+        await this.auth.deleteTokens();
+      }
+      const authPayload: Record<string, unknown> = requiresReauth || (!input.debugMode && this.isOpenAIAuthFailure(finalError))
+        ? await this.authenticationRequiredPayload(message)
+        : {};
+      const authenticationRequired = authPayload.authenticationRequired === true;
       return [
         {
           eventId: makeEventId(),
@@ -3387,7 +3416,7 @@ export class SessionManager {
           agentId,
           timestamp: new Date().toISOString(),
           type: "error",
-          payload: { message },
+          payload: { message: authenticationRequired ? "OpenAI authentication expired. Sign in again to continue live runs." : message, rawMessage: authenticationRequired ? message : undefined, ...authPayload },
           causationId: input.causationId
         },
         {
@@ -3403,6 +3432,33 @@ export class SessionManager {
     } finally {
       this.actors.finishRun(sessionId, agentId, controller);
     }
+  }
+
+  private isOpenAIAuthFailure(error: unknown) {
+    if (error instanceof OpenAIAuthenticationError) return true;
+    const value = error as { status?: unknown; code?: unknown; message?: unknown; responseBody?: unknown };
+    if (value.status === 401 || value.status === 403) return true;
+    const text = [
+      value.code,
+      value.message,
+      value.responseBody
+    ].filter(Boolean).map(String).join("\n");
+    return /\b(401|403|token_expired|invalid[_ -]?token|authentication token is expired|please try signing in again|unauthorized)\b/i.test(text);
+  }
+
+  private async authenticationRequiredPayload(message: string) {
+    const prompt = await this.auth.beginOAuth(this.daemonPort());
+    return {
+      authenticationRequired: true,
+      authProvider: "openai",
+      authorizationUrl: prompt.authorizationUrl,
+      clientId: prompt.clientId,
+      authMessage: message
+    };
+  }
+
+  private daemonPort() {
+    return this.options.port ?? Number(process.env.MULTIAGENT_DAEMON_PORT ?? 3767);
   }
 
   private publish(event: SessionEvent, exclude?: (event: SessionEvent) => void) {

@@ -8,7 +8,7 @@ export interface DaemonServerOptions {
 }
 
 export function createDaemonServer(options: DaemonServerOptions) {
-  const manager = new SessionManager({ sessionsRoot: options.sessionsRoot });
+  const manager = new SessionManager({ sessionsRoot: options.sessionsRoot, port: options.port });
 
   return Bun.serve({
     port: options.port,

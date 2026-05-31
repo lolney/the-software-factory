@@ -115,6 +115,32 @@ describe("OpenAIAgentRuntime", () => {
     expect(message?.payload.attempts).toBe(2);
   });
 
+  it("classifies WHAM token expiry as an authentication error", async () => {
+    const { OpenAIAgentRuntime } = await import("./agentRuntime.js");
+    const fetchMock = async () => new Response(JSON.stringify({
+      error: {
+        message: "Provided authentication token is expired. Please try signing in again.",
+        code: "token_expired"
+      },
+      status: 401
+    }), { status: 401, headers: { "content-type": "application/json" } });
+
+    await expect(new OpenAIAgentRuntime({ fetch: fetchMock as unknown as typeof fetch, timeoutMs: 1_000 }).runTurn({
+      sessionId: "sess_auth_expired",
+      agentId: "orchestrator",
+      prompt: "run live",
+      debugMode: false,
+      openAI: {
+        apiKey: "expired-token",
+        baseURL: "https://chatgpt.com/backend-api/wham"
+      }
+    })).rejects.toMatchObject({
+      name: "OpenAIAuthenticationError",
+      status: 401,
+      code: "token_expired"
+    });
+  });
+
   it("passes image attachments to WHAM responses input", async () => {
     const { OpenAIAgentRuntime } = await import("./agentRuntime.js");
     let requestBody: Record<string, any> | undefined;

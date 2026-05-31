@@ -46,6 +46,7 @@ final class SessionStore {
     var newSessionReasoningEffort = "none"
     var isCreatingSession = false
     var lastError: String?
+    var pendingOpenAIReauthURL: URL?
     var usesStaticMockupFixture = false
     var selectedAgentId: String?
     var controlAgentId: String?
@@ -737,6 +738,7 @@ final class SessionStore {
 
     func clearLastError() {
         lastError = nil
+        pendingOpenAIReauthURL = nil
     }
 
     private func clearStaleDaemonDisconnectedError() {
@@ -982,6 +984,14 @@ final class SessionStore {
             return
         }
         sendBeginOpenAIOAuth()
+    }
+
+    func openPendingOpenAIReauthentication() {
+        if let pendingOpenAIReauthURL {
+            NSWorkspace.shared.open(pendingOpenAIReauthURL)
+        } else {
+            beginOpenAIOAuth()
+        }
     }
 
     private func sendBeginOpenAIOAuth() {
@@ -1406,6 +1416,7 @@ final class SessionStore {
                 }
             }
         case "error":
+            handleAuthenticationRequired(event)
             if let agentId = event.agentId,
                let index = graph.nodes.firstIndex(where: { $0.id == agentId }) {
                 graph.nodes[index].errorCount += 1
@@ -1414,6 +1425,18 @@ final class SessionStore {
             break
         }
         refreshSessionSummaryStatuses()
+    }
+
+    private func handleAuthenticationRequired(_ event: SessionEvent) {
+        guard event.payload["authenticationRequired"]?.boolValue == true,
+              event.payload["authProvider"]?.stringValue == "openai" else { return }
+        let message = event.payload["message"]?.stringValue ?? "OpenAI authentication expired. Sign in again to continue live runs."
+        lastError = sanitizedDisplayError(message)
+        refreshAuthStatus()
+        guard let rawURL = event.payload["authorizationUrl"]?.stringValue,
+              let url = URL(string: rawURL) else { return }
+        pendingOpenAIReauthURL = url
+        NSWorkspace.shared.open(url)
     }
 
     private func transcriptItem(_ event: SessionEvent) -> TranscriptItem {
