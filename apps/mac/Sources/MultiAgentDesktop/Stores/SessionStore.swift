@@ -66,7 +66,11 @@ final class SessionStore {
     private var subscribedDebugLogSessionIds = Set<String>()
     private var pendingCreatePrompt: String?
     private var pendingCreateImageAttachments: [ImageAttachment] = []
+    private var pendingCreateRequestId: String?
+    private var pendingCreateRequestSent = false
     private var pendingOpenAIOAuth = false
+    private var pendingOpenAIOAuthRequestId: String?
+    private var pendingOpenAIOAuthRequestSent = false
     private let localDaemonLauncher = LocalDaemonLauncher()
     @ObservationIgnored private var sessionRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var isConnectAndRefreshInFlight = false
@@ -428,25 +432,34 @@ final class SessionStore {
                 self?.handleDaemonMessage(data)
             }
         }
+        daemon.onRequestSent = { [weak self] requestId in
+            Task { @MainActor in
+                self?.markPendingRequestSent(requestId)
+            }
+        }
         daemon.onDisconnect = { [weak self] reason in
             Task { @MainActor in
                 self?.connectionStatus = "Disconnected"
                 self?.lastError = reason
-                self?.isCreatingSession = false
-                self?.pendingCreatePrompt = nil
-                self?.pendingCreateImageAttachments = []
-                self?.pendingOpenAIOAuth = false
+                self?.preparePendingRequestsAfterDisconnect()
                 self?.resetSubscriptions()
                 self?.stopSessionRefreshLoop()
             }
         }
         daemon.onSendError = { [weak self] reason in
             Task { @MainActor in
-                self?.lastError = reason
-                self?.isCreatingSession = false
-                self?.pendingCreatePrompt = nil
-                self?.pendingCreateImageAttachments = []
-                self?.pendingOpenAIOAuth = false
+                guard let self else { return }
+                if self.isTransientDaemonSocketError(reason) {
+                    self.connectionStatus = "Connecting"
+                    self.lastError = nil
+                    self.rearmPendingRequestsForSocketRetry()
+                    self.connectAndRefresh()
+                    return
+                }
+                self.lastError = reason
+                self.isCreatingSession = false
+                self.clearPendingCreate()
+                self.clearPendingOpenAIOAuth()
             }
         }
     }
@@ -490,10 +503,13 @@ final class SessionStore {
             lastError = "Could not start the local daemon. Check ~/Library/Application Support/The Software Factory/logs/app-daemon.log for details."
             return
         }
+        resetSubscriptions()
         for attempt in 0..<3 {
             if attempt == 0 {
                 daemon.connect(port: daemonPort)
             } else {
+                resetSubscriptions()
+                rearmPendingRequestsForSocketRetry()
                 daemon.reconnect(port: daemonPort)
             }
             try? await Task.sleep(for: .milliseconds(250))
@@ -511,18 +527,48 @@ final class SessionStore {
     }
 
     private func sendInitialDaemonRequests() {
-        if let prompt = pendingCreatePrompt {
+        if let prompt = pendingCreatePrompt, !pendingCreateRequestSent {
+            pendingCreateRequestSent = true
             let attachments = pendingCreateImageAttachments
-            pendingCreatePrompt = nil
-            pendingCreateImageAttachments = []
             sendCreateSession(prompt: prompt, imageAttachments: attachments)
+            return
+        }
+        if pendingOpenAIOAuth, !pendingOpenAIOAuthRequestSent {
+            sendPendingOpenAIOAuth()
             return
         }
         refreshSessions()
         refreshCatalogs()
         if let selectedSessionId {
+            daemon.sendRequest(method: "getSnapshot", params: ["sessionId": selectedSessionId])
             subscribe(to: selectedSessionId)
             subscribeDebugLogs(to: selectedSessionId)
+        }
+    }
+
+    private func isTransientDaemonSocketError(_ reason: String) -> Bool {
+        let normalized = reason.lowercased()
+        return normalized.contains("socket is not connected")
+            || normalized == "daemon is not connected."
+    }
+
+    private func clearPendingCreate() {
+        pendingCreatePrompt = nil
+        pendingCreateImageAttachments = []
+        pendingCreateRequestSent = false
+    }
+
+    private func clearPendingOpenAIOAuth() {
+        pendingOpenAIOAuth = false
+        pendingOpenAIOAuthRequestSent = false
+    }
+
+    private func rearmPendingRequestsForSocketRetry() {
+        if pendingCreatePrompt != nil {
+            pendingCreateRequestSent = false
+        }
+        if pendingOpenAIOAuth {
+            pendingOpenAIOAuthRequestSent = false
         }
     }
 
@@ -550,20 +596,21 @@ final class SessionStore {
     }
 
     func createSession(prompt: String, imageAttachments: [ImageAttachment] = []) {
+        pendingCreatePrompt = prompt
+        pendingCreateImageAttachments = imageAttachments
+        pendingCreateRequestSent = false
+        isCreatingSession = true
         guard daemon.isConnected else {
-            pendingCreatePrompt = prompt
-            pendingCreateImageAttachments = imageAttachments
-            isCreatingSession = true
             connectAndRefresh()
             lastError = "Connecting to daemon. The session will be created automatically."
             return
         }
+        pendingCreateRequestSent = true
         sendCreateSession(prompt: prompt, imageAttachments: imageAttachments)
     }
 
     func cancelNewSession() {
-        pendingCreatePrompt = nil
-        pendingCreateImageAttachments = []
+        clearPendingCreate()
         isCreatingSession = false
         isComposingNewSession = false
         if selectedSidebarItem == Self.newSessionDraftId {
@@ -999,13 +1046,14 @@ final class SessionStore {
     }
 
     func beginOpenAIOAuth() {
+        pendingOpenAIOAuth = true
         guard daemon.isConnected else {
-            pendingOpenAIOAuth = true
+            pendingOpenAIOAuthRequestSent = false
             connectAndRefresh()
             lastError = "Connecting to daemon. OpenAI setup will continue automatically."
             return
         }
-        sendBeginOpenAIOAuth()
+        sendPendingOpenAIOAuth()
     }
 
     func openPendingOpenAIReauthentication() {
@@ -1025,6 +1073,12 @@ final class SessionStore {
                 refreshAuthStatus()
             }
         }
+    }
+
+    private func sendPendingOpenAIOAuth() {
+        guard pendingOpenAIOAuth, !pendingOpenAIOAuthRequestSent else { return }
+        pendingOpenAIOAuthRequestSent = true
+        sendBeginOpenAIOAuth()
     }
 
     func refreshAuthStatus() {
@@ -1106,8 +1160,7 @@ final class SessionStore {
     func beginNewSession() {
         isComposingNewSession = true
         isCreatingSession = false
-        pendingCreatePrompt = nil
-        pendingCreateImageAttachments = []
+        clearPendingCreate()
         composerText = ""
         composerImageAttachments = []
         newSessionWorkspaceRoot = ""
@@ -1152,8 +1205,7 @@ final class SessionStore {
         connectionStatus = "Connected"
         clearStaleDaemonDisconnectedError()
         if pendingOpenAIOAuth, object["method"] == nil {
-            pendingOpenAIOAuth = false
-            sendBeginOpenAIOAuth()
+            sendPendingOpenAIOAuth()
         }
         if object["method"] as? String == "event",
            let params = object["params"],
@@ -1176,6 +1228,8 @@ final class SessionStore {
                 lastError = sanitizedDisplayError(message)
             }
             isCreatingSession = false
+            clearPendingCreate()
+            clearPendingOpenAIOAuth()
             isLoadingSelection = false
             return
         }
@@ -1189,6 +1243,7 @@ final class SessionStore {
         if let resultDict = result as? [String: Any],
            let authURL = resultDict["authorizationUrl"] as? String,
            let url = URL(string: authURL) {
+            clearPendingOpenAIOAuth()
             NSWorkspace.shared.open(url)
             decodeIntegrations(from: resultDict)
             return
@@ -1326,6 +1381,7 @@ final class SessionStore {
         connectionStatus = "Connected"
         clearStaleDaemonDisconnectedError()
         isCreatingSession = false
+        clearPendingCreate()
         isLoadingSelection = false
         isComposingNewSession = false
         composerText = ""
@@ -1359,6 +1415,7 @@ final class SessionStore {
                     subscribe(to: event.sessionId)
                     subscribeDebugLogs(to: event.sessionId)
                     isCreatingSession = false
+                    clearPendingCreate()
                     isComposingNewSession = false
                     composerText = ""
                     composerImageAttachments = []
@@ -1393,6 +1450,7 @@ final class SessionStore {
             selectedAgentId = nil
             controlAgentId = nil
             isCreatingSession = false
+            clearPendingCreate()
             isLoadingSelection = false
             isComposingNewSession = false
             composerText = ""
