@@ -516,6 +516,7 @@ final class SessionStore {
             sendInitialDaemonRequests()
             try? await Task.sleep(for: .milliseconds(900))
             if daemon.isConnected {
+                _ = sendPendingUserRequestIfNeeded()
                 connectionStatus = "Connected"
                 startSessionRefreshLoop()
                 return
@@ -527,15 +528,7 @@ final class SessionStore {
     }
 
     private func sendInitialDaemonRequests() {
-        if let prompt = pendingCreatePrompt, !pendingCreateRequestSent {
-            let requestId = pendingCreateRequestId ?? UUID().uuidString
-            pendingCreateRequestId = requestId
-            let attachments = pendingCreateImageAttachments
-            sendCreateSession(id: requestId, prompt: prompt, imageAttachments: attachments)
-            return
-        }
-        if pendingOpenAIOAuth, !pendingOpenAIOAuthRequestSent {
-            sendPendingOpenAIOAuth()
+        if sendPendingUserRequestIfNeeded() {
             return
         }
         refreshSessions()
@@ -545,6 +538,21 @@ final class SessionStore {
             subscribe(to: selectedSessionId)
             subscribeDebugLogs(to: selectedSessionId)
         }
+    }
+
+    private func sendPendingUserRequestIfNeeded() -> Bool {
+        if let prompt = pendingCreatePrompt, !pendingCreateRequestSent {
+            let requestId = pendingCreateRequestId ?? UUID().uuidString
+            pendingCreateRequestId = requestId
+            let attachments = pendingCreateImageAttachments
+            sendCreateSession(id: requestId, prompt: prompt, imageAttachments: attachments)
+            return true
+        }
+        if pendingOpenAIOAuth, !pendingOpenAIOAuthRequestSent {
+            sendPendingOpenAIOAuth()
+            return true
+        }
+        return false
     }
 
     private func isTransientDaemonSocketError(_ reason: String) -> Bool {
