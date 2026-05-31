@@ -25,6 +25,11 @@ final class DaemonClient {
         receiveNext()
     }
 
+    func reconnect(port: Int = 3767) {
+        disconnect()
+        connect(port: port)
+    }
+
     func disconnect() {
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil

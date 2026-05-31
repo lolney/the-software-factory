@@ -69,6 +69,7 @@ final class SessionStore {
     private var pendingOpenAIOAuth = false
     private let localDaemonLauncher = LocalDaemonLauncher()
     @ObservationIgnored private var sessionRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var isConnectAndRefreshInFlight = false
 
     var daemonPort: Int {
         get {
@@ -478,6 +479,9 @@ final class SessionStore {
     }
 
     private func connectAndRefreshAsync() async {
+        guard !isConnectAndRefreshInFlight else { return }
+        isConnectAndRefreshInFlight = true
+        defer { isConnectAndRefreshInFlight = false }
         connectionStatus = daemon.isConnected ? "Connected" : "Connecting"
         lastError = nil
         let daemonStarted = await localDaemonLauncher.ensureStarted(port: daemonPort)
@@ -486,8 +490,27 @@ final class SessionStore {
             lastError = "Could not start the local daemon. Check ~/Library/Application Support/The Software Factory/logs/app-daemon.log for details."
             return
         }
-        daemon.connect(port: daemonPort)
-        try? await Task.sleep(for: .milliseconds(250))
+        for attempt in 0..<3 {
+            if attempt == 0 {
+                daemon.connect(port: daemonPort)
+            } else {
+                daemon.reconnect(port: daemonPort)
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+            sendInitialDaemonRequests()
+            try? await Task.sleep(for: .milliseconds(900))
+            if daemon.isConnected {
+                connectionStatus = "Connected"
+                startSessionRefreshLoop()
+                return
+            }
+        }
+        daemon.disconnect()
+        connectionStatus = "Disconnected"
+        lastError = "Daemon is running, but the app could not open its WebSocket connection. Try relaunching The Software Factory."
+    }
+
+    private func sendInitialDaemonRequests() {
         if let prompt = pendingCreatePrompt {
             let attachments = pendingCreateImageAttachments
             pendingCreatePrompt = nil
@@ -501,7 +524,6 @@ final class SessionStore {
             subscribe(to: selectedSessionId)
             subscribeDebugLogs(to: selectedSessionId)
         }
-        startSessionRefreshLoop()
     }
 
     func refreshCatalogs() {
