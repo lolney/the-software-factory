@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AuthManager, CODEX_PUBLIC_CLIENT_ID, OPENAI_OAUTH_SCOPES } from "./authManager.js";
+import { AuthManager, CODEX_PUBLIC_CLIENT_ID, OPENAI_OAUTH_CALLBACK_PORT, OPENAI_OAUTH_SCOPES } from "./authManager.js";
 
 describe("AuthManager", () => {
   beforeEach(() => {
@@ -17,7 +17,7 @@ describe("AuthManager", () => {
     expect(url.searchParams.get("client_id")).toBe(CODEX_PUBLIC_CLIENT_ID);
     expect(url.searchParams.get("state")).toBe("state-test");
     expect(url.searchParams.get("response_type")).toBe("code");
-    expect(url.searchParams.get("redirect_uri")).toBe("http://localhost:3767/auth/callback");
+    expect(url.searchParams.get("redirect_uri")).toBe(`http://localhost:${OPENAI_OAUTH_CALLBACK_PORT}/auth/callback`);
     for (const scope of OPENAI_OAUTH_SCOPES) {
       expect(url.searchParams.get("scope")?.split(" ")).toContain(scope);
     }

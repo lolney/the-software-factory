@@ -24,6 +24,7 @@ export const OPENAI_WHAM_BASE_URL = "https://chatgpt.com/backend-api/wham";
 export const OPENAI_OAUTH_CLIENT_NAME = "the-software-factory";
 export const OPENAI_OAUTH_CLIENT_VERSION = "0.1.0";
 export const OPENAI_OAUTH_ORIGINATOR = "codex_cli_rs";
+export const OPENAI_OAUTH_CALLBACK_PORT = 1455;
 
 export interface OAuthTokenSet {
   accessToken: string;
@@ -66,7 +67,7 @@ export class AuthManager {
   private readonly apiKeychainAccount = "openai-api-key";
   private readonly pending = new Map<string, PendingOAuth>();
 
-  authorizationUrl(state: string, redirectUri = "http://localhost:3767/auth/callback", codeChallenge?: string) {
+  authorizationUrl(state: string, redirectUri = `http://localhost:${OPENAI_OAUTH_CALLBACK_PORT}/auth/callback`, codeChallenge?: string) {
     const url = new URL("https://auth.openai.com/oauth/authorize");
     url.searchParams.set("client_id", CODEX_PUBLIC_CLIENT_ID);
     url.searchParams.set("response_type", "code");
@@ -83,7 +84,7 @@ export class AuthManager {
     return url.toString();
   }
 
-  async beginOAuth(port = 3767) {
+  async beginOAuth(port = OPENAI_OAUTH_CALLBACK_PORT) {
     const state = safeToken();
     const verifier = safeToken(48);
     const redirectUri = `http://localhost:${port}/auth/callback`;

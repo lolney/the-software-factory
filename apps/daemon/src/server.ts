@@ -1,6 +1,7 @@
 import { SessionManager } from "./services/sessionManager.js";
 import { routeDaemonMessage } from "./protocol/router.js";
 import { authorizeDaemonRequest, daemonOwnershipChallenge } from "./services/daemonSecurity.js";
+import { OPENAI_OAUTH_CALLBACK_PORT } from "./services/authManager.js";
 
 export interface DaemonServerOptions {
   port: number;
@@ -8,25 +9,58 @@ export interface DaemonServerOptions {
 }
 
 export function createDaemonServer(options: DaemonServerOptions) {
-  const manager = new SessionManager({ sessionsRoot: options.sessionsRoot, port: options.port });
+  let oauthCallbackReady = options.port === OPENAI_OAUTH_CALLBACK_PORT;
+  let callbackServer: ReturnType<typeof Bun.serve> | undefined;
+  let handleOAuthCallback: (requestUrl: string) => Promise<Response>;
+  const ensureOAuthCallbackReady = () => {
+    if (options.port === OPENAI_OAUTH_CALLBACK_PORT || oauthCallbackReady) {
+      return true;
+    }
+    try {
+      callbackServer = Bun.serve({
+        port: OPENAI_OAUTH_CALLBACK_PORT,
+        hostname: "127.0.0.1",
+        fetch(request) {
+          const url = new URL(request.url);
+          if (url.pathname === "/oauth/callback" || url.pathname === "/auth/callback") {
+            return handleOAuthCallback(request.url);
+          }
+          return new Response("Not found.", { status: 404, headers: { "content-type": "text/plain" } });
+        }
+      });
+      oauthCallbackReady = true;
+      return true;
+    } catch (error) {
+      oauthCallbackReady = false;
+      console.error(`OpenAI OAuth callback listener failed on 127.0.0.1:${OPENAI_OAUTH_CALLBACK_PORT}:`, error);
+      return false;
+    }
+  };
+  const manager = new SessionManager({ sessionsRoot: options.sessionsRoot, port: options.port, ensureOAuthCallbackReady });
 
-  return Bun.serve({
+  handleOAuthCallback = async (requestUrl: string) => {
+    try {
+      await manager.completeOAuthCallback(requestUrl);
+      return new Response("OpenAI OAuth connected. You can close this window and return to The Software Factory.", {
+        headers: { "content-type": "text/plain" }
+      });
+    } catch (error) {
+      return new Response(error instanceof Error ? error.message : String(error), {
+        status: 400,
+        headers: { "content-type": "text/plain" }
+      });
+    }
+  };
+
+  void ensureOAuthCallbackReady();
+
+  const daemonServer = Bun.serve({
     port: options.port,
     hostname: "127.0.0.1",
     async fetch(request, server) {
       const url = new URL(request.url);
       if (url.pathname === "/oauth/callback" || url.pathname === "/auth/callback") {
-        try {
-          await manager.completeOAuthCallback(request.url);
-          return new Response("OpenAI OAuth connected. You can close this window and return to The Software Factory.", {
-            headers: { "content-type": "text/plain" }
-          });
-        } catch (error) {
-          return new Response(error instanceof Error ? error.message : String(error), {
-            status: 400,
-            headers: { "content-type": "text/plain" }
-          });
-        }
+        return handleOAuthCallback(request.url);
       }
       if (url.pathname === "/health") {
         return new Response(JSON.stringify({ ok: true, service: "software-factory-daemon", transport: "bun" }), {
@@ -62,4 +96,10 @@ export function createDaemonServer(options: DaemonServerOptions) {
       }
     }
   });
+  const stopDaemon = daemonServer.stop.bind(daemonServer);
+  daemonServer.stop = (closeActiveConnections?: boolean) => {
+    callbackServer?.stop(closeActiveConnections);
+    return stopDaemon(closeActiveConnections);
+  };
+  return daemonServer;
 }

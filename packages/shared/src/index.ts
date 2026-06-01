@@ -268,7 +268,7 @@ export const DaemonRequestSchema = z.discriminatedUnion("method", [
   z.object({ id: z.string(), method: z.literal("subscribeDebugLogs"), params: z.object({ sessionId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("ackClientEvent"), params: z.object({ sessionId: SafeIdSchema, eventId: SafeIdSchema }) }),
   z.object({ id: z.string(), method: z.literal("getAuthStatus"), params: z.object({}).default({}) }),
-  z.object({ id: z.string(), method: z.literal("beginOpenAIOAuth"), params: z.object({ port: z.number().int().positive().optional() }).default({}) }),
+  z.object({ id: z.string(), method: z.literal("beginOpenAIOAuth"), params: z.object({}).default({}) }),
   z.object({ id: z.string(), method: z.literal("disconnectOpenAIOAuth"), params: z.object({}).default({}) }),
   z.object({ id: z.string(), method: z.literal("setChatGPTAccountId"), params: z.object({ accountId: z.string().min(1) }) }),
   z.object({ id: z.string(), method: z.literal("disconnectChatGPTAccountId"), params: z.object({}).default({}) }),

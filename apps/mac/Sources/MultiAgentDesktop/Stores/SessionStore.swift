@@ -1102,7 +1102,7 @@ final class SessionStore {
 
     private func sendBeginOpenAIOAuth(id: String? = nil) {
         lastError = nil
-        daemon.sendRequest(id: id ?? UUID().uuidString, method: "beginOpenAIOAuth", params: ["port": daemonPort])
+        daemon.sendRequest(id: id ?? UUID().uuidString, method: "beginOpenAIOAuth", params: [:])
         Task { @MainActor in
             for _ in 0..<10 {
                 try? await Task.sleep(for: .seconds(3))

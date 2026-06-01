@@ -984,10 +984,10 @@ describe("SessionManager deterministic debug sessions", () => {
       });
       (manager as unknown as { auth: unknown }).auth = {
         refreshLiveConnectionAfterAuthError: async () => undefined,
-        beginOAuth: async (port: number) => ({
+        beginOAuth: async (port?: number) => ({
           clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
           state: "state_test",
-          authorizationUrl: `http://auth.example.test/start?port=${port}`
+          authorizationUrl: `http://auth.example.test/start${port ? `?port=${port}` : ""}`
         }),
         deleteTokens: async () => {
           throw new Error("refreshLiveConnectionAfterAuthError owns token cleanup classification");
@@ -1015,8 +1015,59 @@ describe("SessionManager deterministic debug sessions", () => {
       const error = events.find((event) => event.type === "error");
       expect(error?.payload.authenticationRequired).toBe(true);
       expect(error?.payload.authProvider).toBe("openai");
-      expect(error?.payload.authorizationUrl).toBe("http://auth.example.test/start?port=4567");
+      expect(error?.payload.authorizationUrl).toBe("http://auth.example.test/start");
       expect(error?.payload.message).toContain("Sign in again");
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("does not issue an OpenAI OAuth URL when the fixed callback listener is unavailable", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        ensureOAuthCallbackReady: () => false
+      });
+
+      await expect(manager.handle({
+        id: "req_begin_oauth_no_callback",
+        method: "beginOpenAIOAuth",
+        params: {}
+      })).rejects.toThrow("callback listener is not available");
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("rechecks OpenAI OAuth callback availability on each setup attempt", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "multiagent-session-"));
+    try {
+      let attempts = 0;
+      const manager = new SessionManager({
+        sessionsRoot: root,
+        ensureOAuthCallbackReady: () => {
+          attempts += 1;
+          return attempts > 1;
+        }
+      });
+
+      await expect(manager.handle({
+        id: "req_begin_oauth_retry_1",
+        method: "beginOpenAIOAuth",
+        params: {}
+      })).rejects.toThrow("callback listener is not available");
+
+      const prompt = await manager.handle({
+        id: "req_begin_oauth_retry_2",
+        method: "beginOpenAIOAuth",
+        params: {}
+      });
+
+      expect(attempts).toBe(2);
+      expect(prompt).toMatchObject({
+        clientId: "app_EMoamEEZ73f0CkXaXp7hrann"
+      });
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }

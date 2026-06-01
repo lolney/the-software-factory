@@ -4,22 +4,30 @@ import { SessionManager } from "./services/sessionManager.js";
 import { routeDaemonMessage } from "./protocol/router.js";
 import { defaultSessionsRoot } from "./services/sessionRoot.js";
 import { authorizeDaemonRequest, daemonOwnershipChallenge } from "./services/daemonSecurity.js";
+import { OPENAI_OAUTH_CALLBACK_PORT } from "./services/authManager.js";
 
 const port = Number(process.env.MULTIAGENT_DAEMON_PORT ?? 3767);
 const sessionsRoot = defaultSessionsRoot();
-const manager = new SessionManager({ sessionsRoot, port });
+let oauthCallbackReady = port === OPENAI_OAUTH_CALLBACK_PORT;
+let callbackServer: http.Server | undefined;
+let callbackStart: Promise<boolean> | undefined;
+const manager = new SessionManager({ sessionsRoot, port, ensureOAuthCallbackReady });
+
+async function handleOAuthCallback(requestUrl: string, response: http.ServerResponse) {
+  try {
+    await manager.completeOAuthCallback(requestUrl);
+    response.writeHead(200, { "content-type": "text/plain" });
+    response.end("OpenAI OAuth connected. You can close this window and return to The Software Factory.");
+  } catch (error) {
+    response.writeHead(400, { "content-type": "text/plain" });
+    response.end(error instanceof Error ? error.message : String(error));
+  }
+}
 
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
   if (url.pathname === "/oauth/callback" || url.pathname === "/auth/callback") {
-    try {
-      await manager.completeOAuthCallback(url.toString());
-      response.writeHead(200, { "content-type": "text/plain" });
-      response.end("OpenAI OAuth connected. You can close this window and return to The Software Factory.");
-    } catch (error) {
-      response.writeHead(400, { "content-type": "text/plain" });
-      response.end(error instanceof Error ? error.message : String(error));
-    }
+    await handleOAuthCallback(url.toString(), response);
     return;
   }
   if (url.pathname === "/health") {
@@ -71,3 +79,50 @@ server.on("upgrade", (request, socket, head) => {
 server.listen(port, "127.0.0.1", () => {
   console.log(`The Software Factory daemon listening on ws://127.0.0.1:${port}`);
 });
+
+function ensureOAuthCallbackReady() {
+  if (port === OPENAI_OAUTH_CALLBACK_PORT || oauthCallbackReady) {
+    return true;
+  }
+  if (callbackStart) {
+    return callbackStart;
+  }
+
+  callbackStart = new Promise<boolean>((resolve) => {
+    const server = http.createServer(async (request, response) => {
+      const url = new URL(request.url ?? "/", `http://127.0.0.1:${OPENAI_OAUTH_CALLBACK_PORT}`);
+      if (url.pathname === "/oauth/callback" || url.pathname === "/auth/callback") {
+        await handleOAuthCallback(url.toString(), response);
+        return;
+      }
+      response.writeHead(404, { "content-type": "text/plain" });
+      response.end("Not found.");
+    });
+
+    server.once("error", (error) => {
+      oauthCallbackReady = false;
+      callbackStart = undefined;
+      console.error(`OpenAI OAuth callback listener failed on 127.0.0.1:${OPENAI_OAUTH_CALLBACK_PORT}:`, error);
+      server.close();
+      resolve(false);
+    });
+    server.once("listening", () => {
+      callbackServer = server;
+      oauthCallbackReady = true;
+      callbackStart = undefined;
+      console.log(`OpenAI OAuth callback listening on http://127.0.0.1:${OPENAI_OAUTH_CALLBACK_PORT}`);
+      resolve(true);
+    });
+    server.once("close", () => {
+      if (callbackServer === server) {
+        callbackServer = undefined;
+        oauthCallbackReady = false;
+      }
+    });
+    server.listen(OPENAI_OAUTH_CALLBACK_PORT, "127.0.0.1");
+  });
+
+  return callbackStart;
+}
+
+void ensureOAuthCallbackReady();

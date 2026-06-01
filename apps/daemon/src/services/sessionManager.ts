@@ -8,7 +8,7 @@ import { EventStore, makeEventId, makeLogId } from "./eventStore.js";
 import { OpenAIAuthenticationError, OpenAIAgentRuntime, type AgentRuntime } from "./agentRuntime.js";
 import { WorkflowEngine } from "./workflowEngine.js";
 import { WorkspaceCoordinator } from "./workspaceCoordinator.js";
-import { AuthManager, CODEX_PUBLIC_CLIENT_ID } from "./authManager.js";
+import { AuthManager, CODEX_PUBLIC_CLIENT_ID, OPENAI_OAUTH_CALLBACK_PORT } from "./authManager.js";
 import { CodexIntegrationManager } from "./codexIntegrationManager.js";
 import { CapabilityBroker, type CapabilityAction } from "./capabilityBroker.js";
 import { ActorRegistry, SchedulerProjection, type ScheduledJob } from "./concurrency.js";
@@ -68,7 +68,7 @@ export class SessionManager {
   private roleOverridesLoaded = false;
   private recoveryComplete = false;
 
-  constructor(private readonly options: { sessionsRoot: string; runtime?: AgentRuntime; port?: number }) {
+  constructor(private readonly options: { sessionsRoot: string; runtime?: AgentRuntime; port?: number; ensureOAuthCallbackReady?: () => boolean | Promise<boolean> }) {
     this.store = new EventStore(options.sessionsRoot);
     this.runtime = options.runtime ?? new OpenAIAgentRuntime();
     this.workflows = new WorkflowEngine(process.env.MULTIAGENT_BUILTIN_WORKFLOWS_DIR, path.join(options.sessionsRoot, "config"));
@@ -159,7 +159,7 @@ export class SessionManager {
       case "getAuthStatus":
         return this.auth.status();
       case "beginOpenAIOAuth":
-        return this.auth.beginOAuth(request.params.port);
+        return this.beginOpenAIOAuth();
       case "disconnectOpenAIOAuth":
         await this.auth.deleteTokens();
         return this.auth.status();
@@ -315,6 +315,13 @@ export class SessionManager {
 
   async completeOAuthCallback(callbackUrl: string) {
     return this.auth.completeOAuthCallback(callbackUrl);
+  }
+
+  private async beginOpenAIOAuth() {
+    if (this.options.ensureOAuthCallbackReady && !(await this.options.ensureOAuthCallbackReady())) {
+      throw new Error(`OpenAI OAuth callback listener is not available on localhost:${OPENAI_OAUTH_CALLBACK_PORT}. Quit any other Codex or Software Factory login flow using that port, then try Set Up again.`);
+    }
+    return this.auth.beginOAuth();
   }
 
   emit(event: SessionEvent) {
@@ -3444,7 +3451,7 @@ export class SessionManager {
   }
 
   private async authenticationRequiredPayload(message: string) {
-    const prompt = await this.auth.beginOAuth(this.daemonPort());
+    const prompt = await this.beginOpenAIOAuth();
     return {
       authenticationRequired: true,
       authProvider: "openai",
